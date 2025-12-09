@@ -1,0 +1,53 @@
+name: Draft Release
+
+on:
+  push:
+    branches: [main]
+    paths: [Cargo.toml]
+
+permissions:
+  contents: write
+
+jobs:
+  draft-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Get version from Cargo.toml
+        id: version
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "VERSION=v$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected version: v$VERSION"
+
+      - name: Check if tag already exists
+        id: check
+        run: |
+          if git rev-parse "${{ steps.version.outputs.VERSION }}" >/dev/null 2>&1; then
+            echo "EXISTS=true" >> $GITHUB_OUTPUT
+            echo "Tag ${{ steps.version.outputs.VERSION }} already exists, skipping"
+          else
+            echo "EXISTS=false" >> $GITHUB_OUTPUT
+            echo "Tag ${{ steps.version.outputs.VERSION }} does not exist, creating draft release"
+          fi
+
+      - name: Create tag
+        if: steps.check.outputs.EXISTS == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag ${{ steps.version.outputs.VERSION }}
+          git push origin ${{ steps.version.outputs.VERSION }}
+
+      - name: Create draft release with changelog
+        if: steps.check.outputs.EXISTS == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ steps.version.outputs.VERSION }} \
+            --draft \
+            --generate-notes \
+            --title "${{ steps.version.outputs.VERSION }}"
