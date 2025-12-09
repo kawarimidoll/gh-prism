@@ -1,0 +1,10 @@
+[package]
+name = "gh-prism"
+version = "0.0.1"
+edition = "2024"
+authors = ["kawarimidoll"]
+description = "gh extension TUI for reviewing GitHub Pull Requests"
+license = "MIT"
+repository = "https://github.com/kawarimidoll/gh-prism"
+
+[dependencies]
