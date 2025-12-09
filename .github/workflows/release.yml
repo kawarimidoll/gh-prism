@@ -8,12 +8,49 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  release-linux:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            asset_name: linux-amd64
+          - target: aarch64-unknown-linux-gnu
+            asset_name: linux-arm64
     steps:
       - uses: actions/checkout@v6
-
-      - name: Build and Release
-        uses: cli/gh-extension-precompile@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/setup-cross-toolchain-action@v1
         with:
-          build_script_override: script/build.sh
+          target: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Upload release artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp target/${{ matrix.target }}/release/gh-prism ${{ matrix.asset_name }}
+          gh release upload ${{ github.event.release.tag_name }} ${{ matrix.asset_name }} --clobber
+
+  release-macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            asset_name: darwin-amd64
+          - target: aarch64-apple-darwin
+            asset_name: darwin-arm64
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Upload release artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp target/${{ matrix.target }}/release/gh-prism ${{ matrix.asset_name }}
+          gh release upload ${{ github.event.release.tag_name }} ${{ matrix.asset_name }} --clobber
