@@ -20,17 +20,17 @@ jobs:
         id: version
         run: |
           VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          echo "VERSION=v$VERSION" >> $GITHUB_OUTPUT
+          echo "VERSION=v$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected version: v$VERSION"
 
       - name: Check if tag already exists
         id: check
         run: |
           if git rev-parse "${{ steps.version.outputs.VERSION }}" >/dev/null 2>&1; then
-            echo "EXISTS=true" >> $GITHUB_OUTPUT
+            echo "EXISTS=true" >> "$GITHUB_OUTPUT"
             echo "Tag ${{ steps.version.outputs.VERSION }} already exists, skipping"
           else
-            echo "EXISTS=false" >> $GITHUB_OUTPUT
+            echo "EXISTS=false" >> "$GITHUB_OUTPUT"
             echo "Tag ${{ steps.version.outputs.VERSION }} does not exist, creating draft release"
           fi
 

@@ -1,0 +1,24 @@
+---
+# Conventional Commits configuration for convco
+# https://convco.github.io/configuration/
+
+types:
+  - type: feat
+    section: Features
+  - type: fix
+    section: Bug Fixes
+  - type: docs
+    section: Documentation
+    hidden: true
+  - type: refactor
+    section: Refactoring
+    hidden: true
+  - type: test
+    section: Testing
+    hidden: true
+  - type: chore
+    section: Chores
+    hidden: true
+  - type: ci
+    section: CI
+    hidden: true

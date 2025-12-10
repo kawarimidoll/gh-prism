@@ -3,15 +3,30 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    git-hooks = {
+      url = "github:cachix/git-hooks.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs }:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      git-hooks,
+    }:
     let
-      supportedSystems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
+      supportedSystems = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "x86_64-darwin"
+        "aarch64-darwin"
+      ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
     in
     {
-      packages = forAllSystems (system:
+      packages = forAllSystems (
+        system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
           cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
@@ -28,18 +43,78 @@
         }
       );
 
-      devShells = forAllSystems (system:
+      checks = forAllSystems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          pre-commit-check = git-hooks.lib.${system}.run {
+            src = ./.;
+            hooks = {
+              # Rust
+              rustfmt.enable = true;
+              clippy = {
+                enable = true;
+                stages = [ "pre-push" ]; # Heavy check - run on push only
+              };
+
+              # Nix
+              nixfmt-rfc-style.enable = true;
+
+              # Conventional Commits (commit-msg stage)
+              convco.enable = true;
+
+              # Markdown / YAML (fast alternative to prettier)
+              dprint = {
+                enable = true;
+                name = "dprint";
+                entry = "${pkgs.dprint}/bin/dprint fmt --diff";
+                types = [
+                  "markdown"
+                  "yaml"
+                ];
+                pass_filenames = false;
+              };
+
+              # YAML (GitHub Actions)
+              actionlint.enable = true;
+
+              # Spell check (Rust-based, fast)
+              typos.enable = true;
+
+              # Security
+              check-merge-conflicts.enable = true;
+              detect-private-keys.enable = true;
+
+              # File hygiene
+              check-case-conflicts.enable = true;
+              end-of-file-fixer.enable = true;
+              trim-trailing-whitespace.enable = true;
+            };
+          };
+        }
+      );
+
+      devShells = forAllSystems (
+        system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
         in
         {
           default = pkgs.mkShell {
+            inherit (self.checks.${system}.pre-commit-check) shellHook;
             buildInputs = with pkgs; [
               cargo
               rustc
               rust-analyzer
               clippy
               rustfmt
+              nixfmt-rfc-style
+              dprint
+              actionlint
+              convco
+              typos
             ];
           };
         }
