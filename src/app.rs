@@ -18,13 +18,17 @@ pub enum Panel {
 pub struct App {
     should_quit: bool,
     focused_panel: Panel,
+    pr_number: u64,
+    repo: Option<String>,
 }
 
 impl App {
-    pub fn new() -> Self {
+    pub fn new(pr_number: u64, repo: Option<String>) -> Self {
         Self {
             should_quit: false,
             focused_panel: Panel::CommitList,
+            pr_number,
+            repo,
         }
     }
 
@@ -115,7 +119,12 @@ impl Widget for &App {
             .constraints([Constraint::Length(1), Constraint::Min(0)])
             .split(area);
 
-        Paragraph::new(" prism - PR Review TUI ")
+        let repo_display = self.repo.as_deref().unwrap_or("(detecting...)");
+        let pr_number = self.pr_number;
+        let header_text =
+            format!(" prism - {repo_display} PR #{pr_number} | Tab: switch | q: quit");
+
+        Paragraph::new(header_text)
             .style(Style::default().bg(Color::Blue).fg(Color::White))
             .render(main_layout[0], buf);
 
@@ -141,14 +150,14 @@ mod tests {
 
     #[test]
     fn test_new() {
-        let app = App::new();
+        let app = App::new(1, None);
         assert!(!app.should_quit);
         assert_eq!(app.focused_panel, Panel::CommitList);
     }
 
     #[test]
     fn test_next_panel() {
-        let mut app = App::new();
+        let mut app = App::new(1, None);
         app.next_panel();
         assert_eq!(app.focused_panel, Panel::FileTree);
         app.next_panel();
@@ -159,7 +168,7 @@ mod tests {
 
     #[test]
     fn test_prev_panel() {
-        let mut app = App::new();
+        let mut app = App::new(1, None);
         app.prev_panel();
         assert_eq!(app.focused_panel, Panel::DiffView);
         app.prev_panel();
@@ -170,7 +179,7 @@ mod tests {
 
     #[test]
     fn test_render_has_header() {
-        let app = App::new();
+        let app = App::new(1, None);
         let area = Rect::new(0, 0, 80, 24);
         let mut buf = Buffer::empty(area);
         (&app).render(area, &mut buf);
