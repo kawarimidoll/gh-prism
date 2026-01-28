@@ -8,7 +8,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Widget},
 };
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Panel {
     CommitList,
     FileTree,
@@ -132,5 +132,52 @@ impl Widget for &App {
         self.render_commit_list(sidebar_layout[0], buf);
         self.render_file_tree(sidebar_layout[1], buf);
         self.render_diff_view(body_layout[1], buf);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new() {
+        let app = App::new();
+        assert!(!app.should_quit);
+        assert_eq!(app.focused_panel, Panel::CommitList);
+    }
+
+    #[test]
+    fn test_next_panel() {
+        let mut app = App::new();
+        app.next_panel();
+        assert_eq!(app.focused_panel, Panel::FileTree);
+        app.next_panel();
+        assert_eq!(app.focused_panel, Panel::DiffView);
+        app.next_panel();
+        assert_eq!(app.focused_panel, Panel::CommitList);
+    }
+
+    #[test]
+    fn test_prev_panel() {
+        let mut app = App::new();
+        app.prev_panel();
+        assert_eq!(app.focused_panel, Panel::DiffView);
+        app.prev_panel();
+        assert_eq!(app.focused_panel, Panel::FileTree);
+        app.prev_panel();
+        assert_eq!(app.focused_panel, Panel::CommitList);
+    }
+
+    #[test]
+    fn test_render_has_header() {
+        let app = App::new();
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        (&app).render(area, &mut buf);
+
+        let header_text: String = (0..area.width)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(header_text.contains("prism"));
     }
 }
