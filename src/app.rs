@@ -1,10 +1,11 @@
 use color_eyre::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
-    DefaultTerminal, Frame,
+    DefaultTerminal,
+    buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Widget},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -29,40 +30,13 @@ impl App {
 
     pub fn run(&mut self, mut terminal: DefaultTerminal) -> Result<()> {
         while !self.should_quit {
-            terminal.draw(|frame| self.draw(frame))?;
+            terminal.draw(|frame| frame.render_widget(&*self, frame.area()))?;
             self.handle_events()?;
         }
         Ok(())
     }
 
-    fn draw(&self, frame: &mut Frame) {
-        let area = frame.area();
-
-        let main_layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(0)])
-            .split(area);
-
-        let header = Paragraph::new(" prism - PR Review TUI ")
-            .style(Style::default().bg(Color::Blue).fg(Color::White));
-        frame.render_widget(header, main_layout[0]);
-
-        let body_layout = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
-            .split(main_layout[1]);
-
-        let sidebar_layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(body_layout[0]);
-
-        self.draw_commit_list(frame, sidebar_layout[0]);
-        self.draw_file_tree(frame, sidebar_layout[1]);
-        self.draw_diff_view(frame, body_layout[1]);
-    }
-
-    fn draw_commit_list(&self, frame: &mut Frame, area: Rect) {
+    fn render_commit_list(&self, area: Rect, buf: &mut Buffer) {
         let style = if self.focused_panel == Panel::CommitList {
             Style::default().fg(Color::Yellow)
         } else {
@@ -73,10 +47,10 @@ impl App {
             .borders(Borders::ALL)
             .border_style(style);
         let paragraph = Paragraph::new("commit list").block(block);
-        frame.render_widget(paragraph, area);
+        paragraph.render(area, buf);
     }
 
-    fn draw_file_tree(&self, frame: &mut Frame, area: Rect) {
+    fn render_file_tree(&self, area: Rect, buf: &mut Buffer) {
         let style = if self.focused_panel == Panel::FileTree {
             Style::default().fg(Color::Yellow)
         } else {
@@ -87,10 +61,10 @@ impl App {
             .borders(Borders::ALL)
             .border_style(style);
         let paragraph = Paragraph::new("file tree").block(block);
-        frame.render_widget(paragraph, area);
+        paragraph.render(area, buf);
     }
 
-    fn draw_diff_view(&self, frame: &mut Frame, area: Rect) {
+    fn render_diff_view(&self, area: Rect, buf: &mut Buffer) {
         let style = if self.focused_panel == Panel::DiffView {
             Style::default().fg(Color::Yellow)
         } else {
@@ -101,7 +75,7 @@ impl App {
             .borders(Borders::ALL)
             .border_style(style);
         let paragraph = Paragraph::new("diff view").block(block);
-        frame.render_widget(paragraph, area);
+        paragraph.render(area, buf);
     }
 
     fn handle_events(&mut self) -> Result<()> {
@@ -131,5 +105,32 @@ impl App {
             Panel::FileTree => Panel::CommitList,
             Panel::DiffView => Panel::FileTree,
         }
+    }
+}
+
+impl Widget for &App {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let main_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(area);
+
+        Paragraph::new(" prism - PR Review TUI ")
+            .style(Style::default().bg(Color::Blue).fg(Color::White))
+            .render(main_layout[0], buf);
+
+        let body_layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
+            .split(main_layout[1]);
+
+        let sidebar_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(body_layout[0]);
+
+        self.render_commit_list(sidebar_layout[0], buf);
+        self.render_file_tree(sidebar_layout[1], buf);
+        self.render_diff_view(body_layout[1], buf);
     }
 }
