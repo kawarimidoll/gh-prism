@@ -1,4 +1,5 @@
 mod app;
+mod git;
 mod github;
 
 use app::App;
