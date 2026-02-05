@@ -8,6 +8,7 @@ use ratatui::{
     style::{Color, Style},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Panel {
@@ -24,7 +25,7 @@ pub struct App {
     pr_title: String,
     commits: Vec<CommitInfo>,
     commit_list_state: ListState,
-    files: Vec<DiffFile>,
+    files_map: HashMap<String, Vec<DiffFile>>,
     file_list_state: ListState,
 }
 
@@ -34,16 +35,23 @@ impl App {
         repo: String,
         pr_title: String,
         commits: Vec<CommitInfo>,
-        files: Vec<DiffFile>,
+        files_map: HashMap<String, Vec<DiffFile>>,
     ) -> Self {
         let mut commit_list_state = ListState::default();
         if !commits.is_empty() {
             commit_list_state.select(Some(0));
         }
+
+        // 最初のコミットのファイル数に基づいて file_list_state を初期化
         let mut file_list_state = ListState::default();
-        if !files.is_empty() {
-            file_list_state.select(Some(0));
+        if let Some(first_commit) = commits.first() {
+            if let Some(files) = files_map.get(&first_commit.sha) {
+                if !files.is_empty() {
+                    file_list_state.select(Some(0));
+                }
+            }
         }
+
         Self {
             should_quit: false,
             focused_panel: Panel::CommitList,
@@ -52,8 +60,30 @@ impl App {
             pr_title,
             commits,
             commit_list_state,
-            files,
+            files_map,
             file_list_state,
+        }
+    }
+
+    /// 現在選択中のコミットのファイル一覧を取得
+    fn current_files(&self) -> &[DiffFile] {
+        if let Some(idx) = self.commit_list_state.selected() {
+            if let Some(commit) = self.commits.get(idx) {
+                if let Some(files) = self.files_map.get(&commit.sha) {
+                    return files;
+                }
+            }
+        }
+        &[]
+    }
+
+    /// ファイル選択をリセット（最初のファイルを選択、またはNone）
+    fn reset_file_selection(&mut self) {
+        let has_files = !self.current_files().is_empty();
+        if has_files {
+            self.file_list_state.select(Some(0));
+        } else {
+            self.file_list_state.select(None);
         }
     }
 
@@ -132,8 +162,8 @@ impl App {
             Style::default()
         };
 
-        let items: Vec<ListItem> = self
-            .files
+        let files = self.current_files();
+        let items: Vec<ListItem> = files
             .iter()
             .map(|f| {
                 let display = format!("{} {} {}", f.status_char(), f.filename, f.changes_display());
@@ -141,7 +171,7 @@ impl App {
             })
             .collect();
 
-        let title = format!(" Files ({}) ", self.files.len());
+        let title = format!(" Files ({}) ", files.len());
         let list = List::new(items)
             .block(
                 Block::default()
@@ -190,11 +220,16 @@ impl App {
                 let current = self.commit_list_state.selected().unwrap_or(0);
                 let next = (current + 1) % self.commits.len();
                 self.commit_list_state.select(Some(next));
+                // ファイル選択をリセット
+                self.reset_file_selection();
             }
-            Panel::FileTree if !self.files.is_empty() => {
-                let current = self.file_list_state.selected().unwrap_or(0);
-                let next = (current + 1) % self.files.len();
-                self.file_list_state.select(Some(next));
+            Panel::FileTree => {
+                let files_len = self.current_files().len();
+                if files_len > 0 {
+                    let current = self.file_list_state.selected().unwrap_or(0);
+                    let next = (current + 1) % files_len;
+                    self.file_list_state.select(Some(next));
+                }
             }
             _ => {}
         }
@@ -210,15 +245,20 @@ impl App {
                     current - 1
                 };
                 self.commit_list_state.select(Some(prev));
+                // ファイル選択をリセット
+                self.reset_file_selection();
             }
-            Panel::FileTree if !self.files.is_empty() => {
-                let current = self.file_list_state.selected().unwrap_or(0);
-                let prev = if current == 0 {
-                    self.files.len() - 1
-                } else {
-                    current - 1
-                };
-                self.file_list_state.select(Some(prev));
+            Panel::FileTree => {
+                let files_len = self.current_files().len();
+                if files_len > 0 {
+                    let current = self.file_list_state.selected().unwrap_or(0);
+                    let prev = if current == 0 {
+                        files_len - 1
+                    } else {
+                        current - 1
+                    };
+                    self.file_list_state.select(Some(prev));
+                }
             }
             _ => {}
         }
@@ -281,6 +321,18 @@ mod tests {
         ]
     }
 
+    fn create_test_files_map(commits: &[CommitInfo]) -> HashMap<String, Vec<DiffFile>> {
+        let mut files_map = HashMap::new();
+        for commit in commits {
+            files_map.insert(commit.sha.clone(), create_test_files());
+        }
+        files_map
+    }
+
+    fn create_empty_files_map() -> HashMap<String, Vec<DiffFile>> {
+        HashMap::new()
+    }
+
     #[test]
     fn test_new_with_empty_commits() {
         let app = App::new(
@@ -288,7 +340,7 @@ mod tests {
             "owner/repo".to_string(),
             "Test PR".to_string(),
             vec![],
-            vec![],
+            create_empty_files_map(),
         );
         assert!(!app.should_quit);
         assert_eq!(app.focused_panel, Panel::CommitList);
@@ -297,7 +349,7 @@ mod tests {
         assert_eq!(app.pr_title, "Test PR");
         assert!(app.commits.is_empty());
         assert_eq!(app.commit_list_state.selected(), None);
-        assert!(app.files.is_empty());
+        assert!(app.files_map.is_empty());
         assert_eq!(app.file_list_state.selected(), None);
     }
 
@@ -309,7 +361,7 @@ mod tests {
             "owner/repo".to_string(),
             "Test PR".to_string(),
             commits,
-            vec![],
+            create_empty_files_map(),
         );
         assert_eq!(app.commits.len(), 2);
         assert_eq!(app.commit_list_state.selected(), Some(0));
@@ -317,15 +369,16 @@ mod tests {
 
     #[test]
     fn test_new_with_files() {
-        let files = create_test_files();
+        let commits = create_test_commits();
+        let files_map = create_test_files_map(&commits);
         let app = App::new(
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
-            vec![],
-            files,
+            commits,
+            files_map,
         );
-        assert_eq!(app.files.len(), 2);
+        assert_eq!(app.files_map.len(), 2);
         assert_eq!(app.file_list_state.selected(), Some(0));
     }
 
@@ -336,7 +389,7 @@ mod tests {
             "owner/repo".to_string(),
             "Test PR".to_string(),
             vec![],
-            vec![],
+            create_empty_files_map(),
         );
         app.next_panel();
         assert_eq!(app.focused_panel, Panel::FileTree);
@@ -353,7 +406,7 @@ mod tests {
             "owner/repo".to_string(),
             "Test PR".to_string(),
             vec![],
-            vec![],
+            create_empty_files_map(),
         );
         app.prev_panel();
         assert_eq!(app.focused_panel, Panel::DiffView);
@@ -371,7 +424,7 @@ mod tests {
             "owner/repo".to_string(),
             "Test PR".to_string(),
             commits,
-            vec![],
+            create_empty_files_map(),
         );
         assert_eq!(app.commit_list_state.selected(), Some(0));
         app.select_next();
@@ -388,7 +441,7 @@ mod tests {
             "owner/repo".to_string(),
             "Test PR".to_string(),
             commits,
-            vec![],
+            create_empty_files_map(),
         );
         assert_eq!(app.commit_list_state.selected(), Some(0));
         app.select_prev();
@@ -399,13 +452,14 @@ mod tests {
 
     #[test]
     fn test_select_next_files() {
-        let files = create_test_files();
+        let commits = create_test_commits();
+        let files_map = create_test_files_map(&commits);
         let mut app = App::new(
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
-            vec![],
-            files,
+            commits,
+            files_map,
         );
         app.focused_panel = Panel::FileTree;
         assert_eq!(app.file_list_state.selected(), Some(0));
@@ -417,13 +471,14 @@ mod tests {
 
     #[test]
     fn test_select_prev_files() {
-        let files = create_test_files();
+        let commits = create_test_commits();
+        let files_map = create_test_files_map(&commits);
         let mut app = App::new(
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
-            vec![],
-            files,
+            commits,
+            files_map,
         );
         app.focused_panel = Panel::FileTree;
         assert_eq!(app.file_list_state.selected(), Some(0));
@@ -436,18 +491,19 @@ mod tests {
     #[test]
     fn test_select_only_works_in_current_panel() {
         let commits = create_test_commits();
-        let files = create_test_files();
+        let files_map = create_test_files_map(&commits);
         let mut app = App::new(
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
             commits,
-            files,
+            files_map,
         );
         // Initial state: CommitList panel
+        // コミット選択変更時にファイル選択がリセットされることを確認
         app.select_next();
         assert_eq!(app.commit_list_state.selected(), Some(1));
-        assert_eq!(app.file_list_state.selected(), Some(0)); // files unchanged
+        assert_eq!(app.file_list_state.selected(), Some(0)); // reset to first file
 
         // Move to FileTree panel
         app.next_panel();
@@ -465,7 +521,7 @@ mod tests {
             "owner/repo".to_string(),
             "Test PR".to_string(),
             commits,
-            vec![],
+            create_empty_files_map(),
         );
 
         // Verify the commit list state is properly initialized
@@ -473,5 +529,105 @@ mod tests {
         assert_eq!(app.commits.len(), 2);
         assert_eq!(app.commits[0].short_sha(), "abc1234");
         assert_eq!(app.commits[0].message_summary(), "First commit");
+    }
+
+    #[test]
+    fn test_current_files_returns_correct_files() {
+        let commits = create_test_commits();
+        let mut files_map = HashMap::new();
+        files_map.insert(
+            "abc1234567890".to_string(),
+            vec![DiffFile {
+                filename: "file1.rs".to_string(),
+                status: "added".to_string(),
+                additions: 10,
+                deletions: 0,
+                patch: None,
+            }],
+        );
+        files_map.insert(
+            "def4567890123".to_string(),
+            vec![DiffFile {
+                filename: "file2.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 5,
+                deletions: 3,
+                patch: None,
+            }],
+        );
+
+        let app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            commits,
+            files_map,
+        );
+
+        // 最初のコミットのファイルが返される
+        let files = app.current_files();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].filename, "file1.rs");
+    }
+
+    #[test]
+    fn test_commit_change_resets_file_selection() {
+        let commits = create_test_commits();
+        let mut files_map = HashMap::new();
+        files_map.insert(
+            "abc1234567890".to_string(),
+            vec![
+                DiffFile {
+                    filename: "file1.rs".to_string(),
+                    status: "added".to_string(),
+                    additions: 10,
+                    deletions: 0,
+                    patch: None,
+                },
+                DiffFile {
+                    filename: "file2.rs".to_string(),
+                    status: "added".to_string(),
+                    additions: 5,
+                    deletions: 0,
+                    patch: None,
+                },
+            ],
+        );
+        files_map.insert(
+            "def4567890123".to_string(),
+            vec![DiffFile {
+                filename: "file3.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 5,
+                deletions: 3,
+                patch: None,
+            }],
+        );
+
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            commits,
+            files_map,
+        );
+
+        // ファイル一覧に移動して2番目のファイルを選択
+        app.next_panel();
+        app.select_next();
+        assert_eq!(app.file_list_state.selected(), Some(1));
+
+        // コミット一覧に戻ってコミットを変更
+        app.prev_panel();
+        app.select_next();
+        assert_eq!(app.commit_list_state.selected(), Some(1));
+
+        // ファイル選択がリセットされていることを確認
+        assert_eq!(app.file_list_state.selected(), Some(0));
+
+        // 新しいコミットのファイルが取得できることを確認
+        let files = app.current_files();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].filename, "file3.rs");
     }
 }

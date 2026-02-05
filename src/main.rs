@@ -4,6 +4,7 @@ mod github;
 use app::App;
 use clap::Parser;
 use color_eyre::Result;
+use std::collections::HashMap;
 
 #[derive(Parser)]
 #[command(name = "prism")]
@@ -74,12 +75,12 @@ async fn main() -> Result<()> {
     // コミット一覧を取得
     let commits = github::commits::fetch_commits(&client, &owner, &repo, cli.pr_number).await?;
 
-    // 最初のコミットのファイル一覧を取得
-    let files = if !commits.is_empty() {
-        github::files::fetch_commit_files(&client, &owner, &repo, &commits[0].sha).await?
-    } else {
-        vec![]
-    };
+    // 全コミットのファイルを事前取得
+    let mut files_map: HashMap<String, Vec<github::files::DiffFile>> = HashMap::new();
+    for commit in &commits {
+        let files = github::files::fetch_commit_files(&client, &owner, &repo, &commit.sha).await?;
+        files_map.insert(commit.sha.clone(), files);
+    }
 
     let terminal = ratatui::init();
     let result = App::new(
@@ -87,7 +88,7 @@ async fn main() -> Result<()> {
         format!("{}/{}", owner, repo),
         pr_title,
         commits,
-        files,
+        files_map,
     )
     .run(terminal);
     ratatui::restore();
