@@ -71,8 +71,17 @@ async fn main() -> Result<()> {
     // PRタイトルを取得（Option<String>なのでunwrap_or_default）
     let pr_title = pr.title.unwrap_or_default();
 
+    // コミット一覧を取得
+    let commits = github::commits::fetch_commits(&client, &owner, &repo, cli.pr_number).await?;
+
     let terminal = ratatui::init();
-    let result = App::new(cli.pr_number, format!("{}/{}", owner, repo), pr_title).run(terminal);
+    let result = App::new(
+        cli.pr_number,
+        format!("{}/{}", owner, repo),
+        pr_title,
+        commits,
+    )
+    .run(terminal);
     ratatui::restore();
     result
 }
