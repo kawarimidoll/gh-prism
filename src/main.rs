@@ -1,4 +1,5 @@
 mod app;
+mod github;
 
 use app::App;
 use clap::Parser;
@@ -16,7 +17,8 @@ struct Cli {
     repo: Option<String>,
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     color_eyre::install()?;
     let cli = Cli::parse();
     let terminal = ratatui::init();
