@@ -6,6 +6,7 @@ use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
+    text::Line,
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 use std::collections::HashMap;
@@ -85,6 +86,17 @@ impl App {
         } else {
             self.file_list_state.select(None);
         }
+    }
+
+    /// 現在選択中のファイルの patch を取得
+    fn current_patch(&self) -> Option<&str> {
+        let files = self.current_files();
+        if let Some(idx) = self.file_list_state.selected() {
+            if let Some(file) = files.get(idx) {
+                return file.patch.as_deref();
+            }
+        }
+        None
     }
 
     pub fn run(&mut self, mut terminal: DefaultTerminal) -> Result<()> {
@@ -190,11 +202,30 @@ impl App {
         } else {
             Style::default()
         };
+
         let block = Block::default()
             .title(" Diff ")
             .borders(Borders::ALL)
             .border_style(style);
-        let paragraph = Paragraph::new("diff view").block(block);
+
+        // 選択中ファイルの patch を取得
+        let content = self.current_patch().unwrap_or("");
+
+        // 各行を色分けして Line に変換
+        let lines: Vec<Line> = content
+            .lines()
+            .map(|line| {
+                let style = match line.chars().next() {
+                    Some('+') => Style::default().fg(Color::Green),
+                    Some('-') => Style::default().fg(Color::Red),
+                    Some('@') => Style::default().fg(Color::Cyan),
+                    _ => Style::default(),
+                };
+                Line::styled(line, style)
+            })
+            .collect();
+
+        let paragraph = Paragraph::new(lines).block(block);
         frame.render_widget(paragraph, area);
     }
 
