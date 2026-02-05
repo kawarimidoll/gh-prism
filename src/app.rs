@@ -19,16 +19,18 @@ pub struct App {
     should_quit: bool,
     focused_panel: Panel,
     pr_number: u64,
-    repo: Option<String>,
+    repo: String,
+    pr_title: String,
 }
 
 impl App {
-    pub fn new(pr_number: u64, repo: Option<String>) -> Self {
+    pub fn new(pr_number: u64, repo: String, pr_title: String) -> Self {
         Self {
             should_quit: false,
             focused_panel: Panel::CommitList,
             pr_number,
             repo,
+            pr_title,
         }
     }
 
@@ -119,10 +121,10 @@ impl Widget for &App {
             .constraints([Constraint::Length(1), Constraint::Min(0)])
             .split(area);
 
-        let repo_display = self.repo.as_deref().unwrap_or("(detecting...)");
-        let pr_number = self.pr_number;
-        let header_text =
-            format!(" prism - {repo_display} PR #{pr_number} | Tab: switch | q: quit");
+        let header_text = format!(
+            " prism - {} PR #{}: {} | Tab: switch | q: quit",
+            self.repo, self.pr_number, self.pr_title
+        );
 
         Paragraph::new(header_text)
             .style(Style::default().bg(Color::Blue).fg(Color::White))
@@ -150,14 +152,17 @@ mod tests {
 
     #[test]
     fn test_new() {
-        let app = App::new(1, None);
+        let app = App::new(1, "owner/repo".to_string(), "Test PR".to_string());
         assert!(!app.should_quit);
         assert_eq!(app.focused_panel, Panel::CommitList);
+        assert_eq!(app.pr_number, 1);
+        assert_eq!(app.repo, "owner/repo");
+        assert_eq!(app.pr_title, "Test PR");
     }
 
     #[test]
     fn test_next_panel() {
-        let mut app = App::new(1, None);
+        let mut app = App::new(1, "owner/repo".to_string(), "Test PR".to_string());
         app.next_panel();
         assert_eq!(app.focused_panel, Panel::FileTree);
         app.next_panel();
@@ -168,7 +173,7 @@ mod tests {
 
     #[test]
     fn test_prev_panel() {
-        let mut app = App::new(1, None);
+        let mut app = App::new(1, "owner/repo".to_string(), "Test PR".to_string());
         app.prev_panel();
         assert_eq!(app.focused_panel, Panel::DiffView);
         app.prev_panel();
@@ -179,7 +184,7 @@ mod tests {
 
     #[test]
     fn test_render_has_header() {
-        let app = App::new(1, None);
+        let app = App::new(1, "owner/repo".to_string(), "Test PR".to_string());
         let area = Rect::new(0, 0, 80, 24);
         let mut buf = Buffer::empty(area);
         (&app).render(area, &mut buf);
@@ -188,5 +193,7 @@ mod tests {
             .map(|x| buf[(x, 0)].symbol().to_string())
             .collect();
         assert!(header_text.contains("prism"));
+        assert!(header_text.contains("owner/repo"));
+        assert!(header_text.contains("Test PR"));
     }
 }
