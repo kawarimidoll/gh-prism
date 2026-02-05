@@ -1,7 +1,7 @@
 use crate::github::commits::CommitInfo;
 use crate::github::files::DiffFile;
 use color_eyre::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -28,6 +28,7 @@ pub struct App {
     commit_list_state: ListState,
     files_map: HashMap<String, Vec<DiffFile>>,
     file_list_state: ListState,
+    diff_scroll: u16,
 }
 
 impl App {
@@ -63,6 +64,7 @@ impl App {
             commit_list_state,
             files_map,
             file_list_state,
+            diff_scroll: 0,
         }
     }
 
@@ -86,6 +88,7 @@ impl App {
         } else {
             self.file_list_state.select(None);
         }
+        self.diff_scroll = 0;
     }
 
     /// 現在選択中のファイルの patch を取得
@@ -116,7 +119,7 @@ impl App {
             .split(area);
 
         let header_text = format!(
-            " prism - {} PR #{}: {} | Tab: switch | j/k: select | q: quit",
+            " prism - {} PR #{}: {} | Tab: switch | j/k: select | Ctrl+d/u: scroll | g/G: top/end | q: quit",
             self.repo, self.pr_number, self.pr_title
         );
 
@@ -225,7 +228,9 @@ impl App {
             })
             .collect();
 
-        let paragraph = Paragraph::new(lines).block(block);
+        let paragraph = Paragraph::new(lines)
+            .block(block)
+            .scroll((self.diff_scroll, 0));
         frame.render_widget(paragraph, area);
     }
 
@@ -238,6 +243,22 @@ impl App {
                     KeyCode::BackTab => self.prev_panel(),
                     KeyCode::Char('j') => self.select_next(),
                     KeyCode::Char('k') => self.select_prev(),
+                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.scroll_diff_down();
+                    }
+                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.scroll_diff_up();
+                    }
+                    KeyCode::Char('g') => {
+                        if self.focused_panel == Panel::DiffView {
+                            self.diff_scroll = 0;
+                        }
+                    }
+                    KeyCode::Char('G') => {
+                        if self.focused_panel == Panel::DiffView {
+                            self.scroll_diff_to_end();
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -260,7 +281,11 @@ impl App {
                     let current = self.file_list_state.selected().unwrap_or(0);
                     let next = (current + 1) % files_len;
                     self.file_list_state.select(Some(next));
+                    self.diff_scroll = 0;
                 }
+            }
+            Panel::DiffView => {
+                self.diff_scroll = self.diff_scroll.saturating_add(1);
             }
             _ => {}
         }
@@ -289,9 +314,34 @@ impl App {
                         current - 1
                     };
                     self.file_list_state.select(Some(prev));
+                    self.diff_scroll = 0;
                 }
             }
+            Panel::DiffView => {
+                self.diff_scroll = self.diff_scroll.saturating_sub(1);
+            }
             _ => {}
+        }
+    }
+
+    fn scroll_diff_down(&mut self) {
+        if self.focused_panel == Panel::DiffView {
+            // 半ページ分（10行）スクロール
+            self.diff_scroll = self.diff_scroll.saturating_add(10);
+        }
+    }
+
+    fn scroll_diff_up(&mut self) {
+        if self.focused_panel == Panel::DiffView {
+            self.diff_scroll = self.diff_scroll.saturating_sub(10);
+        }
+    }
+
+    fn scroll_diff_to_end(&mut self) {
+        if let Some(patch) = self.current_patch() {
+            let line_count = patch.lines().count() as u16;
+            // 画面に収まる分を引く（おおよそ10行）
+            self.diff_scroll = line_count.saturating_sub(10);
         }
     }
 
@@ -660,5 +710,144 @@ mod tests {
         let files = app.current_files();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].filename, "file3.rs");
+    }
+
+    #[test]
+    fn test_diff_scroll_initial() {
+        let commits = create_test_commits();
+        let app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            commits,
+            create_empty_files_map(),
+        );
+        assert_eq!(app.diff_scroll, 0);
+    }
+
+    #[test]
+    fn test_scroll_diff_down() {
+        let commits = create_test_commits();
+        let files_map = create_test_files_map(&commits);
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            commits,
+            files_map,
+        );
+        app.focused_panel = Panel::DiffView;
+        assert_eq!(app.diff_scroll, 0);
+
+        app.scroll_diff_down();
+        assert_eq!(app.diff_scroll, 10);
+
+        app.scroll_diff_down();
+        assert_eq!(app.diff_scroll, 20);
+    }
+
+    #[test]
+    fn test_scroll_diff_up() {
+        let commits = create_test_commits();
+        let files_map = create_test_files_map(&commits);
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            commits,
+            files_map,
+        );
+        app.focused_panel = Panel::DiffView;
+        app.diff_scroll = 20;
+
+        app.scroll_diff_up();
+        assert_eq!(app.diff_scroll, 10);
+
+        app.scroll_diff_up();
+        assert_eq!(app.diff_scroll, 0);
+
+        // Should not go below 0
+        app.scroll_diff_up();
+        assert_eq!(app.diff_scroll, 0);
+    }
+
+    #[test]
+    fn test_scroll_only_works_in_diff_panel() {
+        let commits = create_test_commits();
+        let files_map = create_test_files_map(&commits);
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            commits,
+            files_map,
+        );
+        // CommitList panel (default)
+        app.scroll_diff_down();
+        assert_eq!(app.diff_scroll, 0);
+
+        app.next_panel(); // FileTree
+        app.scroll_diff_down();
+        assert_eq!(app.diff_scroll, 0);
+
+        app.next_panel(); // DiffView
+        app.scroll_diff_down();
+        assert_eq!(app.diff_scroll, 10);
+    }
+
+    #[test]
+    fn test_scroll_diff_to_end() {
+        let commits = create_test_commits();
+        let mut files_map = HashMap::new();
+        // Create a file with a patch containing 25 lines
+        let patch = (0..25)
+            .map(|i| format!("line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        files_map.insert(
+            "abc1234567890".to_string(),
+            vec![DiffFile {
+                filename: "file1.rs".to_string(),
+                status: "added".to_string(),
+                additions: 25,
+                deletions: 0,
+                patch: Some(patch),
+            }],
+        );
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            commits,
+            files_map,
+        );
+        app.focused_panel = Panel::DiffView;
+
+        app.scroll_diff_to_end();
+        // 25 lines - 10 (visible) = 15
+        assert_eq!(app.diff_scroll, 15);
+    }
+
+    #[test]
+    fn test_file_change_resets_scroll() {
+        let commits = create_test_commits();
+        let files_map = create_test_files_map(&commits);
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            commits,
+            files_map,
+        );
+        app.focused_panel = Panel::DiffView;
+        app.diff_scroll = 50;
+
+        // Change to FileTree and select next file
+        app.prev_panel();
+        assert_eq!(app.focused_panel, Panel::FileTree);
+        app.select_next();
+
+        // Scroll should be reset
+        assert_eq!(app.diff_scroll, 0);
     }
 }
