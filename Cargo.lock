@@ -836,6 +836,7 @@ dependencies = [
  "crossterm 0.29.0",
  "octocrab",
  "ratatui",
+ "serde",
  "tokio",
 ]
 
