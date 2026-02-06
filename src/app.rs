@@ -1,3 +1,4 @@
+use crate::git::diff::highlight_diff;
 use crate::github::commits::CommitInfo;
 use crate::github::files::DiffFile;
 use color_eyre::Result;
@@ -91,13 +92,11 @@ impl App {
         self.diff_scroll = 0;
     }
 
-    /// 現在選択中のファイルの patch を取得
-    fn current_patch(&self) -> Option<&str> {
+    /// 現在選択中のファイルを取得
+    fn current_file(&self) -> Option<&DiffFile> {
         let files = self.current_files();
         if let Some(idx) = self.file_list_state.selected() {
-            if let Some(file) = files.get(idx) {
-                return file.patch.as_deref();
-            }
+            return files.get(idx);
         }
         None
     }
@@ -211,27 +210,38 @@ impl App {
             .borders(Borders::ALL)
             .border_style(style);
 
-        // 選択中ファイルの patch を取得
-        let content = self.current_patch().unwrap_or("");
+        // 選択中ファイルを取得
+        let file = self.current_file();
+        let patch = file.and_then(|f| f.patch.as_deref()).unwrap_or("");
+        let filename = file.map(|f| f.filename.as_str()).unwrap_or("");
 
-        // 各行を色分けして Line に変換
-        let lines: Vec<Line> = content
-            .lines()
-            .map(|line| {
-                let style = match line.chars().next() {
-                    Some('+') => Style::default().fg(Color::Green),
-                    Some('-') => Style::default().fg(Color::Red),
-                    Some('@') => Style::default().fg(Color::Cyan),
-                    _ => Style::default(),
-                };
-                Line::styled(line, style)
-            })
-            .collect();
+        // delta でハイライトを試みる（ファイル名を渡して言語検出を有効化）
+        if let Some(highlighted_text) = highlight_diff(patch, filename) {
+            // delta 成功: ハイライト済みテキストを表示
+            let paragraph = Paragraph::new(highlighted_text)
+                .block(block)
+                .scroll((self.diff_scroll, 0));
+            frame.render_widget(paragraph, area);
+        } else {
+            // delta 失敗 or 未インストール: 従来の色分け（Milestone 8）
+            let lines: Vec<Line> = patch
+                .lines()
+                .map(|line| {
+                    let style = match line.chars().next() {
+                        Some('+') => Style::default().fg(Color::Green),
+                        Some('-') => Style::default().fg(Color::Red),
+                        Some('@') => Style::default().fg(Color::Cyan),
+                        _ => Style::default(),
+                    };
+                    Line::styled(line, style)
+                })
+                .collect();
 
-        let paragraph = Paragraph::new(lines)
-            .block(block)
-            .scroll((self.diff_scroll, 0));
-        frame.render_widget(paragraph, area);
+            let paragraph = Paragraph::new(lines)
+                .block(block)
+                .scroll((self.diff_scroll, 0));
+            frame.render_widget(paragraph, area);
+        }
     }
 
     fn handle_events(&mut self) -> Result<()> {
@@ -338,10 +348,12 @@ impl App {
     }
 
     fn scroll_diff_to_end(&mut self) {
-        if let Some(patch) = self.current_patch() {
-            let line_count = patch.lines().count() as u16;
-            // 画面に収まる分を引く（おおよそ10行）
-            self.diff_scroll = line_count.saturating_sub(10);
+        if let Some(file) = self.current_file() {
+            if let Some(patch) = &file.patch {
+                let line_count = patch.lines().count() as u16;
+                // 画面に収まる分を引く（おおよそ10行）
+                self.diff_scroll = line_count.saturating_sub(10);
+            }
         }
     }
 

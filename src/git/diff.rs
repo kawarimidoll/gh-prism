@@ -36,14 +36,23 @@ pub fn ansi_to_text(ansi_str: &str) -> Result<Text<'static>> {
     Ok(text)
 }
 
+/// diff ヘッダーを生成（delta が言語検出に使用）
+fn create_diff_header(filename: &str) -> String {
+    format!("diff --git a/{filename} b/{filename}\n--- a/{filename}\n+++ b/{filename}\n")
+}
+
 /// diff をハイライト付きで Text に変換
 /// delta が利用可能なら使用、なければ None を返す
-pub fn highlight_diff(diff: &str) -> Option<Text<'static>> {
+/// filename を渡すことで delta が言語を検出できる
+pub fn highlight_diff(diff: &str, filename: &str) -> Option<Text<'static>> {
     if !has_delta() {
         return None;
     }
 
-    highlight_with_delta(diff)
+    // diff ヘッダーを追加してシンタックスハイライトを有効化
+    let full_diff = format!("{}{}", create_diff_header(filename), diff);
+
+    highlight_with_delta(&full_diff)
         .ok()
         .and_then(|highlighted| ansi_to_text(&highlighted).ok())
 }
