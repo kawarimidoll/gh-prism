@@ -19,9 +19,42 @@ pub enum Panel {
     DiffView,
 }
 
+/// アプリケーションのモード
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum AppMode {
+    #[default]
+    Normal,
+    LineSelect,
+}
+
+/// 行選択の状態（アンカー位置を保持）
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LineSelection {
+    /// 選択開始位置（v を押した時のカーソル位置）
+    pub anchor: usize,
+}
+
+impl LineSelection {
+    /// 選択範囲を取得（常に start <= end）
+    pub fn range(&self, cursor: usize) -> (usize, usize) {
+        if self.anchor <= cursor {
+            (self.anchor, cursor)
+        } else {
+            (cursor, self.anchor)
+        }
+    }
+
+    /// 選択行数を取得
+    pub fn count(&self, cursor: usize) -> usize {
+        let (start, end) = self.range(cursor);
+        end - start + 1
+    }
+}
+
 pub struct App {
     should_quit: bool,
     focused_panel: Panel,
+    mode: AppMode,
     pr_number: u64,
     repo: String,
     pr_title: String,
@@ -30,6 +63,12 @@ pub struct App {
     files_map: HashMap<String, Vec<DiffFile>>,
     file_list_state: ListState,
     diff_scroll: u16,
+    /// Diff ビュー内のカーソル行（0-indexed）
+    cursor_line: usize,
+    /// Diff ビューの表示可能行数（render 時に更新）
+    diff_view_height: u16,
+    /// 行選択モードでの選択状態
+    line_selection: Option<LineSelection>,
 }
 
 impl App {
@@ -58,6 +97,7 @@ impl App {
         Self {
             should_quit: false,
             focused_panel: Panel::CommitList,
+            mode: AppMode::default(),
             pr_number,
             repo,
             pr_title,
@@ -66,6 +106,9 @@ impl App {
             files_map,
             file_list_state,
             diff_scroll: 0,
+            cursor_line: 0,
+            diff_view_height: 20, // 初期値、render で更新される
+            line_selection: None,
         }
     }
 
@@ -89,6 +132,7 @@ impl App {
         } else {
             self.file_list_state.select(None);
         }
+        self.cursor_line = 0;
         self.diff_scroll = 0;
     }
 
@@ -117,13 +161,23 @@ impl App {
             .constraints([Constraint::Length(1), Constraint::Min(0)])
             .split(area);
 
+        let mode_indicator = match self.mode {
+            AppMode::Normal => "",
+            AppMode::LineSelect => " [LINE SELECT] ",
+        };
+
         let header_text = format!(
-            " prism - {} PR #{}: {} | Tab: switch | j/k: select | Ctrl+d/u: scroll | g/G: top/end | q: quit",
-            self.repo, self.pr_number, self.pr_title
+            " prism - {} PR #{}: {}{} | q: quit",
+            self.repo, self.pr_number, self.pr_title, mode_indicator
         );
 
+        let header_style = match self.mode {
+            AppMode::Normal => Style::default().bg(Color::Blue).fg(Color::White),
+            AppMode::LineSelect => Style::default().bg(Color::Magenta).fg(Color::White),
+        };
+
         frame.render_widget(
-            Paragraph::new(header_text).style(Style::default().bg(Color::Blue).fg(Color::White)),
+            Paragraph::new(header_text).style(header_style),
             main_layout[0],
         );
 
@@ -137,10 +191,14 @@ impl App {
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(body_layout[0]);
 
+        // DiffView の表示可能行数を更新（ボーダー分を引く）
+        let diff_area = body_layout[1];
+        self.diff_view_height = diff_area.height.saturating_sub(2);
+
         // コミットリストをStatefulWidgetとして描画
         self.render_commit_list_stateful(frame, sidebar_layout[0]);
         self.render_file_tree(frame, sidebar_layout[1]);
-        self.render_diff_view_widget(frame, body_layout[1]);
+        self.render_diff_view_widget(frame, diff_area);
     }
 
     fn render_commit_list_stateful(&mut self, frame: &mut Frame, area: Rect) {
@@ -199,24 +257,77 @@ impl App {
     }
 
     fn render_diff_view_widget(&self, frame: &mut Frame, area: Rect) {
-        let style = if self.focused_panel == Panel::DiffView {
+        let border_style = if self.focused_panel == Panel::DiffView {
             Style::default().fg(Color::Yellow)
         } else {
             Style::default()
         };
 
+        let title = match (&self.mode, &self.line_selection) {
+            (AppMode::LineSelect, Some(selection)) => {
+                let count = selection.count(self.cursor_line);
+                format!(
+                    " Diff - {} line{} selected ",
+                    count,
+                    if count == 1 { "" } else { "s" }
+                )
+            }
+            _ => " Diff ".to_string(),
+        };
+
         let block = Block::default()
-            .title(" Diff ")
+            .title(title)
             .borders(Borders::ALL)
-            .border_style(style);
+            .border_style(border_style);
 
         // 選択中ファイルを取得
         let file = self.current_file();
         let patch = file.and_then(|f| f.patch.as_deref()).unwrap_or("");
         let filename = file.map(|f| f.filename.as_str()).unwrap_or("");
 
-        // delta でハイライトを試みる（ファイル名を渡して言語検出を有効化）
-        if let Some(highlighted_text) = highlight_diff(patch, filename) {
+        // DiffView がフォーカスされているか、行選択モードの場合はカーソル/選択を表示
+        let show_cursor = self.focused_panel == Panel::DiffView;
+
+        if show_cursor || self.mode == AppMode::LineSelect {
+            // カーソル行・選択範囲のハイライトを適用
+            let lines: Vec<Line> = patch
+                .lines()
+                .enumerate()
+                .map(|(idx, line)| {
+                    let base_style = match line.chars().next() {
+                        Some('+') => Style::default().fg(Color::Green),
+                        Some('-') => Style::default().fg(Color::Red),
+                        Some('@') => Style::default().fg(Color::Cyan),
+                        _ => Style::default(),
+                    };
+
+                    let style = if self.mode == AppMode::LineSelect {
+                        // 行選択モード: 選択範囲をハイライト
+                        let is_selected = self.line_selection.map_or(false, |sel| {
+                            let (start, end) = sel.range(self.cursor_line);
+                            idx >= start && idx <= end
+                        });
+                        if is_selected {
+                            base_style.bg(Color::DarkGray)
+                        } else {
+                            base_style
+                        }
+                    } else if show_cursor && idx == self.cursor_line {
+                        // Normal モード: カーソル行をハイライト
+                        base_style.bg(Color::DarkGray)
+                    } else {
+                        base_style
+                    };
+
+                    Line::styled(line, style)
+                })
+                .collect();
+
+            let paragraph = Paragraph::new(lines)
+                .block(block)
+                .scroll((self.diff_scroll, 0));
+            frame.render_widget(paragraph, area);
+        } else if let Some(highlighted_text) = highlight_diff(patch, filename) {
             // delta 成功: ハイライト済みテキストを表示
             let paragraph = Paragraph::new(highlighted_text)
                 .block(block)
@@ -247,33 +358,87 @@ impl App {
     fn handle_events(&mut self) -> Result<()> {
         if let Event::Key(key) = event::read()? {
             if key.kind == KeyEventKind::Press {
-                match key.code {
-                    KeyCode::Char('q') => self.should_quit = true,
-                    KeyCode::Tab => self.next_panel(),
-                    KeyCode::BackTab => self.prev_panel(),
-                    KeyCode::Char('j') => self.select_next(),
-                    KeyCode::Char('k') => self.select_prev(),
-                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        self.scroll_diff_down();
-                    }
-                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        self.scroll_diff_up();
-                    }
-                    KeyCode::Char('g') => {
-                        if self.focused_panel == Panel::DiffView {
-                            self.diff_scroll = 0;
-                        }
-                    }
-                    KeyCode::Char('G') => {
-                        if self.focused_panel == Panel::DiffView {
-                            self.scroll_diff_to_end();
-                        }
-                    }
-                    _ => {}
+                match self.mode {
+                    AppMode::Normal => self.handle_normal_mode(key.code, key.modifiers),
+                    AppMode::LineSelect => self.handle_line_select_mode(key.code),
                 }
             }
         }
         Ok(())
+    }
+
+    fn handle_normal_mode(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        match code {
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Tab => self.next_panel(),
+            KeyCode::BackTab => self.prev_panel(),
+            KeyCode::Char('j') => self.select_next(),
+            KeyCode::Char('k') => self.select_prev(),
+            KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.scroll_diff_down();
+            }
+            KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.scroll_diff_up();
+            }
+            KeyCode::Char('g') => {
+                if self.focused_panel == Panel::DiffView {
+                    self.diff_scroll = 0;
+                }
+            }
+            KeyCode::Char('G') => {
+                if self.focused_panel == Panel::DiffView {
+                    self.scroll_diff_to_end();
+                }
+            }
+            KeyCode::Char('v') => {
+                // DiffView パネルでのみ行選択モードに入る
+                if self.focused_panel == Panel::DiffView {
+                    self.enter_line_select_mode();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_line_select_mode(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => self.exit_line_select_mode(),
+            KeyCode::Char('j') => self.extend_selection_down(),
+            KeyCode::Char('k') => self.extend_selection_up(),
+            _ => {}
+        }
+    }
+
+    /// 行選択モードに入る
+    fn enter_line_select_mode(&mut self) {
+        // 現在のカーソル行をアンカーとして選択開始
+        self.line_selection = Some(LineSelection {
+            anchor: self.cursor_line,
+        });
+        self.mode = AppMode::LineSelect;
+    }
+
+    /// 行選択モードを終了
+    fn exit_line_select_mode(&mut self) {
+        self.line_selection = None;
+        self.mode = AppMode::Normal;
+    }
+
+    /// 選択範囲を下に拡張（カーソルを下に移動）
+    fn extend_selection_down(&mut self) {
+        let line_count = self.current_diff_line_count();
+        if self.cursor_line + 1 < line_count {
+            self.cursor_line += 1;
+            self.ensure_cursor_visible();
+        }
+    }
+
+    /// 選択範囲を上に拡張（カーソルを上に移動）
+    fn extend_selection_up(&mut self) {
+        if self.cursor_line > 0 {
+            self.cursor_line -= 1;
+            self.ensure_cursor_visible();
+        }
     }
 
     fn select_next(&mut self) {
@@ -291,11 +456,11 @@ impl App {
                     let current = self.file_list_state.selected().unwrap_or(0);
                     let next = (current + 1) % files_len;
                     self.file_list_state.select(Some(next));
-                    self.diff_scroll = 0;
+                    self.reset_cursor();
                 }
             }
             Panel::DiffView => {
-                self.diff_scroll = self.diff_scroll.saturating_add(1);
+                self.move_cursor_down();
             }
             _ => {}
         }
@@ -324,14 +489,62 @@ impl App {
                         current - 1
                     };
                     self.file_list_state.select(Some(prev));
-                    self.diff_scroll = 0;
+                    self.reset_cursor();
                 }
             }
             Panel::DiffView => {
-                self.diff_scroll = self.diff_scroll.saturating_sub(1);
+                self.move_cursor_up();
             }
             _ => {}
         }
+    }
+
+    /// カーソルをリセット
+    fn reset_cursor(&mut self) {
+        self.cursor_line = 0;
+        self.diff_scroll = 0;
+    }
+
+    /// カーソルを下に移動
+    fn move_cursor_down(&mut self) {
+        let line_count = self.current_diff_line_count();
+        if self.cursor_line + 1 < line_count {
+            self.cursor_line += 1;
+            self.ensure_cursor_visible();
+        }
+    }
+
+    /// カーソルを上に移動
+    fn move_cursor_up(&mut self) {
+        if self.cursor_line > 0 {
+            self.cursor_line -= 1;
+            self.ensure_cursor_visible();
+        }
+    }
+
+    /// カーソルが画面内に収まるようスクロールを調整
+    fn ensure_cursor_visible(&mut self) {
+        let visible_lines = self.diff_view_height as usize;
+        if visible_lines == 0 {
+            return;
+        }
+
+        let scroll = self.diff_scroll as usize;
+        if self.cursor_line < scroll {
+            // カーソルが画面より上にある → スクロールをカーソル位置に合わせる
+            self.diff_scroll = self.cursor_line as u16;
+        } else if self.cursor_line >= scroll + visible_lines {
+            // カーソルが画面より下にある → スクロールをカーソルが下端になるよう調整
+            self.diff_scroll = (self.cursor_line - visible_lines + 1) as u16;
+        }
+    }
+
+    /// 現在の diff の行数を取得
+    fn current_diff_line_count(&self) -> usize {
+        self.current_file()
+            .and_then(|f| f.patch.as_ref())
+            .map(|p| p.lines().count())
+            .unwrap_or(0)
     }
 
     fn scroll_diff_down(&mut self) {
