@@ -5,12 +5,13 @@ use color_eyre::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     DefaultTerminal, Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Position, Rect},
     style::{Color, Style},
     text::Line,
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 use std::collections::HashMap;
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Panel {
@@ -25,6 +26,7 @@ pub enum AppMode {
     #[default]
     Normal,
     LineSelect,
+    CommentInput,
 }
 
 /// 行選択の状態（アンカー位置を保持）
@@ -51,6 +53,16 @@ impl LineSelection {
     }
 }
 
+/// 保留中のレビューコメント（M12 で GitHub API 送信に使用）
+#[allow(dead_code)]
+pub struct PendingComment {
+    pub file_path: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub body: String,
+    pub commit_sha: String,
+}
+
 pub struct App {
     should_quit: bool,
     focused_panel: Panel,
@@ -69,6 +81,10 @@ pub struct App {
     diff_view_height: u16,
     /// 行選択モードでの選択状態
     line_selection: Option<LineSelection>,
+    /// コメント入力バッファ
+    comment_input: String,
+    /// 保留中のコメント一覧
+    pending_comments: Vec<PendingComment>,
 }
 
 impl App {
@@ -108,6 +124,8 @@ impl App {
             cursor_line: 0,
             diff_view_height: 20, // 初期値、render で更新される
             line_selection: None,
+            comment_input: String::new(),
+            pending_comments: Vec::new(),
         }
     }
 
@@ -154,24 +172,44 @@ impl App {
     fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
 
-        let main_layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(0)])
-            .split(area);
+        // CommentInput モードでは入力欄を下部に表示
+        let main_layout = if self.mode == AppMode::CommentInput {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1),
+                    Constraint::Min(0),
+                    Constraint::Length(3),
+                ])
+                .split(area)
+        } else {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Min(0)])
+                .split(area)
+        };
 
         let mode_indicator = match self.mode {
             AppMode::Normal => "",
             AppMode::LineSelect => " [LINE SELECT] ",
+            AppMode::CommentInput => " [COMMENT] ",
+        };
+
+        let comments_badge = if self.pending_comments.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}💬]", self.pending_comments.len())
         };
 
         let header_text = format!(
-            " prism - {} PR #{}: {}{} | q: quit",
-            self.repo, self.pr_number, self.pr_title, mode_indicator
+            " prism - {} PR #{}: {}{}{} | q: quit",
+            self.repo, self.pr_number, self.pr_title, mode_indicator, comments_badge
         );
 
         let header_style = match self.mode {
             AppMode::Normal => Style::default().bg(Color::Blue).fg(Color::White),
             AppMode::LineSelect => Style::default().bg(Color::Magenta).fg(Color::White),
+            AppMode::CommentInput => Style::default().bg(Color::Green).fg(Color::White),
         };
 
         frame.render_widget(
@@ -197,6 +235,11 @@ impl App {
         self.render_commit_list_stateful(frame, sidebar_layout[0]);
         self.render_file_tree(frame, sidebar_layout[1]);
         self.render_diff_view_widget(frame, diff_area);
+
+        // CommentInput モードでは入力欄を描画
+        if self.mode == AppMode::CommentInput {
+            self.render_comment_input(frame, main_layout[2]);
+        }
     }
 
     fn render_commit_list_stateful(&mut self, frame: &mut Frame, area: Rect) {
@@ -262,7 +305,7 @@ impl App {
         };
 
         let title = match (&self.mode, &self.line_selection) {
-            (AppMode::LineSelect, Some(selection)) => {
+            (AppMode::LineSelect | AppMode::CommentInput, Some(selection)) => {
                 let count = selection.count(self.cursor_line);
                 format!(
                     " Diff - {} line{} selected ",
@@ -286,7 +329,9 @@ impl App {
         // DiffView がフォーカスされているか、行選択モードの場合はカーソル/選択を表示
         let show_cursor = self.focused_panel == Panel::DiffView;
 
-        if show_cursor || self.mode == AppMode::LineSelect {
+        let has_selection = self.mode == AppMode::LineSelect || self.mode == AppMode::CommentInput;
+
+        if show_cursor || has_selection {
             // カーソル行・選択範囲のハイライトを適用
             let lines: Vec<Line> = patch
                 .lines()
@@ -299,8 +344,8 @@ impl App {
                         _ => Style::default(),
                     };
 
-                    let style = if self.mode == AppMode::LineSelect {
-                        // 行選択モード: 選択範囲をハイライト
+                    let style = if has_selection {
+                        // 行選択/コメント入力モード: 選択範囲をハイライト
                         let is_selected = self.line_selection.is_some_and(|sel| {
                             let (start, end) = sel.range(self.cursor_line);
                             idx >= start && idx <= end
@@ -353,6 +398,29 @@ impl App {
         }
     }
 
+    fn render_comment_input(&self, frame: &mut Frame, area: Rect) {
+        let selection_info = if let Some(selection) = self.line_selection {
+            let (start, end) = selection.range(self.cursor_line);
+            format!(" L{}–L{} ", start + 1, end + 1)
+        } else {
+            String::new()
+        };
+
+        let block = Block::default()
+            .title(format!(" Comment{} ", selection_info))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Green));
+
+        let paragraph = Paragraph::new(self.comment_input.as_str()).block(block);
+        frame.render_widget(paragraph, area);
+
+        // set_cursor_position でリアルカーソルを表示（表示幅で計算）
+        frame.set_cursor_position(Position::new(
+            area.x + self.comment_input.width() as u16 + 1, // +1 for border
+            area.y + 1,                                     // +1 for border
+        ));
+    }
+
     fn handle_events(&mut self) -> Result<()> {
         if let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
@@ -360,6 +428,7 @@ impl App {
             match self.mode {
                 AppMode::Normal => self.handle_normal_mode(key.code, key.modifiers),
                 AppMode::LineSelect => self.handle_line_select_mode(key.code),
+                AppMode::CommentInput => self.handle_comment_input_mode(key.code),
             }
         }
         Ok(())
@@ -403,6 +472,7 @@ impl App {
             KeyCode::Esc => self.exit_line_select_mode(),
             KeyCode::Char('j') => self.extend_selection_down(),
             KeyCode::Char('k') => self.extend_selection_up(),
+            KeyCode::Char('c') => self.enter_comment_input_mode(),
             _ => {}
         }
     }
@@ -418,6 +488,68 @@ impl App {
 
     /// 行選択モードを終了
     fn exit_line_select_mode(&mut self) {
+        self.line_selection = None;
+        self.mode = AppMode::Normal;
+    }
+
+    /// コメント入力モードに入る（行選択がある場合のみ）
+    fn enter_comment_input_mode(&mut self) {
+        if self.line_selection.is_some() {
+            self.comment_input.clear();
+            self.mode = AppMode::CommentInput;
+        }
+    }
+
+    /// コメント入力モードのキー処理
+    fn handle_comment_input_mode(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => self.cancel_comment_input(),
+            KeyCode::Enter => self.confirm_comment(),
+            KeyCode::Backspace => {
+                self.comment_input.pop();
+            }
+            KeyCode::Char(c) => {
+                self.comment_input.push(c);
+            }
+            _ => {}
+        }
+    }
+
+    /// コメント入力をキャンセルして LineSelect に戻る（選択範囲維持）
+    fn cancel_comment_input(&mut self) {
+        self.comment_input.clear();
+        self.mode = AppMode::LineSelect;
+    }
+
+    /// コメントを確定して pending_comments に追加
+    fn confirm_comment(&mut self) {
+        if self.comment_input.is_empty() {
+            return;
+        }
+
+        if let Some(selection) = self.line_selection {
+            let (start, end) = selection.range(self.cursor_line);
+            let file_path = self
+                .current_file()
+                .map(|f| f.filename.clone())
+                .unwrap_or_default();
+            let commit_sha = self
+                .commit_list_state
+                .selected()
+                .and_then(|idx| self.commits.get(idx))
+                .map(|c| c.sha.clone())
+                .unwrap_or_default();
+
+            self.pending_comments.push(PendingComment {
+                file_path,
+                start_line: start,
+                end_line: end,
+                body: self.comment_input.clone(),
+                commit_sha,
+            });
+        }
+
+        self.comment_input.clear();
         self.line_selection = None;
         self.mode = AppMode::Normal;
     }
@@ -1072,5 +1204,136 @@ mod tests {
 
         // Scroll should be reset
         assert_eq!(app.diff_scroll, 0);
+    }
+
+    /// コメント入力テスト用: patch 付きファイルを含む App を作成
+    fn create_app_with_patch() -> App {
+        let commits = create_test_commits();
+        let mut files_map = HashMap::new();
+        let patch = (0..10)
+            .map(|i| format!("+line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        files_map.insert(
+            "abc1234567890".to_string(),
+            vec![DiffFile {
+                filename: "src/main.rs".to_string(),
+                status: "added".to_string(),
+                additions: 10,
+                deletions: 0,
+                patch: Some(patch),
+            }],
+        );
+        App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            commits,
+            files_map,
+        )
+    }
+
+    #[test]
+    fn test_comment_input_mode_transition_from_line_select() {
+        let mut app = create_app_with_patch();
+        app.focused_panel = Panel::DiffView;
+
+        // 行選択モードに入る
+        app.enter_line_select_mode();
+        assert_eq!(app.mode, AppMode::LineSelect);
+        assert!(app.line_selection.is_some());
+
+        // 'c' でコメント入力モードに遷移
+        app.enter_comment_input_mode();
+        assert_eq!(app.mode, AppMode::CommentInput);
+        assert!(app.comment_input.is_empty());
+    }
+
+    #[test]
+    fn test_comment_input_mode_cancel_returns_to_line_select() {
+        let mut app = create_app_with_patch();
+        app.focused_panel = Panel::DiffView;
+
+        // 行選択 → コメント入力
+        app.enter_line_select_mode();
+        let selection_before = app.line_selection;
+        app.enter_comment_input_mode();
+        assert_eq!(app.mode, AppMode::CommentInput);
+
+        // Esc で LineSelect に戻る（選択範囲維持）
+        app.cancel_comment_input();
+        assert_eq!(app.mode, AppMode::LineSelect);
+        assert_eq!(app.line_selection, selection_before);
+    }
+
+    #[test]
+    fn test_comment_input_char_and_backspace() {
+        let mut app = create_app_with_patch();
+        app.focused_panel = Panel::DiffView;
+        app.enter_line_select_mode();
+        app.enter_comment_input_mode();
+
+        // 文字入力
+        app.handle_comment_input_mode(KeyCode::Char('H'));
+        app.handle_comment_input_mode(KeyCode::Char('i'));
+        assert_eq!(app.comment_input, "Hi");
+
+        // Backspace
+        app.handle_comment_input_mode(KeyCode::Backspace);
+        assert_eq!(app.comment_input, "H");
+
+        // 全文字削除
+        app.handle_comment_input_mode(KeyCode::Backspace);
+        assert!(app.comment_input.is_empty());
+
+        // 空の状態でさらに Backspace しても panic しない
+        app.handle_comment_input_mode(KeyCode::Backspace);
+        assert!(app.comment_input.is_empty());
+    }
+
+    #[test]
+    fn test_comment_confirm_adds_pending_comment() {
+        let mut app = create_app_with_patch();
+        app.focused_panel = Panel::DiffView;
+        app.enter_line_select_mode();
+        app.enter_comment_input_mode();
+
+        // コメント入力
+        app.handle_comment_input_mode(KeyCode::Char('L'));
+        app.handle_comment_input_mode(KeyCode::Char('G'));
+        app.handle_comment_input_mode(KeyCode::Char('T'));
+        app.handle_comment_input_mode(KeyCode::Char('M'));
+
+        // Enter で確定
+        app.confirm_comment();
+        assert_eq!(app.mode, AppMode::Normal);
+        assert_eq!(app.pending_comments.len(), 1);
+        assert_eq!(app.pending_comments[0].body, "LGTM");
+        assert_eq!(app.pending_comments[0].file_path, "src/main.rs");
+        assert!(app.line_selection.is_none());
+    }
+
+    #[test]
+    fn test_empty_comment_not_saved() {
+        let mut app = create_app_with_patch();
+        app.focused_panel = Panel::DiffView;
+        app.enter_line_select_mode();
+        app.enter_comment_input_mode();
+
+        // 空のまま Enter
+        app.confirm_comment();
+        assert_eq!(app.mode, AppMode::CommentInput);
+        assert!(app.pending_comments.is_empty());
+    }
+
+    #[test]
+    fn test_comment_input_mode_requires_line_selection() {
+        let mut app = create_app_with_patch();
+        app.focused_panel = Panel::DiffView;
+
+        // line_selection が None の状態で遷移しようとしても遷移しない
+        assert!(app.line_selection.is_none());
+        app.enter_comment_input_mode();
+        assert_eq!(app.mode, AppMode::Normal);
     }
 }
