@@ -86,12 +86,11 @@ impl App {
 
         // 最初のコミットのファイル数に基づいて file_list_state を初期化
         let mut file_list_state = ListState::default();
-        if let Some(first_commit) = commits.first() {
-            if let Some(files) = files_map.get(&first_commit.sha) {
-                if !files.is_empty() {
-                    file_list_state.select(Some(0));
-                }
-            }
+        if let Some(first_commit) = commits.first()
+            && let Some(files) = files_map.get(&first_commit.sha)
+            && !files.is_empty()
+        {
+            file_list_state.select(Some(0));
         }
 
         Self {
@@ -114,12 +113,11 @@ impl App {
 
     /// 現在選択中のコミットのファイル一覧を取得
     fn current_files(&self) -> &[DiffFile] {
-        if let Some(idx) = self.commit_list_state.selected() {
-            if let Some(commit) = self.commits.get(idx) {
-                if let Some(files) = self.files_map.get(&commit.sha) {
-                    return files;
-                }
-            }
+        if let Some(idx) = self.commit_list_state.selected()
+            && let Some(commit) = self.commits.get(idx)
+            && let Some(files) = self.files_map.get(&commit.sha)
+        {
+            return files;
         }
         &[]
     }
@@ -303,7 +301,7 @@ impl App {
 
                     let style = if self.mode == AppMode::LineSelect {
                         // 行選択モード: 選択範囲をハイライト
-                        let is_selected = self.line_selection.map_or(false, |sel| {
+                        let is_selected = self.line_selection.is_some_and(|sel| {
                             let (start, end) = sel.range(self.cursor_line);
                             idx >= start && idx <= end
                         });
@@ -356,12 +354,12 @@ impl App {
     }
 
     fn handle_events(&mut self) -> Result<()> {
-        if let Event::Key(key) = event::read()? {
-            if key.kind == KeyEventKind::Press {
-                match self.mode {
-                    AppMode::Normal => self.handle_normal_mode(key.code, key.modifiers),
-                    AppMode::LineSelect => self.handle_line_select_mode(key.code),
-                }
+        if let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            match self.mode {
+                AppMode::Normal => self.handle_normal_mode(key.code, key.modifiers),
+                AppMode::LineSelect => self.handle_line_select_mode(key.code),
             }
         }
         Ok(())
@@ -561,12 +559,12 @@ impl App {
     }
 
     fn scroll_diff_to_end(&mut self) {
-        if let Some(file) = self.current_file() {
-            if let Some(patch) = &file.patch {
-                let line_count = patch.lines().count() as u16;
-                // 画面に収まる分を引く（おおよそ10行）
-                self.diff_scroll = line_count.saturating_sub(10);
-            }
+        if let Some(file) = self.current_file()
+            && let Some(patch) = &file.patch
+        {
+            let line_count = patch.lines().count() as u16;
+            // 画面に収まる分を引く（おおよそ10行）
+            self.diff_scroll = line_count.saturating_sub(10);
         }
     }
 
