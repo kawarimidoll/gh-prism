@@ -16,3 +16,10 @@ octocrab = "0.49.5"
 ratatui = "0.29.0"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1.49.0", features = ["full"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+enum_glob_use = "deny"
+mod_module_files = "deny"
