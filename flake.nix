@@ -110,6 +110,7 @@
               rust-analyzer
               clippy
               rustfmt
+              just
               nixfmt-rfc-style
               dprint
               actionlint
