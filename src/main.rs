@@ -71,8 +71,9 @@ async fn main() -> Result<()> {
     eprintln!("Fetching PR #{}...", cli.pr_number);
     let pr = github::pr::fetch_pr(&client, &owner, &repo, cli.pr_number).await?;
 
-    // PRタイトルを取得（Option<String>なのでunwrap_or_default）
+    // PR情報を取得（Option<String>なのでunwrap_or_default）
     let pr_title = pr.title.unwrap_or_default();
+    let pr_body = pr.body.unwrap_or_default();
 
     // コミット一覧を取得
     eprintln!("Fetching commits...");
@@ -92,6 +93,7 @@ async fn main() -> Result<()> {
         cli.pr_number,
         format!("{}/{}", owner, repo),
         pr_title,
+        pr_body,
         commits,
         files_map,
         Some(client),

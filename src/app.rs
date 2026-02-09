@@ -19,6 +19,7 @@ use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Panel {
+    PrDescription,
     CommitList,
     FileTree,
     DiffView,
@@ -108,10 +109,14 @@ pub struct App {
     pr_number: u64,
     repo: String,
     pr_title: String,
+    pr_body: String,
     commits: Vec<CommitInfo>,
     commit_list_state: ListState,
     files_map: HashMap<String, Vec<DiffFile>>,
     file_list_state: ListState,
+    pr_desc_scroll: u16,
+    /// PR Description ペインの表示可能行数（render 時に更新）
+    pr_desc_view_height: u16,
     diff_scroll: u16,
     /// Diff ビュー内のカーソル行（0-indexed）
     cursor_line: usize,
@@ -136,6 +141,7 @@ impl App {
         pr_number: u64,
         repo: String,
         pr_title: String,
+        pr_body: String,
         commits: Vec<CommitInfo>,
         files_map: HashMap<String, Vec<DiffFile>>,
         client: Option<Octocrab>,
@@ -156,15 +162,18 @@ impl App {
 
         Self {
             should_quit: false,
-            focused_panel: Panel::CommitList,
+            focused_panel: Panel::PrDescription,
             mode: AppMode::default(),
             pr_number,
             repo,
             pr_title,
+            pr_body,
             commits,
             commit_list_state,
             files_map,
             file_list_state,
+            pr_desc_scroll: 0,
+            pr_desc_view_height: 10, // 初期値、render で更新される
             diff_scroll: 0,
             cursor_line: 0,
             diff_view_height: 20, // 初期値、render で更新される
@@ -297,22 +306,54 @@ impl App {
 
         let sidebar_layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .constraints([
+                Constraint::Percentage(30),
+                Constraint::Percentage(35),
+                Constraint::Percentage(35),
+            ])
             .split(body_layout[0]);
 
         // DiffView の表示可能行数を更新（ボーダー分を引く）
         let diff_area = body_layout[1];
         self.diff_view_height = diff_area.height.saturating_sub(2);
 
-        // コミットリストをStatefulWidgetとして描画
-        self.render_commit_list_stateful(frame, sidebar_layout[0]);
-        self.render_file_tree(frame, sidebar_layout[1]);
+        // サイドバー3ペイン描画
+        self.render_pr_description(frame, sidebar_layout[0]);
+        self.render_commit_list_stateful(frame, sidebar_layout[1]);
+        self.render_file_tree(frame, sidebar_layout[2]);
         self.render_diff_view_widget(frame, diff_area);
 
         // CommentInput モードでは入力欄を描画
         if self.mode == AppMode::CommentInput {
             self.render_comment_input(frame, main_layout[2]);
         }
+    }
+
+    fn render_pr_description(&mut self, frame: &mut Frame, area: Rect) {
+        // ボーダー分を引いた表示可能行数を記録
+        self.pr_desc_view_height = area.height.saturating_sub(2);
+
+        let style = if self.focused_panel == Panel::PrDescription {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default()
+        };
+
+        let body = if self.pr_body.is_empty() {
+            "(No description)".to_string()
+        } else {
+            self.pr_body.clone()
+        };
+
+        let paragraph = Paragraph::new(body)
+            .block(
+                Block::default()
+                    .title(" PR Description ")
+                    .borders(Borders::ALL)
+                    .border_style(style),
+            )
+            .scroll((self.pr_desc_scroll, 0));
+        frame.render_widget(paragraph, area);
     }
 
     fn render_commit_list_stateful(&mut self, frame: &mut Frame, area: Rect) {
@@ -517,6 +558,22 @@ impl App {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Tab => self.next_panel(),
             KeyCode::BackTab => self.prev_panel(),
+            // 数字キーでペイン直接ジャンプ
+            KeyCode::Char('1') => self.focused_panel = Panel::PrDescription,
+            KeyCode::Char('2') => self.focused_panel = Panel::CommitList,
+            KeyCode::Char('3') => self.focused_panel = Panel::FileTree,
+            KeyCode::Enter => {
+                // Files ペインで Enter → DiffView に移動
+                if self.focused_panel == Panel::FileTree {
+                    self.focused_panel = Panel::DiffView;
+                }
+            }
+            KeyCode::Esc => {
+                // DiffView で Esc → Files に戻る
+                if self.focused_panel == Panel::DiffView {
+                    self.focused_panel = Panel::FileTree;
+                }
+            }
             KeyCode::Char('j') => self.select_next(),
             KeyCode::Char('k') => self.select_prev(),
             KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
@@ -718,6 +775,13 @@ impl App {
 
     fn select_next(&mut self) {
         match self.focused_panel {
+            Panel::PrDescription => {
+                let total_lines = self.pr_body.lines().count() as u16;
+                let max_scroll = total_lines.saturating_sub(self.pr_desc_view_height);
+                if self.pr_desc_scroll < max_scroll {
+                    self.pr_desc_scroll = self.pr_desc_scroll.saturating_add(1);
+                }
+            }
             Panel::CommitList if !self.commits.is_empty() => {
                 let current = self.commit_list_state.selected().unwrap_or(0);
                 let next = (current + 1) % self.commits.len();
@@ -743,6 +807,9 @@ impl App {
 
     fn select_prev(&mut self) {
         match self.focused_panel {
+            Panel::PrDescription => {
+                self.pr_desc_scroll = self.pr_desc_scroll.saturating_sub(1);
+            }
             Panel::CommitList if !self.commits.is_empty() => {
                 let current = self.commit_list_state.selected().unwrap_or(0);
                 let prev = if current == 0 {
@@ -846,17 +913,26 @@ impl App {
     }
 
     fn next_panel(&mut self) {
+        // DiffView は Tab 巡回の対象外（Enter/Esc で出入りする）
+        if self.focused_panel == Panel::DiffView {
+            return;
+        }
         self.focused_panel = match self.focused_panel {
+            Panel::PrDescription => Panel::CommitList,
             Panel::CommitList => Panel::FileTree,
-            Panel::FileTree => Panel::DiffView,
-            Panel::DiffView => Panel::CommitList,
+            Panel::FileTree => Panel::PrDescription,
+            Panel::DiffView => unreachable!(),
         }
     }
     fn prev_panel(&mut self) {
+        if self.focused_panel == Panel::DiffView {
+            return;
+        }
         self.focused_panel = match self.focused_panel {
-            Panel::CommitList => Panel::DiffView,
+            Panel::PrDescription => Panel::FileTree,
+            Panel::CommitList => Panel::PrDescription,
             Panel::FileTree => Panel::CommitList,
-            Panel::DiffView => Panel::FileTree,
+            Panel::DiffView => unreachable!(),
         }
     }
 }
@@ -920,12 +996,13 @@ mod tests {
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
+            String::new(),
             vec![],
             create_empty_files_map(),
             None,
         );
         assert!(!app.should_quit);
-        assert_eq!(app.focused_panel, Panel::CommitList);
+        assert_eq!(app.focused_panel, Panel::PrDescription);
         assert_eq!(app.pr_number, 1);
         assert_eq!(app.repo, "owner/repo");
         assert_eq!(app.pr_title, "Test PR");
@@ -942,6 +1019,7 @@ mod tests {
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
+            String::new(),
             commits,
             create_empty_files_map(),
             None,
@@ -958,6 +1036,7 @@ mod tests {
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
+            String::new(),
             commits,
             files_map,
             None,
@@ -972,16 +1051,18 @@ mod tests {
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
+            String::new(),
             vec![],
             create_empty_files_map(),
             None,
         );
+        assert_eq!(app.focused_panel, Panel::PrDescription);
+        app.next_panel();
+        assert_eq!(app.focused_panel, Panel::CommitList);
         app.next_panel();
         assert_eq!(app.focused_panel, Panel::FileTree);
         app.next_panel();
-        assert_eq!(app.focused_panel, Panel::DiffView);
-        app.next_panel();
-        assert_eq!(app.focused_panel, Panel::CommitList);
+        assert_eq!(app.focused_panel, Panel::PrDescription);
     }
 
     #[test]
@@ -990,16 +1071,18 @@ mod tests {
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
+            String::new(),
             vec![],
             create_empty_files_map(),
             None,
         );
-        app.prev_panel();
-        assert_eq!(app.focused_panel, Panel::DiffView);
+        assert_eq!(app.focused_panel, Panel::PrDescription);
         app.prev_panel();
         assert_eq!(app.focused_panel, Panel::FileTree);
         app.prev_panel();
         assert_eq!(app.focused_panel, Panel::CommitList);
+        app.prev_panel();
+        assert_eq!(app.focused_panel, Panel::PrDescription);
     }
 
     #[test]
@@ -1009,10 +1092,12 @@ mod tests {
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
+            String::new(),
             commits,
             create_empty_files_map(),
             None,
         );
+        app.focused_panel = Panel::CommitList;
         assert_eq!(app.commit_list_state.selected(), Some(0));
         app.select_next();
         assert_eq!(app.commit_list_state.selected(), Some(1));
@@ -1027,10 +1112,12 @@ mod tests {
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
+            String::new(),
             commits,
             create_empty_files_map(),
             None,
         );
+        app.focused_panel = Panel::CommitList;
         assert_eq!(app.commit_list_state.selected(), Some(0));
         app.select_prev();
         assert_eq!(app.commit_list_state.selected(), Some(1)); // wrap around
@@ -1046,6 +1133,7 @@ mod tests {
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
+            String::new(),
             commits,
             files_map,
             None,
@@ -1066,6 +1154,7 @@ mod tests {
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
+            String::new(),
             commits,
             files_map,
             None,
@@ -1086,10 +1175,12 @@ mod tests {
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
+            String::new(),
             commits,
             files_map,
             None,
         );
+        app.focused_panel = Panel::CommitList;
         // Initial state: CommitList panel
         // コミット選択変更時にファイル選択がリセットされることを確認
         app.select_next();
@@ -1111,6 +1202,7 @@ mod tests {
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
+            String::new(),
             commits,
             create_empty_files_map(),
             None,
@@ -1152,6 +1244,7 @@ mod tests {
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
+            String::new(),
             commits,
             files_map,
             None,
@@ -1201,13 +1294,14 @@ mod tests {
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
+            String::new(),
             commits,
             files_map,
             None,
         );
 
         // ファイル一覧に移動して2番目のファイルを選択
-        app.next_panel();
+        app.focused_panel = Panel::FileTree;
         app.select_next();
         assert_eq!(app.file_list_state.selected(), Some(1));
 
@@ -1232,6 +1326,7 @@ mod tests {
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
+            String::new(),
             commits,
             create_empty_files_map(),
             None,
@@ -1247,6 +1342,7 @@ mod tests {
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
+            String::new(),
             commits,
             files_map,
             None,
@@ -1269,6 +1365,7 @@ mod tests {
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
+            String::new(),
             commits,
             files_map,
             None,
@@ -1295,19 +1392,24 @@ mod tests {
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
+            String::new(),
             commits,
             files_map,
             None,
         );
-        // CommitList panel (default)
+        // PrDescription panel (default)
         app.scroll_diff_down();
         assert_eq!(app.diff_scroll, 0);
 
-        app.next_panel(); // FileTree
+        app.focused_panel = Panel::CommitList;
         app.scroll_diff_down();
         assert_eq!(app.diff_scroll, 0);
 
-        app.next_panel(); // DiffView
+        app.focused_panel = Panel::FileTree;
+        app.scroll_diff_down();
+        assert_eq!(app.diff_scroll, 0);
+
+        app.focused_panel = Panel::DiffView;
         app.scroll_diff_down();
         assert_eq!(app.diff_scroll, 10);
     }
@@ -1335,6 +1437,7 @@ mod tests {
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
+            String::new(),
             commits,
             files_map,
             None,
@@ -1354,16 +1457,15 @@ mod tests {
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
+            String::new(),
             commits,
             files_map,
             None,
         );
-        app.focused_panel = Panel::DiffView;
         app.diff_scroll = 50;
 
         // Change to FileTree and select next file
-        app.prev_panel();
-        assert_eq!(app.focused_panel, Panel::FileTree);
+        app.focused_panel = Panel::FileTree;
         app.select_next();
 
         // Scroll should be reset
@@ -1392,6 +1494,7 @@ mod tests {
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
+            String::new(),
             commits,
             files_map,
             None,
@@ -1508,6 +1611,7 @@ mod tests {
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
+            String::new(),
             vec![],
             create_empty_files_map(),
             None,
@@ -1523,6 +1627,7 @@ mod tests {
             1,
             "invalid".to_string(),
             "Test PR".to_string(),
+            String::new(),
             vec![],
             create_empty_files_map(),
             None,
@@ -1536,6 +1641,7 @@ mod tests {
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
+            String::new(),
             vec![],
             create_empty_files_map(),
             None,
@@ -1605,6 +1711,97 @@ mod tests {
         app.handle_normal_mode(KeyCode::Char('S'), KeyModifiers::SHIFT);
         assert!(!app.needs_submit);
         assert!(app.status_message.is_none());
+    }
+
+    #[test]
+    fn test_number_keys_jump_to_panels() {
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            vec![],
+            create_empty_files_map(),
+            None,
+        );
+        app.handle_normal_mode(KeyCode::Char('2'), KeyModifiers::NONE);
+        assert_eq!(app.focused_panel, Panel::CommitList);
+        app.handle_normal_mode(KeyCode::Char('3'), KeyModifiers::NONE);
+        assert_eq!(app.focused_panel, Panel::FileTree);
+        app.handle_normal_mode(KeyCode::Char('1'), KeyModifiers::NONE);
+        assert_eq!(app.focused_panel, Panel::PrDescription);
+    }
+
+    #[test]
+    fn test_enter_in_files_moves_to_diff() {
+        let commits = create_test_commits();
+        let files_map = create_test_files_map(&commits);
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            commits,
+            files_map,
+            None,
+        );
+        app.focused_panel = Panel::FileTree;
+        app.handle_normal_mode(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.focused_panel, Panel::DiffView);
+    }
+
+    #[test]
+    fn test_esc_in_diff_returns_to_files() {
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            vec![],
+            create_empty_files_map(),
+            None,
+        );
+        app.focused_panel = Panel::DiffView;
+        app.handle_normal_mode(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.focused_panel, Panel::FileTree);
+    }
+
+    #[test]
+    fn test_tab_skips_diffview() {
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            vec![],
+            create_empty_files_map(),
+            None,
+        );
+        // PrDescription → CommitList → FileTree → PrDescription (DiffView をスキップ)
+        app.next_panel();
+        assert_eq!(app.focused_panel, Panel::CommitList);
+        app.next_panel();
+        assert_eq!(app.focused_panel, Panel::FileTree);
+        app.next_panel();
+        assert_eq!(app.focused_panel, Panel::PrDescription);
+    }
+
+    #[test]
+    fn test_diffview_tab_is_noop() {
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            vec![],
+            create_empty_files_map(),
+            None,
+        );
+        app.focused_panel = Panel::DiffView;
+        app.next_panel();
+        assert_eq!(app.focused_panel, Panel::DiffView); // Tab は無効
+        app.prev_panel();
+        assert_eq!(app.focused_panel, Panel::DiffView); // BackTab も無効
     }
 
     #[test]
