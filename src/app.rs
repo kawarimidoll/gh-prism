@@ -9,10 +9,11 @@ use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Direction, Layout, Position, Rect},
     style::{Color, Style},
-    text::Line,
+    text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use tokio::runtime::Handle;
 use unicode_width::UnicodeWidthStr;
 
@@ -30,6 +31,41 @@ pub enum AppMode {
     Normal,
     LineSelect,
     CommentInput,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StatusLevel {
+    Info,
+    Error,
+}
+
+#[derive(Clone, Debug)]
+pub struct StatusMessage {
+    pub body: String,
+    pub level: StatusLevel,
+    pub created_at: Instant,
+}
+
+impl StatusMessage {
+    pub fn info(body: impl Into<String>) -> Self {
+        Self {
+            body: body.into(),
+            level: StatusLevel::Info,
+            created_at: Instant::now(),
+        }
+    }
+
+    pub fn error(body: impl Into<String>) -> Self {
+        Self {
+            body: body.into(),
+            level: StatusLevel::Error,
+            created_at: Instant::now(),
+        }
+    }
+
+    pub fn is_expired(&self) -> bool {
+        self.created_at.elapsed() >= Duration::from_secs(3)
+    }
 }
 
 /// 行選択の状態（アンカー位置を保持）
@@ -89,8 +125,10 @@ pub struct App {
     pending_comments: Vec<PendingComment>,
     /// GitHub API クライアント（テスト時は None）
     client: Option<Octocrab>,
-    /// ステータスメッセージ（ヘッダーバーに表示、次キー入力でクリア）
-    status_message: Option<String>,
+    /// ステータスメッセージ（ヘッダーバーに表示、3秒後に自動クリア）
+    status_message: Option<StatusMessage>,
+    /// コメント送信フラグ（draw 後に実行するため）
+    needs_submit: bool,
 }
 
 impl App {
@@ -135,6 +173,7 @@ impl App {
             pending_comments: Vec::new(),
             client,
             status_message: None,
+            needs_submit: false,
         }
     }
 
@@ -172,7 +211,19 @@ impl App {
 
     pub fn run(&mut self, mut terminal: DefaultTerminal) -> Result<()> {
         while !self.should_quit {
+            // 期限切れのステータスメッセージを自動クリア
+            if self.status_message.as_ref().is_some_and(|m| m.is_expired()) {
+                self.status_message = None;
+            }
+
             terminal.draw(|frame| self.render(frame))?;
+
+            // draw 後に submit を実行（ローディング表示を先にユーザーへ見せる）
+            if self.needs_submit {
+                self.needs_submit = false;
+                self.submit_pending_comments();
+            }
+
             self.handle_events()?;
         }
         Ok(())
@@ -210,25 +261,32 @@ impl App {
             format!(" [{}💬]", self.pending_comments.len())
         };
 
-        let status_text = self
-            .status_message
-            .as_deref()
-            .map(|s| format!(" {}", s))
-            .unwrap_or_default();
-
-        let header_text = format!(
-            " prism - {} PR #{}: {}{}{}{} | q: quit",
-            self.repo, self.pr_number, self.pr_title, mode_indicator, comments_badge, status_text
-        );
-
         let header_style = match self.mode {
             AppMode::Normal => Style::default().bg(Color::Blue).fg(Color::White),
             AppMode::LineSelect => Style::default().bg(Color::Magenta).fg(Color::White),
             AppMode::CommentInput => Style::default().bg(Color::Green).fg(Color::White),
         };
 
+        let header_base = format!(
+            " prism - {} PR #{}: {}{}{} | q: quit",
+            self.repo, self.pr_number, self.pr_title, mode_indicator, comments_badge
+        );
+
+        let header_line = if let Some(ref msg) = self.status_message {
+            let status_color = match msg.level {
+                StatusLevel::Info => Color::Green,
+                StatusLevel::Error => Color::Red,
+            };
+            Line::from(vec![
+                Span::styled(header_base, header_style),
+                Span::styled(format!(" {}", msg.body), header_style.fg(status_color)),
+            ])
+        } else {
+            Line::from(Span::styled(header_base, header_style))
+        };
+
         frame.render_widget(
-            Paragraph::new(header_text).style(header_style),
+            Paragraph::new(header_line).style(header_style),
             main_layout[0],
         );
 
@@ -437,12 +495,14 @@ impl App {
     }
 
     fn handle_events(&mut self) -> Result<()> {
+        // 250ms 以内にイベントがなければ早期リターン（render ループを回す）
+        if !event::poll(Duration::from_millis(250))? {
+            return Ok(());
+        }
+
         if let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {
-            // 任意のキー入力でステータスメッセージをクリア
-            self.status_message = None;
-
             match self.mode {
                 AppMode::Normal => self.handle_normal_mode(key.code, key.modifiers),
                 AppMode::LineSelect => self.handle_line_select_mode(key.code),
@@ -482,7 +542,10 @@ impl App {
                 }
             }
             KeyCode::Char('S') => {
-                self.submit_pending_comments();
+                if !self.pending_comments.is_empty() {
+                    self.status_message = Some(StatusMessage::info("Submitting..."));
+                    self.needs_submit = true;
+                }
             }
             _ => {}
         }
@@ -591,18 +654,18 @@ impl App {
         }
 
         let Some(client) = &self.client else {
-            self.status_message = Some("✗ No API client available".to_string());
+            self.status_message = Some(StatusMessage::error("✗ No API client available"));
             return;
         };
 
         let Some((owner, repo)) = self.parse_repo() else {
-            self.status_message = Some("✗ Invalid repo format".to_string());
+            self.status_message = Some(StatusMessage::error("✗ Invalid repo format"));
             return;
         };
 
         // HEAD コミットの SHA を取得
         let Some(head_sha) = self.commits.last().map(|c| c.sha.as_str()) else {
-            self.status_message = Some("✗ No commits available".to_string());
+            self.status_message = Some(StatusMessage::error("✗ No commits available"));
             return;
         };
 
@@ -623,15 +686,15 @@ impl App {
 
         match result {
             Ok(()) => {
-                self.status_message = Some(format!(
+                self.status_message = Some(StatusMessage::info(format!(
                     "✓ {} comment{} submitted",
                     count,
                     if count == 1 { "" } else { "s" }
-                ));
+                )));
                 self.pending_comments.clear();
             }
             Err(e) => {
-                self.status_message = Some(format!("✗ Failed: {}", e));
+                self.status_message = Some(StatusMessage::error(format!("✗ Failed: {}", e)));
             }
         }
     }
@@ -1480,5 +1543,88 @@ mod tests {
         // pending_comments が空なら何もしない（status_message も None のまま）
         app.submit_pending_comments();
         assert!(app.status_message.is_none());
+    }
+
+    #[test]
+    fn test_status_message_info() {
+        let msg = StatusMessage::info("hello");
+        assert_eq!(msg.body, "hello");
+        assert_eq!(msg.level, StatusLevel::Info);
+        assert!(!msg.is_expired());
+    }
+
+    #[test]
+    fn test_status_message_error() {
+        let msg = StatusMessage::error("oops");
+        assert_eq!(msg.body, "oops");
+        assert_eq!(msg.level, StatusLevel::Error);
+        assert!(!msg.is_expired());
+    }
+
+    #[test]
+    fn test_status_message_is_expired() {
+        let msg = StatusMessage {
+            body: "old".to_string(),
+            level: StatusLevel::Info,
+            created_at: Instant::now() - Duration::from_secs(4),
+        };
+        assert!(msg.is_expired());
+
+        let msg_fresh = StatusMessage::info("new");
+        assert!(!msg_fresh.is_expired());
+    }
+
+    #[test]
+    fn test_needs_submit_set_on_s_key_with_pending_comments() {
+        let mut app = create_app_with_patch();
+        app.focused_panel = Panel::DiffView;
+
+        // コメントを1つ追加
+        app.enter_line_select_mode();
+        app.enter_comment_input_mode();
+        app.handle_comment_input_mode(KeyCode::Char('x'));
+        app.confirm_comment();
+        assert_eq!(app.pending_comments.len(), 1);
+
+        // S キー押下で needs_submit が true になる
+        app.handle_normal_mode(KeyCode::Char('S'), KeyModifiers::SHIFT);
+        assert!(app.needs_submit);
+        assert!(app.status_message.is_some());
+        assert_eq!(
+            app.status_message.as_ref().unwrap().level,
+            StatusLevel::Info
+        );
+        assert_eq!(app.status_message.as_ref().unwrap().body, "Submitting...");
+    }
+
+    #[test]
+    fn test_needs_submit_not_set_when_no_pending_comments() {
+        let mut app = create_app_with_patch();
+
+        // pending_comments が空の場合、S キーで needs_submit は立たない
+        app.handle_normal_mode(KeyCode::Char('S'), KeyModifiers::SHIFT);
+        assert!(!app.needs_submit);
+        assert!(app.status_message.is_none());
+    }
+
+    #[test]
+    fn test_submit_without_client_sets_error() {
+        let mut app = create_app_with_patch();
+
+        // コメントを追加（client は None）
+        app.pending_comments.push(PendingComment {
+            file_path: "test.rs".to_string(),
+            start_line: 0,
+            end_line: 0,
+            body: "test".to_string(),
+            commit_sha: "abc".to_string(),
+        });
+
+        app.submit_pending_comments();
+        assert!(app.status_message.is_some());
+        assert_eq!(
+            app.status_message.as_ref().unwrap().level,
+            StatusLevel::Error
+        );
     }
 }

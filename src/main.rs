@@ -68,17 +68,21 @@ async fn main() -> Result<()> {
 
     // GitHub APIクライアントを作成してPR情報を取得
     let client = github::client::create_client()?;
+    eprintln!("Fetching PR #{}...", cli.pr_number);
     let pr = github::pr::fetch_pr(&client, &owner, &repo, cli.pr_number).await?;
 
     // PRタイトルを取得（Option<String>なのでunwrap_or_default）
     let pr_title = pr.title.unwrap_or_default();
 
     // コミット一覧を取得
+    eprintln!("Fetching commits...");
     let commits = github::commits::fetch_commits(&client, &owner, &repo, cli.pr_number).await?;
 
     // 全コミットのファイルを事前取得
+    eprintln!("Fetching files for {} commits...", commits.len());
     let mut files_map: HashMap<String, Vec<github::files::DiffFile>> = HashMap::new();
-    for commit in &commits {
+    for (i, commit) in commits.iter().enumerate() {
+        eprintln!("  [{}/{}] {}", i + 1, commits.len(), commit.short_sha());
         let files = github::files::fetch_commit_files(&client, &owner, &repo, &commit.sha).await?;
         files_map.insert(commit.sha.clone(), files);
     }
