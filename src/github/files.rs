@@ -17,7 +17,7 @@ impl DiffFile {
         match self.status.as_str() {
             "added" => 'A',
             "modified" => 'M',
-            "deleted" => 'D',
+            "removed" | "deleted" => 'D',
             "renamed" => 'R',
             _ => '?',
         }

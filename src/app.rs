@@ -313,14 +313,13 @@ impl App {
             ])
             .split(body_layout[0]);
 
-        // DiffView の表示可能行数を更新（ボーダー分を引く）
         let diff_area = body_layout[1];
-        self.diff_view_height = diff_area.height.saturating_sub(2);
 
         // サイドバー3ペイン描画
         self.render_pr_description(frame, sidebar_layout[0]);
         self.render_commit_list_stateful(frame, sidebar_layout[1]);
         self.render_file_tree(frame, sidebar_layout[2]);
+        // diff_view_height は render_diff_view_widget 内で正確に更新
         self.render_diff_view_widget(frame, diff_area);
 
         // CommentInput モードでは入力欄を描画
@@ -393,8 +392,19 @@ impl App {
         let items: Vec<ListItem> = files
             .iter()
             .map(|f| {
-                let display = format!("{} {} {}", f.status_char(), f.filename, f.changes_display());
-                ListItem::new(display)
+                let status = f.status_char();
+                let status_color = match status {
+                    'A' => Color::Green,
+                    'M' => Color::Yellow,
+                    'D' => Color::Red,
+                    'R' => Color::Cyan,
+                    _ => Color::White,
+                };
+                let line = Line::from(vec![
+                    Span::styled(format!("{}", status), Style::default().fg(status_color)),
+                    Span::raw(format!(" {} {}", f.filename, f.changes_display())),
+                ]);
+                ListItem::new(line)
             })
             .collect();
 
@@ -411,13 +421,57 @@ impl App {
         frame.render_stateful_widget(list, area, &mut self.file_list_state);
     }
 
-    fn render_diff_view_widget(&self, frame: &mut Frame, area: Rect) {
+    fn render_diff_view_widget(&mut self, frame: &mut Frame, area: Rect) {
         let border_style = if self.focused_panel == Panel::DiffView {
             Style::default().fg(Color::Yellow)
         } else {
             Style::default()
         };
 
+        // コミットメッセージを取得
+        let commit_msg = self
+            .commit_list_state
+            .selected()
+            .and_then(|idx| self.commits.get(idx))
+            .map(|c| c.commit.message.as_str())
+            .unwrap_or("");
+
+        let msg_line_count = if commit_msg.is_empty() {
+            0u16
+        } else {
+            commit_msg.lines().count() as u16
+        };
+
+        // コミットメッセージがあればエリアを上下分割
+        // メッセージ領域: 行数 + 2（ボーダー上下）、最大で area の 1/3
+        let (msg_area, diff_area) = if msg_line_count > 0 {
+            let msg_height = (msg_line_count + 2).min(area.height / 3).max(3);
+            let layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(msg_height), Constraint::Min(3)])
+                .split(area);
+            (Some(layout[0]), layout[1])
+        } else {
+            (None, area)
+        };
+
+        // DiffView の表示可能行数を更新（ボーダー分を引く）
+        self.diff_view_height = diff_area.height.saturating_sub(2);
+
+        // コミットメッセージ描画
+        if let Some(msg_area) = msg_area {
+            let msg_paragraph = Paragraph::new(commit_msg)
+                .block(
+                    Block::default()
+                        .title(" Commit ")
+                        .borders(Borders::ALL)
+                        .border_style(border_style),
+                )
+                .style(Style::default().fg(Color::DarkGray));
+            frame.render_widget(msg_paragraph, msg_area);
+        }
+
+        // Diff タイトル
         let title = match (&self.mode, &self.line_selection) {
             (AppMode::LineSelect | AppMode::CommentInput, Some(selection)) => {
                 let count = selection.count(self.cursor_line);
@@ -437,12 +491,23 @@ impl App {
 
         // 選択中ファイルを取得
         let file = self.current_file();
+        let has_patch = file.is_some_and(|f| f.patch.is_some());
         let patch = file.and_then(|f| f.patch.as_deref()).unwrap_or("");
         let filename = file.map(|f| f.filename.as_str()).unwrap_or("");
 
+        // バイナリファイルまたは diff がない場合
+        if file.is_some() && !has_patch {
+            let paragraph = Paragraph::new(Line::styled(
+                "Binary file or no diff available",
+                Style::default().fg(Color::DarkGray),
+            ))
+            .block(block);
+            frame.render_widget(paragraph, diff_area);
+            return;
+        }
+
         // DiffView がフォーカスされているか、行選択モードの場合はカーソル/選択を表示
         let show_cursor = self.focused_panel == Panel::DiffView;
-
         let has_selection = self.mode == AppMode::LineSelect || self.mode == AppMode::CommentInput;
 
         if show_cursor || has_selection {
@@ -459,7 +524,6 @@ impl App {
                     };
 
                     let style = if has_selection {
-                        // 行選択/コメント入力モード: 選択範囲をハイライト
                         let is_selected = self.line_selection.is_some_and(|sel| {
                             let (start, end) = sel.range(self.cursor_line);
                             idx >= start && idx <= end
@@ -470,7 +534,6 @@ impl App {
                             base_style
                         }
                     } else if show_cursor && idx == self.cursor_line {
-                        // Normal モード: カーソル行をハイライト
                         base_style.bg(Color::DarkGray)
                     } else {
                         base_style
@@ -483,15 +546,13 @@ impl App {
             let paragraph = Paragraph::new(lines)
                 .block(block)
                 .scroll((self.diff_scroll, 0));
-            frame.render_widget(paragraph, area);
+            frame.render_widget(paragraph, diff_area);
         } else if let Some(highlighted_text) = highlight_diff(patch, filename) {
-            // delta 成功: ハイライト済みテキストを表示
             let paragraph = Paragraph::new(highlighted_text)
                 .block(block)
                 .scroll((self.diff_scroll, 0));
-            frame.render_widget(paragraph, area);
+            frame.render_widget(paragraph, diff_area);
         } else {
-            // delta 失敗 or 未インストール: 従来の色分け（Milestone 8）
             let lines: Vec<Line> = patch
                 .lines()
                 .map(|line| {
@@ -508,7 +569,7 @@ impl App {
             let paragraph = Paragraph::new(lines)
                 .block(block)
                 .scroll((self.diff_scroll, 0));
-            frame.render_widget(paragraph, area);
+            frame.render_widget(paragraph, diff_area);
         }
     }
 
@@ -1823,5 +1884,87 @@ mod tests {
             app.status_message.as_ref().unwrap().level,
             StatusLevel::Error
         );
+    }
+
+    // === N2: Diff 表示の改善テスト ===
+
+    #[test]
+    fn test_status_char_color_mapping() {
+        // 各ステータスが正しい文字を返すことを確認
+        let added = DiffFile {
+            filename: "new.rs".to_string(),
+            status: "added".to_string(),
+            additions: 10,
+            deletions: 0,
+            patch: None,
+        };
+        assert_eq!(added.status_char(), 'A');
+
+        let modified = DiffFile {
+            filename: "mod.rs".to_string(),
+            status: "modified".to_string(),
+            additions: 5,
+            deletions: 3,
+            patch: None,
+        };
+        assert_eq!(modified.status_char(), 'M');
+
+        let removed = DiffFile {
+            filename: "old.rs".to_string(),
+            status: "removed".to_string(),
+            additions: 0,
+            deletions: 10,
+            patch: None,
+        };
+        assert_eq!(removed.status_char(), 'D');
+
+        let renamed = DiffFile {
+            filename: "renamed.rs".to_string(),
+            status: "renamed".to_string(),
+            additions: 0,
+            deletions: 0,
+            patch: None,
+        };
+        assert_eq!(renamed.status_char(), 'R');
+    }
+
+    #[test]
+    fn test_binary_file_has_no_patch() {
+        // patch が None のファイルに対して current_diff_line_count が 0 を返す
+        let commits = create_test_commits();
+        let mut files_map = HashMap::new();
+        files_map.insert(
+            "abc1234567890".to_string(),
+            vec![DiffFile {
+                filename: "image.png".to_string(),
+                status: "added".to_string(),
+                additions: 0,
+                deletions: 0,
+                patch: None,
+            }],
+        );
+        let app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            commits,
+            files_map,
+            None,
+        );
+        assert_eq!(app.current_diff_line_count(), 0);
+    }
+
+    #[test]
+    fn test_commit_message_summary_vs_full() {
+        // message_summary は1行目のみ、commit.message は全文
+        let commit = CommitInfo {
+            sha: "abc1234567890".to_string(),
+            commit: CommitDetail {
+                message: "First line\n\nDetailed description\nMore details".to_string(),
+            },
+        };
+        assert_eq!(commit.message_summary(), "First line");
+        assert_eq!(commit.commit.message.lines().count(), 4);
     }
 }
