@@ -3,7 +3,9 @@ use crate::github::commits::CommitInfo;
 use crate::github::files::DiffFile;
 use crate::github::review;
 use color_eyre::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+};
 use octocrab::Octocrab;
 use ratatui::{
     DefaultTerminal, Frame,
@@ -172,6 +174,11 @@ pub struct App {
     review_event_cursor: usize,
     /// 送信後に終了するかどうか
     quit_after_submit: bool,
+    /// 各ペインの描画領域（マウスヒットテスト用、render 時に更新）
+    pr_desc_rect: Rect,
+    commit_list_rect: Rect,
+    file_tree_rect: Rect,
+    diff_view_rect: Rect,
 }
 
 impl App {
@@ -223,6 +230,10 @@ impl App {
             needs_submit: None,
             review_event_cursor: 0,
             quit_after_submit: false,
+            pr_desc_rect: Rect::default(),
+            commit_list_rect: Rect::default(),
+            file_tree_rect: Rect::default(),
+            diff_view_rect: Rect::default(),
         }
     }
 
@@ -361,6 +372,12 @@ impl App {
             .split(body_layout[0]);
 
         let diff_area = body_layout[1];
+
+        // マウスヒットテスト用に各ペインの Rect を記録
+        self.pr_desc_rect = sidebar_layout[0];
+        self.commit_list_rect = sidebar_layout[1];
+        self.file_tree_rect = sidebar_layout[2];
+        self.diff_view_rect = diff_area;
 
         // サイドバー3ペイン描画
         self.render_pr_description(frame, sidebar_layout[0]);
@@ -724,22 +741,113 @@ impl App {
         frame.render_widget(paragraph, dialog);
     }
 
+    /// 座標からペインを特定
+    fn panel_at(&self, x: u16, y: u16) -> Option<Panel> {
+        let pos = Position::new(x, y);
+        if self.pr_desc_rect.contains(pos) {
+            Some(Panel::PrDescription)
+        } else if self.commit_list_rect.contains(pos) {
+            Some(Panel::CommitList)
+        } else if self.file_tree_rect.contains(pos) {
+            Some(Panel::FileTree)
+        } else if self.diff_view_rect.contains(pos) {
+            Some(Panel::DiffView)
+        } else {
+            None
+        }
+    }
+
+    /// マウスクリック処理
+    fn handle_mouse_click(&mut self, x: u16, y: u16) {
+        let Some(panel) = self.panel_at(x, y) else {
+            return;
+        };
+        self.focused_panel = panel;
+
+        // リスト内アイテムのクリック選択
+        match panel {
+            Panel::CommitList => {
+                let relative_y = y.saturating_sub(self.commit_list_rect.y + 1);
+                let idx = self.commit_list_state.offset() + relative_y as usize;
+                if idx < self.commits.len() {
+                    let old = self.commit_list_state.selected();
+                    self.commit_list_state.select(Some(idx));
+                    if old != Some(idx) {
+                        self.reset_file_selection();
+                    }
+                }
+            }
+            Panel::FileTree => {
+                let relative_y = y.saturating_sub(self.file_tree_rect.y + 1);
+                let idx = self.file_list_state.offset() + relative_y as usize;
+                if idx < self.current_files().len() {
+                    self.file_list_state.select(Some(idx));
+                    self.reset_cursor();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// マウススクロール処理（PR Description と DiffView のみ）
+    fn handle_mouse_scroll(&mut self, x: u16, y: u16, down: bool) {
+        let Some(panel) = self.panel_at(x, y) else {
+            return;
+        };
+        match panel {
+            Panel::PrDescription => {
+                if down {
+                    let total_lines = self.pr_body.lines().count() as u16;
+                    let max_scroll = total_lines.saturating_sub(self.pr_desc_view_height);
+                    if self.pr_desc_scroll < max_scroll {
+                        self.pr_desc_scroll += 1;
+                    }
+                } else {
+                    self.pr_desc_scroll = self.pr_desc_scroll.saturating_sub(1);
+                }
+            }
+            Panel::DiffView => {
+                if down {
+                    let line_count = self.current_diff_line_count() as u16;
+                    let max_scroll = line_count.saturating_sub(self.diff_view_height);
+                    if self.diff_scroll < max_scroll {
+                        self.diff_scroll += 1;
+                    }
+                } else {
+                    self.diff_scroll = self.diff_scroll.saturating_sub(1);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn handle_events(&mut self) -> Result<()> {
         // 250ms 以内にイベントがなければ早期リターン（render ループを回す）
         if !event::poll(Duration::from_millis(250))? {
             return Ok(());
         }
 
-        if let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            match self.mode {
+        match event::read()? {
+            Event::Key(key) if key.kind == KeyEventKind::Press => match self.mode {
                 AppMode::Normal => self.handle_normal_mode(key.code, key.modifiers),
                 AppMode::LineSelect => self.handle_line_select_mode(key.code),
                 AppMode::CommentInput => self.handle_comment_input_mode(key.code),
                 AppMode::ReviewSubmit => self.handle_review_submit_mode(key.code),
                 AppMode::QuitConfirm => self.handle_quit_confirm_mode(key.code),
-            }
+            },
+            Event::Mouse(mouse) if self.mode == AppMode::Normal => match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    self.handle_mouse_click(mouse.column, mouse.row);
+                }
+                MouseEventKind::ScrollDown => {
+                    self.handle_mouse_scroll(mouse.column, mouse.row, true);
+                }
+                MouseEventKind::ScrollUp => {
+                    self.handle_mouse_scroll(mouse.column, mouse.row, false);
+                }
+                _ => {}
+            },
+            _ => {}
         }
         Ok(())
     }
@@ -753,8 +861,8 @@ impl App {
                     self.mode = AppMode::QuitConfirm;
                 }
             }
-            KeyCode::Tab => self.next_panel(),
-            KeyCode::BackTab => self.prev_panel(),
+            KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right => self.next_panel(),
+            KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => self.prev_panel(),
             // 数字キーでペイン直接ジャンプ
             KeyCode::Char('1') => self.focused_panel = Panel::PrDescription,
             KeyCode::Char('2') => self.focused_panel = Panel::CommitList,
@@ -771,8 +879,8 @@ impl App {
                     self.focused_panel = Panel::FileTree;
                 }
             }
-            KeyCode::Char('j') => self.select_next(),
-            KeyCode::Char('k') => self.select_prev(),
+            KeyCode::Char('j') | KeyCode::Down => self.select_next(),
+            KeyCode::Char('k') | KeyCode::Up => self.select_prev(),
             KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
                 self.scroll_diff_down();
             }
@@ -816,8 +924,8 @@ impl App {
     fn handle_line_select_mode(&mut self, code: KeyCode) {
         match code {
             KeyCode::Esc => self.exit_line_select_mode(),
-            KeyCode::Char('j') => self.extend_selection_down(),
-            KeyCode::Char('k') => self.extend_selection_up(),
+            KeyCode::Char('j') | KeyCode::Down => self.extend_selection_down(),
+            KeyCode::Char('k') | KeyCode::Up => self.extend_selection_up(),
             KeyCode::Char('c') => self.enter_comment_input_mode(),
             _ => {}
         }
@@ -868,10 +976,10 @@ impl App {
                 self.quit_after_submit = false;
                 self.mode = AppMode::Normal;
             }
-            KeyCode::Char('j') => {
+            KeyCode::Char('j') | KeyCode::Down => {
                 self.review_event_cursor = (self.review_event_cursor + 1) % ReviewEvent::ALL.len();
             }
-            KeyCode::Char('k') => {
+            KeyCode::Char('k') | KeyCode::Up => {
                 self.review_event_cursor = if self.review_event_cursor == 0 {
                     ReviewEvent::ALL.len() - 1
                 } else {
@@ -2387,5 +2495,191 @@ mod tests {
         assert_eq!(ReviewEvent::Comment.label(), "Comment");
         assert_eq!(ReviewEvent::Approve.label(), "Approve");
         assert_eq!(ReviewEvent::RequestChanges.label(), "Request Changes");
+    }
+
+    // === N5: 入力方法の拡張テスト ===
+
+    #[test]
+    fn test_arrow_keys_select_next_prev() {
+        let commits = create_test_commits();
+        let files_map = create_test_files_map(&commits);
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            commits,
+            files_map,
+            None,
+        );
+        app.focused_panel = Panel::CommitList;
+
+        // Down キーで j と同じ動作
+        app.handle_normal_mode(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.commit_list_state.selected(), Some(1));
+
+        // Up キーで k と同じ動作
+        app.handle_normal_mode(KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(app.commit_list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_h_l_panel_navigation() {
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            vec![],
+            create_empty_files_map(),
+            None,
+        );
+        assert_eq!(app.focused_panel, Panel::PrDescription);
+
+        // l → 次のパネル
+        app.handle_normal_mode(KeyCode::Char('l'), KeyModifiers::NONE);
+        assert_eq!(app.focused_panel, Panel::CommitList);
+
+        // Right → 次のパネル
+        app.handle_normal_mode(KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(app.focused_panel, Panel::FileTree);
+
+        // h → 前のパネル
+        app.handle_normal_mode(KeyCode::Char('h'), KeyModifiers::NONE);
+        assert_eq!(app.focused_panel, Panel::CommitList);
+
+        // Left → 前のパネル
+        app.handle_normal_mode(KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(app.focused_panel, Panel::PrDescription);
+    }
+
+    #[test]
+    fn test_arrow_keys_in_line_select_mode() {
+        let mut app = create_app_with_patch();
+        app.focused_panel = Panel::DiffView;
+        app.enter_line_select_mode();
+
+        // Down で選択拡張
+        app.handle_line_select_mode(KeyCode::Down);
+        assert_eq!(app.cursor_line, 1);
+
+        // Up で選択縮小
+        app.handle_line_select_mode(KeyCode::Up);
+        assert_eq!(app.cursor_line, 0);
+    }
+
+    #[test]
+    fn test_panel_at_returns_correct_panel() {
+        let mut app = create_app_with_patch();
+        // Rect を手動設定（render を経由しないテスト用）
+        app.pr_desc_rect = Rect::new(0, 1, 30, 10);
+        app.commit_list_rect = Rect::new(0, 11, 30, 10);
+        app.file_tree_rect = Rect::new(0, 21, 30, 10);
+        app.diff_view_rect = Rect::new(30, 1, 50, 30);
+
+        assert_eq!(app.panel_at(5, 5), Some(Panel::PrDescription));
+        assert_eq!(app.panel_at(5, 15), Some(Panel::CommitList));
+        assert_eq!(app.panel_at(5, 25), Some(Panel::FileTree));
+        assert_eq!(app.panel_at(40, 10), Some(Panel::DiffView));
+        assert_eq!(app.panel_at(90, 90), None);
+    }
+
+    #[test]
+    fn test_mouse_click_changes_focus() {
+        let mut app = create_app_with_patch();
+        app.pr_desc_rect = Rect::new(0, 1, 30, 10);
+        app.commit_list_rect = Rect::new(0, 11, 30, 10);
+        app.file_tree_rect = Rect::new(0, 21, 30, 10);
+        app.diff_view_rect = Rect::new(30, 1, 50, 30);
+
+        assert_eq!(app.focused_panel, Panel::PrDescription);
+
+        app.handle_mouse_click(40, 10);
+        assert_eq!(app.focused_panel, Panel::DiffView);
+
+        app.handle_mouse_click(5, 15);
+        assert_eq!(app.focused_panel, Panel::CommitList);
+    }
+
+    #[test]
+    fn test_mouse_click_selects_list_item() {
+        let commits = create_test_commits();
+        let files_map = create_test_files_map(&commits);
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            commits,
+            files_map,
+            None,
+        );
+        // CommitList: y=11 はボーダー、y=12 が最初のアイテム
+        app.commit_list_rect = Rect::new(0, 11, 30, 10);
+
+        // 2番目のアイテム（y=13, offset 0, relative_y=1 → idx=1）をクリック
+        app.handle_mouse_click(5, 13);
+        assert_eq!(app.focused_panel, Panel::CommitList);
+        assert_eq!(app.commit_list_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn test_mouse_scroll_on_diff() {
+        let mut app = create_app_with_patch();
+        app.diff_view_rect = Rect::new(30, 1, 50, 30);
+        app.diff_view_height = 5; // パッチ10行 > 表示5行 → スクロール可能
+        app.focused_panel = Panel::FileTree; // フォーカスは別のペイン
+
+        // DiffView 上でスクロール → ビューポートが直接移動（フォーカス不要）
+        assert_eq!(app.diff_scroll, 0);
+        app.handle_mouse_scroll(40, 10, true);
+        assert_eq!(app.diff_scroll, 1);
+        app.handle_mouse_scroll(40, 10, false);
+        assert_eq!(app.diff_scroll, 0);
+        // 下限以下にはならない
+        app.handle_mouse_scroll(40, 10, false);
+        assert_eq!(app.diff_scroll, 0);
+        assert_eq!(app.focused_panel, Panel::FileTree); // フォーカスは変わらない
+    }
+
+    #[test]
+    fn test_mouse_scroll_on_pr_description() {
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            "line1\nline2\nline3\nline4\nline5".to_string(),
+            vec![],
+            create_empty_files_map(),
+            None,
+        );
+        app.pr_desc_rect = Rect::new(0, 1, 30, 5);
+        app.pr_desc_view_height = 3;
+
+        assert_eq!(app.pr_desc_scroll, 0);
+        app.handle_mouse_scroll(5, 3, true);
+        assert_eq!(app.pr_desc_scroll, 1);
+        app.handle_mouse_scroll(5, 3, false);
+        assert_eq!(app.pr_desc_scroll, 0);
+    }
+
+    #[test]
+    fn test_mouse_scroll_on_commit_list_ignored() {
+        let commits = create_test_commits();
+        let files_map = create_test_files_map(&commits);
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            commits,
+            files_map,
+            None,
+        );
+        app.commit_list_rect = Rect::new(0, 11, 30, 10);
+
+        // CommitList 上でスクロールしても選択は変わらない
+        app.handle_mouse_scroll(5, 15, true);
+        assert_eq!(app.commit_list_state.selected(), Some(0));
     }
 }

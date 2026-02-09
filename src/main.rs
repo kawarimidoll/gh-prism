@@ -126,6 +126,8 @@ async fn main() -> Result<()> {
     }
 
     let terminal = ratatui::init();
+    crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
+
     let mut app = App::new(
         cli.pr_number,
         format!("{}/{}", owner, repo),
@@ -136,6 +138,8 @@ async fn main() -> Result<()> {
         Some(client),
     );
     let result = app.run(terminal);
+
+    crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture)?;
     ratatui::restore();
     result
 }
