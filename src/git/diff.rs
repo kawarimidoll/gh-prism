@@ -16,6 +16,7 @@ pub fn has_delta() -> bool {
 /// 戻り値は ANSI エスケープシーケンスを含む文字列
 pub fn highlight_with_delta(diff: &str) -> Result<String> {
     let mut child = Command::new("delta")
+        .args(["--paging=never", "--color-only"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -44,15 +45,25 @@ fn create_diff_header(filename: &str) -> String {
 /// diff をハイライト付きで Text に変換
 /// delta が利用可能なら使用、なければ None を返す
 /// filename を渡すことで delta が言語を検出できる
+/// 出力はパッチ行のみ（言語検出用に追加した diff ヘッダーは除去済み）
 pub fn highlight_diff(diff: &str, filename: &str) -> Option<Text<'static>> {
     if !has_delta() {
         return None;
     }
 
     // diff ヘッダーを追加してシンタックスハイライトを有効化
-    let full_diff = format!("{}{}", create_diff_header(filename), diff);
+    let header = create_diff_header(filename);
+    let header_line_count = header.lines().count();
+    let full_diff = format!("{}{}", header, diff);
 
     highlight_with_delta(&full_diff)
         .ok()
         .and_then(|highlighted| ansi_to_text(&highlighted).ok())
+        .map(|mut text| {
+            // 言語検出用に追加した diff ヘッダー行を除去
+            if text.lines.len() > header_line_count {
+                text.lines.drain(..header_line_count);
+            }
+            text
+        })
 }

@@ -506,53 +506,11 @@ impl App {
             return;
         }
 
-        // DiffView がフォーカスされているか、行選択モードの場合はカーソル/選択を表示
-        let show_cursor = self.focused_panel == Panel::DiffView;
-        let has_selection = self.mode == AppMode::LineSelect || self.mode == AppMode::CommentInput;
-
-        if show_cursor || has_selection {
-            // カーソル行・選択範囲のハイライトを適用
-            let lines: Vec<Line> = patch
-                .lines()
-                .enumerate()
-                .map(|(idx, line)| {
-                    let base_style = match line.chars().next() {
-                        Some('+') => Style::default().fg(Color::Green),
-                        Some('-') => Style::default().fg(Color::Red),
-                        Some('@') => Style::default().fg(Color::Cyan),
-                        _ => Style::default(),
-                    };
-
-                    let style = if has_selection {
-                        let is_selected = self.line_selection.is_some_and(|sel| {
-                            let (start, end) = sel.range(self.cursor_line);
-                            idx >= start && idx <= end
-                        });
-                        if is_selected {
-                            base_style.bg(Color::DarkGray)
-                        } else {
-                            base_style
-                        }
-                    } else if show_cursor && idx == self.cursor_line {
-                        base_style.bg(Color::DarkGray)
-                    } else {
-                        base_style
-                    };
-
-                    Line::styled(line, style)
-                })
-                .collect();
-
-            let paragraph = Paragraph::new(lines)
-                .block(block)
-                .scroll((self.diff_scroll, 0));
-            frame.render_widget(paragraph, diff_area);
-        } else if let Some(highlighted_text) = highlight_diff(patch, filename) {
-            let paragraph = Paragraph::new(highlighted_text)
-                .block(block)
-                .scroll((self.diff_scroll, 0));
-            frame.render_widget(paragraph, diff_area);
+        // delta でシンタックスハイライトを試行、失敗時は手動色分け
+        let mut text = if let Some(highlighted) = highlight_diff(patch, filename) {
+            highlighted
         } else {
+            // delta 未使用: 手動色分け
             let lines: Vec<Line> = patch
                 .lines()
                 .map(|line| {
@@ -565,12 +523,45 @@ impl App {
                     Line::styled(line, style)
                 })
                 .collect();
+            ratatui::text::Text::from(lines)
+        };
 
-            let paragraph = Paragraph::new(lines)
-                .block(block)
-                .scroll((self.diff_scroll, 0));
-            frame.render_widget(paragraph, diff_area);
+        // カーソル/選択/ペンディングコメントのオーバーレイを適用
+        let show_cursor = self.focused_panel == Panel::DiffView;
+        let has_selection = self.mode == AppMode::LineSelect || self.mode == AppMode::CommentInput;
+
+        for (idx, line) in text.lines.iter_mut().enumerate() {
+            let is_selected = has_selection
+                && self.line_selection.is_some_and(|sel| {
+                    let (start, end) = sel.range(self.cursor_line);
+                    idx >= start && idx <= end
+                });
+            let is_cursor = show_cursor && !has_selection && idx == self.cursor_line;
+            let is_comment = self
+                .pending_comments
+                .iter()
+                .any(|c| c.file_path == filename && idx >= c.start_line && idx <= c.end_line);
+
+            // 背景色オーバーレイ（優先順位: 選択 > カーソル > コメント）
+            let bg = if is_selected || is_cursor {
+                Some(Color::DarkGray)
+            } else if is_comment {
+                Some(Color::Indexed(17))
+            } else {
+                None
+            };
+
+            if let Some(bg_color) = bg {
+                for span in &mut line.spans {
+                    span.style = span.style.bg(bg_color);
+                }
+            }
         }
+
+        let paragraph = Paragraph::new(text)
+            .block(block)
+            .scroll((self.diff_scroll, 0));
+        frame.render_widget(paragraph, diff_area);
     }
 
     fn render_comment_input(&self, frame: &mut Frame, area: Rect) {
@@ -657,6 +648,16 @@ impl App {
                 // DiffView パネルでのみ行選択モードに入る
                 if self.focused_panel == Panel::DiffView {
                     self.enter_line_select_mode();
+                }
+            }
+            KeyCode::Char('c') => {
+                // DiffView で直接 c: カーソル行のみで単一行コメント
+                if self.focused_panel == Panel::DiffView {
+                    self.line_selection = Some(LineSelection {
+                        anchor: self.cursor_line,
+                    });
+                    self.comment_input.clear();
+                    self.mode = AppMode::CommentInput;
                 }
             }
             KeyCode::Char('S') => {
@@ -1966,5 +1967,63 @@ mod tests {
         };
         assert_eq!(commit.message_summary(), "First line");
         assert_eq!(commit.commit.message.lines().count(), 4);
+    }
+
+    // === N3: コメント機能の強化テスト ===
+
+    #[test]
+    fn test_c_key_single_line_comment_in_diffview() {
+        // DiffView で c キーを押すと単一行コメントモードに入る
+        let mut app = create_app_with_patch();
+        app.focused_panel = Panel::DiffView;
+        app.cursor_line = 3;
+
+        // Normal モードで c キー
+        app.handle_normal_mode(KeyCode::Char('c'), KeyModifiers::empty());
+        assert_eq!(app.mode, AppMode::CommentInput);
+        assert!(app.line_selection.is_some());
+
+        // line_selection のアンカーがカーソル行に設定されている
+        let sel = app.line_selection.unwrap();
+        assert_eq!(sel.anchor, 3);
+        // 単一行なので range は (3, 3)
+        assert_eq!(sel.range(app.cursor_line), (3, 3));
+    }
+
+    #[test]
+    fn test_c_key_does_nothing_outside_diffview() {
+        // DiffView 以外のパネルでは c キーは無効
+        let mut app = create_app_with_patch();
+        app.focused_panel = Panel::FileTree;
+
+        app.handle_normal_mode(KeyCode::Char('c'), KeyModifiers::empty());
+        assert_eq!(app.mode, AppMode::Normal);
+        assert!(app.line_selection.is_none());
+    }
+
+    #[test]
+    fn test_pending_comment_marks_file() {
+        // ペンディングコメントがあるファイルを識別できる
+        let mut app = create_app_with_patch();
+        app.pending_comments.push(PendingComment {
+            file_path: "src/main.rs".to_string(),
+            start_line: 2,
+            end_line: 4,
+            body: "Review this".to_string(),
+            commit_sha: "abc1234567890".to_string(),
+        });
+
+        // 該当ファイルにペンディングコメントがある
+        assert!(
+            app.pending_comments
+                .iter()
+                .any(|c| c.file_path == "src/main.rs")
+        );
+        // 別のファイルにはない
+        assert!(
+            !app.pending_comments
+                .iter()
+                .any(|c| c.file_path == "other.rs")
+        );
     }
 }
