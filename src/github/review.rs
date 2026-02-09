@@ -153,15 +153,21 @@ fn build_review_comment(pending: &PendingComment, files: &[DiffFile]) -> Result<
     }
 }
 
+/// レビュー送信に必要な接続コンテキスト
+pub struct ReviewContext<'a> {
+    pub client: &'a Octocrab,
+    pub owner: &'a str,
+    pub repo: &'a str,
+    pub pr_number: u64,
+}
+
 /// 保留中のコメントを GitHub PR Review API に一括送信
 pub async fn submit_review(
-    client: &Octocrab,
-    owner: &str,
-    repo: &str,
-    pr_number: u64,
+    ctx: &ReviewContext<'_>,
     head_sha: &str,
     pending_comments: &[PendingComment],
     files_map: &HashMap<String, Vec<DiffFile>>,
+    event: &str,
 ) -> Result<()> {
     let mut comments = Vec::new();
 
@@ -176,13 +182,16 @@ pub async fn submit_review(
 
     let request = CreateReviewRequest {
         commit_id: head_sha.to_string(),
-        body: "Review from gh-prism".to_string(),
-        event: "COMMENT".to_string(),
+        body: String::new(),
+        event: event.to_string(),
         comments,
     };
 
-    let url = format!("/repos/{}/{}/pulls/{}/reviews", owner, repo, pr_number);
-    client
+    let url = format!(
+        "/repos/{}/{}/pulls/{}/reviews",
+        ctx.owner, ctx.repo, ctx.pr_number
+    );
+    ctx.client
         .post::<_, serde_json::Value>(url, Some(&request))
         .await?;
 

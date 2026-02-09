@@ -32,6 +32,40 @@ pub enum AppMode {
     Normal,
     LineSelect,
     CommentInput,
+    ReviewSubmit,
+    QuitConfirm,
+}
+
+/// レビューイベントタイプ
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReviewEvent {
+    Comment,
+    Approve,
+    RequestChanges,
+}
+
+impl ReviewEvent {
+    pub const ALL: [ReviewEvent; 3] = [
+        ReviewEvent::Comment,
+        ReviewEvent::Approve,
+        ReviewEvent::RequestChanges,
+    ];
+
+    pub fn as_api_str(&self) -> &str {
+        match self {
+            ReviewEvent::Comment => "COMMENT",
+            ReviewEvent::Approve => "APPROVE",
+            ReviewEvent::RequestChanges => "REQUEST_CHANGES",
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            ReviewEvent::Comment => "Comment",
+            ReviewEvent::Approve => "Approve",
+            ReviewEvent::RequestChanges => "Request Changes",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -132,8 +166,12 @@ pub struct App {
     client: Option<Octocrab>,
     /// ステータスメッセージ（ヘッダーバーに表示、3秒後に自動クリア）
     status_message: Option<StatusMessage>,
-    /// コメント送信フラグ（draw 後に実行するため）
-    needs_submit: bool,
+    /// レビュー送信フラグ（draw 後に実行するため）
+    needs_submit: Option<ReviewEvent>,
+    /// レビュー送信ダイアログのカーソル位置（0=Comment, 1=Approve, 2=RequestChanges）
+    review_event_cursor: usize,
+    /// 送信後に終了するかどうか
+    quit_after_submit: bool,
 }
 
 impl App {
@@ -182,7 +220,9 @@ impl App {
             pending_comments: Vec::new(),
             client,
             status_message: None,
-            needs_submit: false,
+            needs_submit: None,
+            review_event_cursor: 0,
+            quit_after_submit: false,
         }
     }
 
@@ -228,9 +268,12 @@ impl App {
             terminal.draw(|frame| self.render(frame))?;
 
             // draw 後に submit を実行（ローディング表示を先にユーザーへ見せる）
-            if self.needs_submit {
-                self.needs_submit = false;
-                self.submit_pending_comments();
+            if let Some(event) = self.needs_submit.take() {
+                self.submit_review_with_event(event);
+                if self.quit_after_submit {
+                    self.quit_after_submit = false;
+                    self.should_quit = true;
+                }
             }
 
             self.handle_events()?;
@@ -262,6 +305,8 @@ impl App {
             AppMode::Normal => "",
             AppMode::LineSelect => " [LINE SELECT] ",
             AppMode::CommentInput => " [COMMENT] ",
+            AppMode::ReviewSubmit => " [REVIEW] ",
+            AppMode::QuitConfirm => " [CONFIRM] ",
         };
 
         let comments_badge = if self.pending_comments.is_empty() {
@@ -274,6 +319,8 @@ impl App {
             AppMode::Normal => Style::default().bg(Color::Blue).fg(Color::White),
             AppMode::LineSelect => Style::default().bg(Color::Magenta).fg(Color::White),
             AppMode::CommentInput => Style::default().bg(Color::Green).fg(Color::White),
+            AppMode::ReviewSubmit => Style::default().bg(Color::Cyan).fg(Color::Black),
+            AppMode::QuitConfirm => Style::default().bg(Color::Red).fg(Color::White),
         };
 
         let header_base = format!(
@@ -325,6 +372,13 @@ impl App {
         // CommentInput モードでは入力欄を描画
         if self.mode == AppMode::CommentInput {
             self.render_comment_input(frame, main_layout[2]);
+        }
+
+        // ダイアログ描画（画面中央にオーバーレイ）
+        match self.mode {
+            AppMode::ReviewSubmit => self.render_review_submit_dialog(frame, area),
+            AppMode::QuitConfirm => self.render_quit_confirm_dialog(frame, area),
+            _ => {}
         }
     }
 
@@ -587,6 +641,89 @@ impl App {
         ));
     }
 
+    /// 中央に固定サイズの矩形を配置
+    fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+        let x = area.x + (area.width.saturating_sub(width)) / 2;
+        let y = area.y + (area.height.saturating_sub(height)) / 2;
+        Rect::new(x, y, width.min(area.width), height.min(area.height))
+    }
+
+    fn render_review_submit_dialog(&self, frame: &mut Frame, area: Rect) {
+        let dialog = Self::centered_rect(36, 10, area);
+        frame.render_widget(ratatui::widgets::Clear, dialog);
+
+        let comments_info = if self.pending_comments.is_empty() {
+            "No pending comments".to_string()
+        } else {
+            format!("{} pending comment(s)", self.pending_comments.len())
+        };
+
+        let mut lines = vec![Line::raw("")];
+
+        for (i, event) in ReviewEvent::ALL.iter().enumerate() {
+            let marker = if i == self.review_event_cursor {
+                "▶ "
+            } else {
+                "  "
+            };
+            let style = if i == self.review_event_cursor {
+                Style::default().fg(Color::Yellow)
+            } else {
+                Style::default()
+            };
+            lines.push(Line::styled(format!("{}{}", marker, event.label()), style));
+        }
+
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            format!("  {}", comments_info),
+            Style::default().fg(Color::DarkGray),
+        ));
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            "  j/k: select  Enter: submit",
+            Style::default().fg(Color::DarkGray),
+        ));
+        lines.push(Line::styled(
+            "  Esc: cancel",
+            Style::default().fg(Color::DarkGray),
+        ));
+
+        let paragraph = Paragraph::new(lines).block(
+            Block::default()
+                .title(" Submit Review ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        );
+        frame.render_widget(paragraph, dialog);
+    }
+
+    fn render_quit_confirm_dialog(&self, frame: &mut Frame, area: Rect) {
+        let dialog = Self::centered_rect(38, 9, area);
+        frame.render_widget(ratatui::widgets::Clear, dialog);
+
+        let lines = vec![
+            Line::raw(""),
+            Line::styled(
+                format!("  {} unsent comment(s).", self.pending_comments.len()),
+                Style::default().fg(Color::Yellow),
+            ),
+            Line::styled("  Submit before quitting?", Style::default()),
+            Line::raw(""),
+            Line::styled("  y: submit & quit", Style::default().fg(Color::Green)),
+            Line::styled("  n: discard & quit", Style::default().fg(Color::Red)),
+            Line::styled("  c: cancel", Style::default().fg(Color::DarkGray)),
+        ];
+
+        let paragraph = Paragraph::new(lines).block(
+            Block::default()
+                .title(" Quit Confirmation ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Red)),
+        );
+        frame.render_widget(paragraph, dialog);
+    }
+
     fn handle_events(&mut self) -> Result<()> {
         // 250ms 以内にイベントがなければ早期リターン（render ループを回す）
         if !event::poll(Duration::from_millis(250))? {
@@ -600,6 +737,8 @@ impl App {
                 AppMode::Normal => self.handle_normal_mode(key.code, key.modifiers),
                 AppMode::LineSelect => self.handle_line_select_mode(key.code),
                 AppMode::CommentInput => self.handle_comment_input_mode(key.code),
+                AppMode::ReviewSubmit => self.handle_review_submit_mode(key.code),
+                AppMode::QuitConfirm => self.handle_quit_confirm_mode(key.code),
             }
         }
         Ok(())
@@ -607,7 +746,13 @@ impl App {
 
     fn handle_normal_mode(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         match code {
-            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('q') => {
+                if self.pending_comments.is_empty() {
+                    self.should_quit = true;
+                } else {
+                    self.mode = AppMode::QuitConfirm;
+                }
+            }
             KeyCode::Tab => self.next_panel(),
             KeyCode::BackTab => self.prev_panel(),
             // 数字キーでペイン直接ジャンプ
@@ -661,10 +806,8 @@ impl App {
                 }
             }
             KeyCode::Char('S') => {
-                if !self.pending_comments.is_empty() {
-                    self.status_message = Some(StatusMessage::info("Submitting..."));
-                    self.needs_submit = true;
-                }
+                self.review_event_cursor = 0;
+                self.mode = AppMode::ReviewSubmit;
             }
             _ => {}
         }
@@ -718,6 +861,65 @@ impl App {
         }
     }
 
+    /// レビュー送信ダイアログのキー処理
+    fn handle_review_submit_mode(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.quit_after_submit = false;
+                self.mode = AppMode::Normal;
+            }
+            KeyCode::Char('j') => {
+                self.review_event_cursor = (self.review_event_cursor + 1) % ReviewEvent::ALL.len();
+            }
+            KeyCode::Char('k') => {
+                self.review_event_cursor = if self.review_event_cursor == 0 {
+                    ReviewEvent::ALL.len() - 1
+                } else {
+                    self.review_event_cursor - 1
+                };
+            }
+            KeyCode::Enter => {
+                let event = ReviewEvent::ALL[self.review_event_cursor];
+                // COMMENT は pending_comments が必要
+                if event == ReviewEvent::Comment && self.pending_comments.is_empty() {
+                    self.status_message =
+                        Some(StatusMessage::error("No pending comments to submit"));
+                    self.mode = AppMode::Normal;
+                    return;
+                }
+                self.status_message = Some(StatusMessage::info(format!(
+                    "Submitting ({})...",
+                    event.label()
+                )));
+                self.needs_submit = Some(event);
+                self.mode = AppMode::Normal;
+            }
+            _ => {}
+        }
+    }
+
+    /// 終了確認ダイアログのキー処理
+    fn handle_quit_confirm_mode(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('y') => {
+                // レビュー送信ダイアログへ遷移（送信後に終了）
+                self.review_event_cursor = 0;
+                self.quit_after_submit = true;
+                self.mode = AppMode::ReviewSubmit;
+            }
+            KeyCode::Char('n') => {
+                // 破棄して終了
+                self.pending_comments.clear();
+                self.should_quit = true;
+            }
+            KeyCode::Char('c') | KeyCode::Esc => {
+                // キャンセル
+                self.mode = AppMode::Normal;
+            }
+            _ => {}
+        }
+    }
+
     /// コメント入力をキャンセルして LineSelect に戻る（選択範囲維持）
     fn cancel_comment_input(&mut self) {
         self.comment_input.clear();
@@ -766,9 +968,10 @@ impl App {
         Some((owner, repo))
     }
 
-    /// 保留中コメントを GitHub PR Review API に送信
-    fn submit_pending_comments(&mut self) {
-        if self.pending_comments.is_empty() {
+    /// レビューを GitHub PR Review API に送信
+    fn submit_review_with_event(&mut self, event: ReviewEvent) {
+        // COMMENT はコメントが必要
+        if event == ReviewEvent::Comment && self.pending_comments.is_empty() {
             return;
         }
 
@@ -789,27 +992,37 @@ impl App {
         };
 
         let count = self.pending_comments.len();
+        let ctx = review::ReviewContext {
+            client,
+            owner,
+            repo,
+            pr_number: self.pr_number,
+        };
 
         // 同期ループ内から async を呼ぶ
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(review::submit_review(
-                client,
-                owner,
-                repo,
-                self.pr_number,
+                &ctx,
                 head_sha,
                 &self.pending_comments,
                 &self.files_map,
+                event.as_api_str(),
             ))
         });
 
         match result {
             Ok(()) => {
-                self.status_message = Some(StatusMessage::info(format!(
-                    "✓ {} comment{} submitted",
-                    count,
-                    if count == 1 { "" } else { "s" }
-                )));
+                let msg = if count > 0 {
+                    format!(
+                        "✓ {} ({} comment{})",
+                        event.label(),
+                        count,
+                        if count == 1 { "" } else { "s" }
+                    )
+                } else {
+                    format!("✓ {}", event.label())
+                };
+                self.status_message = Some(StatusMessage::info(msg));
                 self.pending_comments.clear();
             }
             Err(e) => {
@@ -1709,7 +1922,7 @@ mod tests {
             None,
         );
         // pending_comments が空なら何もしない（status_message も None のまま）
-        app.submit_pending_comments();
+        app.submit_review_with_event(ReviewEvent::Comment);
         assert!(app.status_message.is_none());
     }
 
@@ -1743,36 +1956,84 @@ mod tests {
     }
 
     #[test]
-    fn test_needs_submit_set_on_s_key_with_pending_comments() {
+    fn test_s_key_opens_review_submit_dialog() {
         let mut app = create_app_with_patch();
-        app.focused_panel = Panel::DiffView;
 
-        // コメントを1つ追加
-        app.enter_line_select_mode();
-        app.enter_comment_input_mode();
-        app.handle_comment_input_mode(KeyCode::Char('x'));
-        app.confirm_comment();
-        assert_eq!(app.pending_comments.len(), 1);
-
-        // S キー押下で needs_submit が true になる
+        // S キーで ReviewSubmit モードに遷移
         app.handle_normal_mode(KeyCode::Char('S'), KeyModifiers::SHIFT);
-        assert!(app.needs_submit);
-        assert!(app.status_message.is_some());
-        assert_eq!(
-            app.status_message.as_ref().unwrap().level,
-            StatusLevel::Info
-        );
-        assert_eq!(app.status_message.as_ref().unwrap().body, "Submitting...");
+        assert_eq!(app.mode, AppMode::ReviewSubmit);
+        assert_eq!(app.review_event_cursor, 0);
     }
 
     #[test]
-    fn test_needs_submit_not_set_when_no_pending_comments() {
+    fn test_review_submit_dialog_navigation() {
         let mut app = create_app_with_patch();
+        app.mode = AppMode::ReviewSubmit;
+        app.review_event_cursor = 0;
 
-        // pending_comments が空の場合、S キーで needs_submit は立たない
-        app.handle_normal_mode(KeyCode::Char('S'), KeyModifiers::SHIFT);
-        assert!(!app.needs_submit);
-        assert!(app.status_message.is_none());
+        // j で下に移動
+        app.handle_review_submit_mode(KeyCode::Char('j'));
+        assert_eq!(app.review_event_cursor, 1);
+        app.handle_review_submit_mode(KeyCode::Char('j'));
+        assert_eq!(app.review_event_cursor, 2);
+        // 循環
+        app.handle_review_submit_mode(KeyCode::Char('j'));
+        assert_eq!(app.review_event_cursor, 0);
+
+        // k で上に移動（循環）
+        app.handle_review_submit_mode(KeyCode::Char('k'));
+        assert_eq!(app.review_event_cursor, 2);
+    }
+
+    #[test]
+    fn test_review_submit_comment_requires_pending() {
+        let mut app = create_app_with_patch();
+        app.mode = AppMode::ReviewSubmit;
+        app.review_event_cursor = 0; // Comment
+
+        // pending_comments が空で Comment を選択するとエラー
+        app.handle_review_submit_mode(KeyCode::Enter);
+        assert_eq!(app.mode, AppMode::Normal);
+        assert!(app.needs_submit.is_none());
+        assert!(app.status_message.is_some());
+        assert_eq!(
+            app.status_message.as_ref().unwrap().level,
+            StatusLevel::Error
+        );
+    }
+
+    #[test]
+    fn test_review_submit_approve_without_comments() {
+        let mut app = create_app_with_patch();
+        app.mode = AppMode::ReviewSubmit;
+        app.review_event_cursor = 1; // Approve
+
+        // pending_comments が空でも Approve は送信可能
+        app.handle_review_submit_mode(KeyCode::Enter);
+        assert_eq!(app.mode, AppMode::Normal);
+        assert_eq!(app.needs_submit, Some(ReviewEvent::Approve));
+    }
+
+    #[test]
+    fn test_review_submit_escape_cancels() {
+        let mut app = create_app_with_patch();
+        app.mode = AppMode::ReviewSubmit;
+
+        app.handle_review_submit_mode(KeyCode::Esc);
+        assert_eq!(app.mode, AppMode::Normal);
+        assert!(app.needs_submit.is_none());
+        assert!(!app.quit_after_submit);
+    }
+
+    #[test]
+    fn test_review_submit_escape_resets_quit_after_submit() {
+        let mut app = create_app_with_patch();
+        app.mode = AppMode::ReviewSubmit;
+        app.quit_after_submit = true; // QuitConfirm → y → ReviewSubmit の流れ
+
+        app.handle_review_submit_mode(KeyCode::Esc);
+        assert_eq!(app.mode, AppMode::Normal);
+        assert!(!app.quit_after_submit);
     }
 
     #[test]
@@ -1879,7 +2140,7 @@ mod tests {
             commit_sha: "abc".to_string(),
         });
 
-        app.submit_pending_comments();
+        app.submit_review_with_event(ReviewEvent::Comment);
         assert!(app.status_message.is_some());
         assert_eq!(
             app.status_message.as_ref().unwrap().level,
@@ -2025,5 +2286,106 @@ mod tests {
                 .iter()
                 .any(|c| c.file_path == "other.rs")
         );
+    }
+
+    // === N4: レビューフローの改善テスト ===
+
+    #[test]
+    fn test_quit_with_pending_comments_shows_confirm() {
+        let mut app = create_app_with_patch();
+        app.focused_panel = Panel::DiffView;
+
+        // コメントを追加
+        app.pending_comments.push(PendingComment {
+            file_path: "src/main.rs".to_string(),
+            start_line: 0,
+            end_line: 0,
+            body: "test".to_string(),
+            commit_sha: "abc1234567890".to_string(),
+        });
+
+        // q キーで QuitConfirm モードに遷移
+        app.handle_normal_mode(KeyCode::Char('q'), KeyModifiers::NONE);
+        assert_eq!(app.mode, AppMode::QuitConfirm);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn test_quit_without_pending_comments_quits_immediately() {
+        let mut app = create_app_with_patch();
+
+        // pending_comments が空なら即終了
+        app.handle_normal_mode(KeyCode::Char('q'), KeyModifiers::NONE);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_quit_confirm_y_opens_review_submit() {
+        let mut app = create_app_with_patch();
+        app.mode = AppMode::QuitConfirm;
+        app.pending_comments.push(PendingComment {
+            file_path: "test.rs".to_string(),
+            start_line: 0,
+            end_line: 0,
+            body: "test".to_string(),
+            commit_sha: "abc".to_string(),
+        });
+
+        // y → ReviewSubmit ダイアログに遷移（quit_after_submit フラグ付き）
+        app.handle_quit_confirm_mode(KeyCode::Char('y'));
+        assert_eq!(app.mode, AppMode::ReviewSubmit);
+        assert!(app.quit_after_submit);
+        assert_eq!(app.review_event_cursor, 0);
+    }
+
+    #[test]
+    fn test_quit_confirm_n_discards_and_quits() {
+        let mut app = create_app_with_patch();
+        app.mode = AppMode::QuitConfirm;
+        app.pending_comments.push(PendingComment {
+            file_path: "test.rs".to_string(),
+            start_line: 0,
+            end_line: 0,
+            body: "test".to_string(),
+            commit_sha: "abc".to_string(),
+        });
+
+        app.handle_quit_confirm_mode(KeyCode::Char('n'));
+        assert!(app.should_quit);
+        assert!(app.pending_comments.is_empty());
+    }
+
+    #[test]
+    fn test_quit_confirm_c_cancels() {
+        let mut app = create_app_with_patch();
+        app.mode = AppMode::QuitConfirm;
+
+        app.handle_quit_confirm_mode(KeyCode::Char('c'));
+        assert_eq!(app.mode, AppMode::Normal);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn test_quit_confirm_esc_cancels() {
+        let mut app = create_app_with_patch();
+        app.mode = AppMode::QuitConfirm;
+
+        app.handle_quit_confirm_mode(KeyCode::Esc);
+        assert_eq!(app.mode, AppMode::Normal);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn test_review_event_api_str() {
+        assert_eq!(ReviewEvent::Comment.as_api_str(), "COMMENT");
+        assert_eq!(ReviewEvent::Approve.as_api_str(), "APPROVE");
+        assert_eq!(ReviewEvent::RequestChanges.as_api_str(), "REQUEST_CHANGES");
+    }
+
+    #[test]
+    fn test_review_event_label() {
+        assert_eq!(ReviewEvent::Comment.label(), "Comment");
+        assert_eq!(ReviewEvent::Approve.label(), "Approve");
+        assert_eq!(ReviewEvent::RequestChanges.label(), "Request Changes");
     }
 }
