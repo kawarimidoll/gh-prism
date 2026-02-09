@@ -5,6 +5,7 @@ mod github;
 use app::App;
 use clap::Parser;
 use color_eyre::Result;
+use futures::stream::{FuturesUnordered, StreamExt};
 use std::collections::HashMap;
 
 #[derive(Parser)]
@@ -79,13 +80,49 @@ async fn main() -> Result<()> {
     eprintln!("Fetching commits...");
     let commits = github::commits::fetch_commits(&client, &owner, &repo, cli.pr_number).await?;
 
-    // 全コミットのファイルを事前取得
-    eprintln!("Fetching files for {} commits...", commits.len());
+    // 全コミットのファイルを並列取得
+    let total = commits.len();
+    eprintln!("Fetching files for {} commits...", total);
+
+    // 全コミットの初期状態を表示
+    for commit in &commits {
+        eprintln!("  ⏳ {} {}", commit.short_sha(), commit.message_summary());
+    }
+
+    // 並列フェッチを開始
+    let futs: FuturesUnordered<_> = commits
+        .iter()
+        .enumerate()
+        .map(|(i, commit)| {
+            let client = client.clone();
+            let owner = owner.clone();
+            let repo = repo.clone();
+            let sha = commit.sha.clone();
+            async move {
+                let result = github::files::fetch_commit_files(&client, &owner, &repo, &sha).await;
+                (i, sha, result)
+            }
+        })
+        .collect();
+
     let mut files_map: HashMap<String, Vec<github::files::DiffFile>> = HashMap::new();
-    for (i, commit) in commits.iter().enumerate() {
-        eprintln!("  [{}/{}] {}", i + 1, commits.len(), commit.short_sha());
-        let files = github::files::fetch_commit_files(&client, &owner, &repo, &commit.sha).await?;
-        files_map.insert(commit.sha.clone(), files);
+    futures::pin_mut!(futs);
+    while let Some((idx, sha, result)) = futs.next().await {
+        let files = result?;
+        files_map.insert(sha, files);
+
+        // ANSI エスケープでカーソルを該当行に移動して更新
+        let up = total - idx;
+        eprint!("\x1b[{}A\r\x1b[2K", up);
+        eprintln!(
+            "  ✅ {} {}",
+            commits[idx].short_sha(),
+            commits[idx].message_summary()
+        );
+        let down = up.saturating_sub(1);
+        if down > 0 {
+            eprint!("\x1b[{}B", down);
+        }
     }
 
     let terminal = ratatui::init();

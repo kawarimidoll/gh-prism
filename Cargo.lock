@@ -848,6 +848,7 @@ dependencies = [
  "clap",
  "color-eyre",
  "crossterm 0.29.0",
+ "futures",
  "octocrab",
  "ratatui",
  "serde",
