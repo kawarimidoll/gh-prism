@@ -84,14 +84,15 @@ async fn main() -> Result<()> {
     }
 
     let terminal = ratatui::init();
-    let result = App::new(
+    let mut app = App::new(
         cli.pr_number,
         format!("{}/{}", owner, repo),
         pr_title,
         commits,
         files_map,
-    )
-    .run(terminal);
+        Some(client),
+    );
+    let result = app.run(terminal);
     ratatui::restore();
     result
 }

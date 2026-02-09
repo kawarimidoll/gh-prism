@@ -1,8 +1,10 @@
 use crate::git::diff::highlight_diff;
 use crate::github::commits::CommitInfo;
 use crate::github::files::DiffFile;
+use crate::github::review;
 use color_eyre::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use octocrab::Octocrab;
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Direction, Layout, Position, Rect},
@@ -11,6 +13,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 use std::collections::HashMap;
+use tokio::runtime::Handle;
 use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -53,8 +56,7 @@ impl LineSelection {
     }
 }
 
-/// 保留中のレビューコメント（M12 で GitHub API 送信に使用）
-#[allow(dead_code)]
+/// 保留中のレビューコメント
 pub struct PendingComment {
     pub file_path: String,
     pub start_line: usize,
@@ -85,6 +87,10 @@ pub struct App {
     comment_input: String,
     /// 保留中のコメント一覧
     pending_comments: Vec<PendingComment>,
+    /// GitHub API クライアント（テスト時は None）
+    client: Option<Octocrab>,
+    /// ステータスメッセージ（ヘッダーバーに表示、次キー入力でクリア）
+    status_message: Option<String>,
 }
 
 impl App {
@@ -94,6 +100,7 @@ impl App {
         pr_title: String,
         commits: Vec<CommitInfo>,
         files_map: HashMap<String, Vec<DiffFile>>,
+        client: Option<Octocrab>,
     ) -> Self {
         let mut commit_list_state = ListState::default();
         if !commits.is_empty() {
@@ -126,6 +133,8 @@ impl App {
             line_selection: None,
             comment_input: String::new(),
             pending_comments: Vec::new(),
+            client,
+            status_message: None,
         }
     }
 
@@ -201,9 +210,15 @@ impl App {
             format!(" [{}💬]", self.pending_comments.len())
         };
 
+        let status_text = self
+            .status_message
+            .as_deref()
+            .map(|s| format!(" {}", s))
+            .unwrap_or_default();
+
         let header_text = format!(
-            " prism - {} PR #{}: {}{}{} | q: quit",
-            self.repo, self.pr_number, self.pr_title, mode_indicator, comments_badge
+            " prism - {} PR #{}: {}{}{}{} | q: quit",
+            self.repo, self.pr_number, self.pr_title, mode_indicator, comments_badge, status_text
         );
 
         let header_style = match self.mode {
@@ -425,6 +440,9 @@ impl App {
         if let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {
+            // 任意のキー入力でステータスメッセージをクリア
+            self.status_message = None;
+
             match self.mode {
                 AppMode::Normal => self.handle_normal_mode(key.code, key.modifiers),
                 AppMode::LineSelect => self.handle_line_select_mode(key.code),
@@ -462,6 +480,9 @@ impl App {
                 if self.focused_panel == Panel::DiffView {
                     self.enter_line_select_mode();
                 }
+            }
+            KeyCode::Char('S') => {
+                self.submit_pending_comments();
             }
             _ => {}
         }
@@ -552,6 +573,67 @@ impl App {
         self.comment_input.clear();
         self.line_selection = None;
         self.mode = AppMode::Normal;
+    }
+
+    /// owner/repo を分割して (owner, repo) を返す
+    fn parse_repo(&self) -> Option<(&str, &str)> {
+        let (owner, repo) = self.repo.split_once('/')?;
+        if owner.is_empty() || repo.is_empty() {
+            return None;
+        }
+        Some((owner, repo))
+    }
+
+    /// 保留中コメントを GitHub PR Review API に送信
+    fn submit_pending_comments(&mut self) {
+        if self.pending_comments.is_empty() {
+            return;
+        }
+
+        let Some(client) = &self.client else {
+            self.status_message = Some("✗ No API client available".to_string());
+            return;
+        };
+
+        let Some((owner, repo)) = self.parse_repo() else {
+            self.status_message = Some("✗ Invalid repo format".to_string());
+            return;
+        };
+
+        // HEAD コミットの SHA を取得
+        let Some(head_sha) = self.commits.last().map(|c| c.sha.as_str()) else {
+            self.status_message = Some("✗ No commits available".to_string());
+            return;
+        };
+
+        let count = self.pending_comments.len();
+
+        // 同期ループ内から async を呼ぶ
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(review::submit_review(
+                client,
+                owner,
+                repo,
+                self.pr_number,
+                head_sha,
+                &self.pending_comments,
+                &self.files_map,
+            ))
+        });
+
+        match result {
+            Ok(()) => {
+                self.status_message = Some(format!(
+                    "✓ {} comment{} submitted",
+                    count,
+                    if count == 1 { "" } else { "s" }
+                ));
+                self.pending_comments.clear();
+            }
+            Err(e) => {
+                self.status_message = Some(format!("✗ Failed: {}", e));
+            }
+        }
     }
 
     /// 選択範囲を下に拡張（カーソルを下に移動）
@@ -777,6 +859,7 @@ mod tests {
             "Test PR".to_string(),
             vec![],
             create_empty_files_map(),
+            None,
         );
         assert!(!app.should_quit);
         assert_eq!(app.focused_panel, Panel::CommitList);
@@ -798,6 +881,7 @@ mod tests {
             "Test PR".to_string(),
             commits,
             create_empty_files_map(),
+            None,
         );
         assert_eq!(app.commits.len(), 2);
         assert_eq!(app.commit_list_state.selected(), Some(0));
@@ -813,6 +897,7 @@ mod tests {
             "Test PR".to_string(),
             commits,
             files_map,
+            None,
         );
         assert_eq!(app.files_map.len(), 2);
         assert_eq!(app.file_list_state.selected(), Some(0));
@@ -826,6 +911,7 @@ mod tests {
             "Test PR".to_string(),
             vec![],
             create_empty_files_map(),
+            None,
         );
         app.next_panel();
         assert_eq!(app.focused_panel, Panel::FileTree);
@@ -843,6 +929,7 @@ mod tests {
             "Test PR".to_string(),
             vec![],
             create_empty_files_map(),
+            None,
         );
         app.prev_panel();
         assert_eq!(app.focused_panel, Panel::DiffView);
@@ -861,6 +948,7 @@ mod tests {
             "Test PR".to_string(),
             commits,
             create_empty_files_map(),
+            None,
         );
         assert_eq!(app.commit_list_state.selected(), Some(0));
         app.select_next();
@@ -878,6 +966,7 @@ mod tests {
             "Test PR".to_string(),
             commits,
             create_empty_files_map(),
+            None,
         );
         assert_eq!(app.commit_list_state.selected(), Some(0));
         app.select_prev();
@@ -896,6 +985,7 @@ mod tests {
             "Test PR".to_string(),
             commits,
             files_map,
+            None,
         );
         app.focused_panel = Panel::FileTree;
         assert_eq!(app.file_list_state.selected(), Some(0));
@@ -915,6 +1005,7 @@ mod tests {
             "Test PR".to_string(),
             commits,
             files_map,
+            None,
         );
         app.focused_panel = Panel::FileTree;
         assert_eq!(app.file_list_state.selected(), Some(0));
@@ -934,6 +1025,7 @@ mod tests {
             "Test PR".to_string(),
             commits,
             files_map,
+            None,
         );
         // Initial state: CommitList panel
         // コミット選択変更時にファイル選択がリセットされることを確認
@@ -958,6 +1050,7 @@ mod tests {
             "Test PR".to_string(),
             commits,
             create_empty_files_map(),
+            None,
         );
 
         // Verify the commit list state is properly initialized
@@ -998,6 +1091,7 @@ mod tests {
             "Test PR".to_string(),
             commits,
             files_map,
+            None,
         );
 
         // 最初のコミットのファイルが返される
@@ -1046,6 +1140,7 @@ mod tests {
             "Test PR".to_string(),
             commits,
             files_map,
+            None,
         );
 
         // ファイル一覧に移動して2番目のファイルを選択
@@ -1076,6 +1171,7 @@ mod tests {
             "Test PR".to_string(),
             commits,
             create_empty_files_map(),
+            None,
         );
         assert_eq!(app.diff_scroll, 0);
     }
@@ -1090,6 +1186,7 @@ mod tests {
             "Test PR".to_string(),
             commits,
             files_map,
+            None,
         );
         app.focused_panel = Panel::DiffView;
         assert_eq!(app.diff_scroll, 0);
@@ -1111,6 +1208,7 @@ mod tests {
             "Test PR".to_string(),
             commits,
             files_map,
+            None,
         );
         app.focused_panel = Panel::DiffView;
         app.diff_scroll = 20;
@@ -1136,6 +1234,7 @@ mod tests {
             "Test PR".to_string(),
             commits,
             files_map,
+            None,
         );
         // CommitList panel (default)
         app.scroll_diff_down();
@@ -1175,6 +1274,7 @@ mod tests {
             "Test PR".to_string(),
             commits,
             files_map,
+            None,
         );
         app.focused_panel = Panel::DiffView;
 
@@ -1193,6 +1293,7 @@ mod tests {
             "Test PR".to_string(),
             commits,
             files_map,
+            None,
         );
         app.focused_panel = Panel::DiffView;
         app.diff_scroll = 50;
@@ -1230,6 +1331,7 @@ mod tests {
             "Test PR".to_string(),
             commits,
             files_map,
+            None,
         )
     }
 
@@ -1335,5 +1437,48 @@ mod tests {
         assert!(app.line_selection.is_none());
         app.enter_comment_input_mode();
         assert_eq!(app.mode, AppMode::Normal);
+    }
+
+    #[test]
+    fn test_parse_repo_valid() {
+        let app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            vec![],
+            create_empty_files_map(),
+            None,
+        );
+        let (owner, repo) = app.parse_repo().unwrap();
+        assert_eq!(owner, "owner");
+        assert_eq!(repo, "repo");
+    }
+
+    #[test]
+    fn test_parse_repo_invalid() {
+        let app = App::new(
+            1,
+            "invalid".to_string(),
+            "Test PR".to_string(),
+            vec![],
+            create_empty_files_map(),
+            None,
+        );
+        assert!(app.parse_repo().is_none());
+    }
+
+    #[test]
+    fn test_submit_with_empty_pending_comments_does_nothing() {
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            vec![],
+            create_empty_files_map(),
+            None,
+        );
+        // pending_comments が空なら何もしない（status_message も None のまま）
+        app.submit_pending_comments();
+        assert!(app.status_message.is_none());
     }
 }
