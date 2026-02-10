@@ -14,9 +14,19 @@ pub fn has_delta() -> bool {
 
 /// delta を使って diff をシンタックスハイライト
 /// 戻り値は ANSI エスケープシーケンスを含む文字列
+///
+/// delta を使って diff をシンタックスハイライト
+/// --no-gitconfig でユーザー設定を無視し、--color-only で装飾を抑制する。
+/// hunk ヘッダーのスタイリングは app.rs 側で独自に行うため、delta には raw 出力させる。
+/// 注: app.rs 側で delta 出力をキャッシュするため、ファイル選択変更時のみ呼ばれる。
 pub fn highlight_with_delta(diff: &str) -> Result<String> {
     let mut child = Command::new("delta")
-        .args(["--paging=never", "--color-only"])
+        .args([
+            "--no-gitconfig",
+            "--paging=never",
+            "--color-only",
+            "--hunk-header-style=raw",
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

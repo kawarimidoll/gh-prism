@@ -11,7 +11,7 @@ use octocrab::Octocrab;
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Direction, Layout, Position, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
@@ -193,6 +193,9 @@ pub struct App {
     zoomed: bool,
     /// viewed 済みファイル名のセット（コミット跨ぎで維持）
     viewed_files: HashSet<String>,
+    /// Diff ハイライトキャッシュ（commit_idx, file_idx, highlighted Text）
+    /// ファイル選択が変わらない限り delta を再実行しない
+    diff_highlight_cache: Option<(usize, usize, ratatui::text::Text<'static>)>,
     /// 各ペインの描画領域（マウスヒットテスト用、render 時に更新）
     pr_desc_rect: Rect,
     commit_list_rect: Rect,
@@ -259,6 +262,7 @@ impl App {
             help_scroll: 0,
             zoomed: false,
             viewed_files: HashSet::new(),
+            diff_highlight_cache: None,
             pr_desc_rect: Rect::default(),
             commit_list_rect: Rect::default(),
             file_tree_rect: Rect::default(),
@@ -777,14 +781,21 @@ impl App {
             .borders(Borders::ALL)
             .border_style(border_style);
 
-        // 選択中ファイルを取得
-        let file = self.current_file();
-        let has_patch = file.is_some_and(|f| f.patch.is_some());
-        let patch = file.and_then(|f| f.patch.as_deref()).unwrap_or("");
-        let filename = file.map(|f| f.filename.as_str()).unwrap_or("");
+        // 選択中ファイルを取得し、所有型にクローンして self の借用を解放
+        let (has_file, has_patch, patch, filename) = {
+            let file = self.current_file();
+            let has_file = file.is_some();
+            let has_patch = file.is_some_and(|f| f.patch.is_some());
+            let patch = file
+                .and_then(|f| f.patch.as_deref())
+                .unwrap_or("")
+                .to_string();
+            let filename = file.map(|f| f.filename.as_str()).unwrap_or("").to_string();
+            (has_file, has_patch, patch, filename)
+        };
 
         // バイナリファイルまたは diff がない場合
-        if file.is_some() && !has_patch {
+        if has_file && !has_patch {
             let paragraph = Paragraph::new(Line::styled(
                 "Binary file or no diff available",
                 Style::default().fg(Color::DarkGray),
@@ -794,25 +805,50 @@ impl App {
             return;
         }
 
-        // delta でシンタックスハイライトを試行、失敗時は手動色分け
-        let mut text = if let Some(highlighted) = highlight_diff(patch, filename) {
-            highlighted
-        } else {
-            // delta 未使用: 手動色分け
-            let lines: Vec<Line> = patch
-                .lines()
-                .map(|line| {
-                    let style = match line.chars().next() {
-                        Some('+') => Style::default().fg(Color::Green),
-                        Some('-') => Style::default().fg(Color::Red),
-                        Some('@') => Style::default().fg(Color::Cyan),
-                        _ => Style::default(),
-                    };
-                    Line::styled(line, style)
-                })
-                .collect();
-            ratatui::text::Text::from(lines)
-        };
+        // delta 出力をキャッシュ（ファイル選択が変わったときだけ再実行）
+        let commit_idx = self.commit_list_state.selected().unwrap_or(usize::MAX);
+        let file_idx = self.file_list_state.selected().unwrap_or(usize::MAX);
+        let inner_width = diff_area.width.saturating_sub(2);
+
+        let cache_hit = matches!(
+            &self.diff_highlight_cache,
+            Some((ci, fi, _)) if *ci == commit_idx && *fi == file_idx
+        );
+
+        if !cache_hit {
+            let base_text = if let Some(highlighted) = highlight_diff(&patch, &filename) {
+                highlighted
+            } else {
+                // delta 未使用: 手動色分け
+                let lines: Vec<Line> = patch
+                    .lines()
+                    .map(|line| {
+                        let style = match line.chars().next() {
+                            Some('+') => Style::default().fg(Color::Green),
+                            Some('-') => Style::default().fg(Color::Red),
+                            Some('@') => Style::default().fg(Color::Cyan),
+                            _ => Style::default(),
+                        };
+                        Line::styled(line.to_string(), style)
+                    })
+                    .collect();
+                ratatui::text::Text::from(lines)
+            };
+            self.diff_highlight_cache = Some((commit_idx, file_idx, base_text));
+        }
+
+        // キャッシュからクローンしてオーバーレイ適用用の可変テキストを作成
+        let mut text = self.diff_highlight_cache.as_ref().unwrap().2.clone();
+
+        // Hunk ヘッダーを整形表示に置換
+        let patch_lines: Vec<&str> = patch.lines().collect();
+        for (idx, line) in text.lines.iter_mut().enumerate() {
+            if let Some(raw) = patch_lines.get(idx)
+                && raw.starts_with("@@")
+            {
+                *line = Self::format_hunk_header(raw, inner_width);
+            }
+        }
 
         // カーソル/選択/ペンディングコメント/既存コメントのオーバーレイを適用
         let show_cursor = self.focused_panel == Panel::DiffView;
@@ -832,13 +868,11 @@ impl App {
                 .any(|c| c.file_path == filename && idx >= c.start_line && idx <= c.end_line);
             let existing_count = existing_counts.get(&idx).copied().unwrap_or(0);
 
-            // 背景色オーバーレイ（優先順位: 選択 > カーソル > pending(青) > existing(グレー)）
+            // 背景色オーバーレイ（優先順位: 選択 > カーソル > pending(青)）
             let bg = if is_selected || is_cursor {
                 Some(Color::DarkGray)
             } else if is_pending {
                 Some(Color::Indexed(17))
-            } else if existing_count > 0 {
-                Some(Color::Indexed(236))
             } else {
                 None
             };
@@ -846,6 +880,13 @@ impl App {
             if let Some(bg_color) = bg {
                 for span in &mut line.spans {
                     span.style = span.style.bg(bg_color);
+                }
+            }
+
+            // 既存コメント行は下線で表示（背景色だとテーマ依存で文字が見えなくなるため）
+            if existing_count > 0 && !is_selected && !is_cursor && !is_pending {
+                for span in &mut line.spans {
+                    span.style = span.style.add_modifier(Modifier::UNDERLINED);
                 }
             }
 
@@ -1644,6 +1685,71 @@ impl App {
                 self.ensure_cursor_visible();
             }
         }
+    }
+
+    /// @@ hunk header を整形表示用の Line に変換
+    /// `@@ -10,5 +12,7 @@ fn main()` → `─── L10-14 → L12-18 ─── fn main() ────`
+    fn format_hunk_header(raw: &str, width: u16) -> Line<'static> {
+        let width = width as usize;
+
+        let (range_text, context) = if let Some(rest) = raw.strip_prefix("@@ ") {
+            if let Some(at_pos) = rest.find(" @@") {
+                let range_part = &rest[..at_pos];
+                let ctx = rest[at_pos + 3..].trim();
+
+                let mut parts = range_part.split_whitespace();
+                let old = parts
+                    .next()
+                    .and_then(|p| p.strip_prefix('-'))
+                    .unwrap_or("0");
+                let new = parts
+                    .next()
+                    .and_then(|p| p.strip_prefix('+'))
+                    .unwrap_or("0");
+
+                let format_range = |r: &str| -> String {
+                    let mut iter = r.split(',');
+                    let start: usize = iter.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                    let len: usize = iter.next().and_then(|s| s.parse().ok()).unwrap_or(1);
+                    if len <= 1 {
+                        format!("L{start}")
+                    } else {
+                        format!("L{}-{}", start, start + len - 1)
+                    }
+                };
+
+                (
+                    format!("{} → {}", format_range(old), format_range(new)),
+                    ctx.to_string(),
+                )
+            } else {
+                (String::new(), String::new())
+            }
+        } else {
+            (String::new(), String::new())
+        };
+
+        let mut content = String::from("─── ");
+        if !range_text.is_empty() {
+            content.push_str(&range_text);
+            content.push(' ');
+        }
+        if !context.is_empty() {
+            content.push_str("─── ");
+            content.push_str(&context);
+            content.push(' ');
+        }
+
+        let content_width = UnicodeWidthStr::width(content.as_str());
+        let fill_count = width.saturating_sub(content_width);
+        for _ in 0..fill_count {
+            content.push('─');
+        }
+
+        Line::styled(
+            content,
+            Style::default().bg(Color::Indexed(238)).fg(Color::Cyan),
+        )
     }
 
     /// 指定行が hunk header（`@@` で始まる行）かどうか判定
@@ -3976,5 +4082,41 @@ mod tests {
         app.handle_normal_mode(KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.focused_panel, Panel::CommitList);
         assert!(app.zoomed); // zoom は維持
+    }
+
+    // === N13: Hunk ヘッダーデザインテスト ===
+
+    #[test]
+    fn test_format_hunk_header_basic() {
+        let line = App::format_hunk_header("@@ -10,5 +12,7 @@ fn main()", 40);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.starts_with("─── L10-14 → L12-18 ─── fn main() "));
+        // 幅40まで ─ で埋められている
+        assert!(text.ends_with('─'));
+    }
+
+    #[test]
+    fn test_format_hunk_header_no_context() {
+        let line = App::format_hunk_header("@@ -1,3 +1,3 @@", 30);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.starts_with("─── L1-3 → L1-3 "));
+        // コンテキストなし → range の後にすぐ ─ 埋め
+        assert!(!text.contains("fn "));
+    }
+
+    #[test]
+    fn test_format_hunk_header_single_line() {
+        // len=1 のとき（カンマなし）→ L10 のように表示
+        let line = App::format_hunk_header("@@ -10 +12,3 @@", 30);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.starts_with("─── L10 → L12-14 "));
+    }
+
+    #[test]
+    fn test_format_hunk_header_new_file() {
+        // 新規ファイル: @@ -0,0 +1,5 @@
+        let line = App::format_hunk_header("@@ -0,0 +1,5 @@", 30);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("L1-5"));
     }
 }
