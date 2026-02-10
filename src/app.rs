@@ -301,6 +301,44 @@ impl App {
         }
     }
 
+    /// テキストをシステムクリップボードにコピー
+    fn copy_to_clipboard(&mut self, text: &str, label: &str) {
+        let result = if cfg!(target_os = "macos") {
+            std::process::Command::new("pbcopy")
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .and_then(|mut child| {
+                    use std::io::Write;
+                    if let Some(stdin) = child.stdin.as_mut() {
+                        stdin.write_all(text.as_bytes())?;
+                    }
+                    child.wait()
+                })
+        } else {
+            std::process::Command::new("xclip")
+                .args(["-selection", "clipboard"])
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .and_then(|mut child| {
+                    use std::io::Write;
+                    if let Some(stdin) = child.stdin.as_mut() {
+                        stdin.write_all(text.as_bytes())?;
+                    }
+                    child.wait()
+                })
+        };
+
+        match result {
+            Ok(status) if status.success() => {
+                self.status_message =
+                    Some(StatusMessage::info(format!("✓ Copied {}: {}", label, text)));
+            }
+            _ => {
+                self.status_message = Some(StatusMessage::error("✗ Failed to copy to clipboard"));
+            }
+        }
+    }
+
     /// 現在のファイルの各 diff 行にある既存コメント数を返す（逆引きマッピング）
     fn existing_comment_counts(&self) -> HashMap<usize, usize> {
         let mut counts: HashMap<usize, usize> = HashMap::new();
@@ -449,13 +487,13 @@ impl App {
         );
 
         let header_line = if let Some(ref msg) = self.status_message {
-            let status_color = match msg.level {
-                StatusLevel::Info => Color::Green,
-                StatusLevel::Error => Color::Red,
+            let status_style = match msg.level {
+                StatusLevel::Info => Style::default().bg(Color::Green).fg(Color::Black),
+                StatusLevel::Error => Style::default().bg(Color::Red).fg(Color::White),
             };
             Line::from(vec![
                 Span::styled(header_base, header_style),
-                Span::styled(format!(" {}", msg.body), header_style.fg(status_color)),
+                Span::styled(format!(" {} ", msg.body), status_style),
             ])
         } else {
             Line::from(Span::styled(header_base, header_style))
@@ -1157,6 +1195,32 @@ impl App {
                 // FileTree ペインで viewed トグル
                 if self.focused_panel == Panel::FileTree {
                     self.toggle_viewed();
+                }
+            }
+            KeyCode::Char('y') => match self.focused_panel {
+                Panel::CommitList => {
+                    if let Some(idx) = self.commit_list_state.selected()
+                        && let Some(commit) = self.commits.get(idx)
+                    {
+                        let sha = commit.short_sha().to_string();
+                        self.copy_to_clipboard(&sha, "SHA");
+                    }
+                }
+                Panel::FileTree => {
+                    if let Some(file) = self.current_file() {
+                        let path = file.filename.clone();
+                        self.copy_to_clipboard(&path, "path");
+                    }
+                }
+                _ => {}
+            },
+            KeyCode::Char('Y') => {
+                if self.focused_panel == Panel::CommitList
+                    && let Some(idx) = self.commit_list_state.selected()
+                    && let Some(commit) = self.commits.get(idx)
+                {
+                    let msg = commit.message_summary().to_string();
+                    self.copy_to_clipboard(&msg, "message");
                 }
             }
             KeyCode::Char('S') => {
