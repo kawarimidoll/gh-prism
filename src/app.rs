@@ -189,6 +189,8 @@ pub struct App {
     pending_key: Option<char>,
     /// ヘルプ画面のスクロール位置
     help_scroll: u16,
+    /// Zoom モード（フォーカスペインのみ全画面表示）
+    zoomed: bool,
     /// viewed 済みファイル名のセット（コミット跨ぎで維持）
     viewed_files: HashSet<String>,
     /// 各ペインの描画領域（マウスヒットテスト用、render 時に更新）
@@ -255,6 +257,7 @@ impl App {
             quit_after_submit: false,
             pending_key: None,
             help_scroll: 0,
+            zoomed: false,
             viewed_files: HashSet::new(),
             pr_desc_rect: Rect::default(),
             commit_list_rect: Rect::default(),
@@ -487,9 +490,16 @@ impl App {
             AppMode::Help => Style::default().bg(Color::DarkGray).fg(Color::White),
         };
 
+        let zoom_indicator = if self.zoomed { " [ZOOM]" } else { "" };
+
         let header_base = format!(
-            " prism - {} PR #{}: {}{}{} | ?: help",
-            self.repo, self.pr_number, self.pr_title, mode_indicator, comments_badge
+            " prism - {} PR #{}: {}{}{}{} | ?: help",
+            self.repo,
+            self.pr_number,
+            self.pr_title,
+            mode_indicator,
+            zoom_indicator,
+            comments_badge
         );
 
         let header_line = if let Some(ref msg) = self.status_message {
@@ -510,34 +520,65 @@ impl App {
             main_layout[0],
         );
 
-        let body_layout = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
-            .split(main_layout[1]);
+        if self.zoomed {
+            // Zoom: フォーカスペインのみ全画面表示
+            let full_area = main_layout[1];
 
-        let sidebar_layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Percentage(30),
-                Constraint::Percentage(35),
-                Constraint::Percentage(35),
-            ])
-            .split(body_layout[0]);
+            // 非表示ペインの Rect をリセット（マウスヒットテスト対策）
+            self.pr_desc_rect = Rect::default();
+            self.commit_list_rect = Rect::default();
+            self.file_tree_rect = Rect::default();
+            self.diff_view_rect = Rect::default();
 
-        let diff_area = body_layout[1];
+            match self.focused_panel {
+                Panel::PrDescription => {
+                    self.pr_desc_rect = full_area;
+                    self.render_pr_description(frame, full_area);
+                }
+                Panel::CommitList => {
+                    self.commit_list_rect = full_area;
+                    self.render_commit_list_stateful(frame, full_area);
+                }
+                Panel::FileTree => {
+                    self.file_tree_rect = full_area;
+                    self.render_file_tree(frame, full_area);
+                }
+                Panel::DiffView => {
+                    self.diff_view_rect = full_area;
+                    self.render_diff_view_widget(frame, full_area);
+                }
+            }
+        } else {
+            // 通常表示: サイドバー30% + Diff70%
+            let body_layout = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
+                .split(main_layout[1]);
 
-        // マウスヒットテスト用に各ペインの Rect を記録
-        self.pr_desc_rect = sidebar_layout[0];
-        self.commit_list_rect = sidebar_layout[1];
-        self.file_tree_rect = sidebar_layout[2];
-        self.diff_view_rect = diff_area;
+            let sidebar_layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Percentage(30),
+                    Constraint::Percentage(35),
+                    Constraint::Percentage(35),
+                ])
+                .split(body_layout[0]);
 
-        // サイドバー3ペイン描画
-        self.render_pr_description(frame, sidebar_layout[0]);
-        self.render_commit_list_stateful(frame, sidebar_layout[1]);
-        self.render_file_tree(frame, sidebar_layout[2]);
-        // diff_view_height は render_diff_view_widget 内で正確に更新
-        self.render_diff_view_widget(frame, diff_area);
+            let diff_area = body_layout[1];
+
+            // マウスヒットテスト用に各ペインの Rect を記録
+            self.pr_desc_rect = sidebar_layout[0];
+            self.commit_list_rect = sidebar_layout[1];
+            self.file_tree_rect = sidebar_layout[2];
+            self.diff_view_rect = diff_area;
+
+            // サイドバー3ペイン描画
+            self.render_pr_description(frame, sidebar_layout[0]);
+            self.render_commit_list_stateful(frame, sidebar_layout[1]);
+            self.render_file_tree(frame, sidebar_layout[2]);
+            // diff_view_height は render_diff_view_widget 内で正確に更新
+            self.render_diff_view_widget(frame, diff_area);
+        }
 
         // CommentInput モードでは入力欄を描画
         if self.mode == AppMode::CommentInput {
@@ -1023,6 +1064,7 @@ impl App {
             ("y", "Copy SHA / file path"),
             ("Y", "Copy commit message"),
             ("", "Other"),
+            ("z", "Toggle zoom"),
             ("x", "Toggle viewed (Files)"),
             ("?", "This help"),
             ("q", "Quit"),
@@ -1307,6 +1349,9 @@ impl App {
             KeyCode::Char('S') => {
                 self.review_event_cursor = 0;
                 self.mode = AppMode::ReviewSubmit;
+            }
+            KeyCode::Char('z') => {
+                self.zoomed = !self.zoomed;
             }
             KeyCode::Char('?') => {
                 self.help_scroll = 0;
@@ -3850,5 +3895,86 @@ mod tests {
         app.handle_normal_mode(KeyCode::Char('x'), KeyModifiers::NONE);
         assert!(app.pending_key.is_none());
         assert_eq!(app.cursor_line, 0); // 動かない
+    }
+
+    // === N12: Zoom モードテスト ===
+
+    #[test]
+    fn test_zoom_toggle() {
+        let commits = create_test_commits();
+        let files_map = create_test_files_map(&commits);
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            commits,
+            files_map,
+            vec![],
+            None,
+        );
+
+        assert!(!app.zoomed);
+
+        // z キーで zoom on
+        app.handle_normal_mode(KeyCode::Char('z'), KeyModifiers::NONE);
+        assert!(app.zoomed);
+
+        // もう一度 z で zoom off
+        app.handle_normal_mode(KeyCode::Char('z'), KeyModifiers::NONE);
+        assert!(!app.zoomed);
+    }
+
+    #[test]
+    fn test_zoom_works_in_all_panels() {
+        let commits = create_test_commits();
+        let files_map = create_test_files_map(&commits);
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            commits,
+            files_map,
+            vec![],
+            None,
+        );
+
+        // 各ペインで zoom できる
+        for panel in [
+            Panel::PrDescription,
+            Panel::CommitList,
+            Panel::FileTree,
+            Panel::DiffView,
+        ] {
+            app.focused_panel = panel;
+            app.zoomed = false;
+            app.handle_normal_mode(KeyCode::Char('z'), KeyModifiers::NONE);
+            assert!(app.zoomed, "zoom should work in {:?}", panel);
+        }
+    }
+
+    #[test]
+    fn test_zoom_panel_navigation() {
+        let commits = create_test_commits();
+        let files_map = create_test_files_map(&commits);
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            commits,
+            files_map,
+            vec![],
+            None,
+        );
+
+        app.zoomed = true;
+        app.focused_panel = Panel::PrDescription;
+
+        // zoom 中もペイン切り替えは可能（Tab で次のペインへ）
+        app.handle_normal_mode(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.focused_panel, Panel::CommitList);
+        assert!(app.zoomed); // zoom は維持
     }
 }
