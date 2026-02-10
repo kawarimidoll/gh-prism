@@ -13,7 +13,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Position, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -170,6 +170,10 @@ pub struct App {
     review_comments: Vec<ReviewComment>,
     /// 現在表示中のコメント（CommentView モード用）
     viewing_comments: Vec<ReviewComment>,
+    /// CommentView ダイアログのスクロール位置
+    viewing_comment_scroll: u16,
+    /// CommentView ダイアログのスクロール上限（render 時に更新）
+    comment_view_max_scroll: u16,
     /// GitHub API クライアント（テスト時は None）
     client: Option<Octocrab>,
     /// ステータスメッセージ（ヘッダーバーに表示、3秒後に自動クリア）
@@ -237,6 +241,8 @@ impl App {
             pending_comments: Vec::new(),
             review_comments,
             viewing_comments: Vec::new(),
+            viewing_comment_scroll: 0,
+            comment_view_max_scroll: 0,
             client,
             status_message: None,
             needs_submit: None,
@@ -523,6 +529,7 @@ impl App {
                     .borders(Borders::ALL)
                     .border_style(style),
             )
+            .wrap(Wrap { trim: false })
             .scroll((self.pr_desc_scroll, 0));
         frame.render_widget(paragraph, area);
     }
@@ -658,6 +665,7 @@ impl App {
                         .borders(Borders::ALL)
                         .border_style(border_style),
                 )
+                .wrap(Wrap { trim: false })
                 .style(Style::default().fg(Color::DarkGray));
             frame.render_widget(msg_paragraph, msg_area);
         }
@@ -766,6 +774,7 @@ impl App {
 
         let paragraph = Paragraph::new(text)
             .block(block)
+            .wrap(Wrap { trim: false })
             .scroll((self.diff_scroll, 0));
         frame.render_widget(paragraph, diff_area);
     }
@@ -876,7 +885,7 @@ impl App {
         frame.render_widget(paragraph, dialog);
     }
 
-    fn render_comment_view_dialog(&self, frame: &mut Frame, area: Rect) {
+    fn render_comment_view_dialog(&mut self, frame: &mut Frame, area: Rect) {
         // ダイアログサイズ: 幅60, 高さはコメント数に応じて動的（最大 area の 2/3）
         let content_height: u16 = self
             .viewing_comments
@@ -912,12 +921,21 @@ impl App {
             Style::default().fg(Color::DarkGray),
         ));
 
-        let paragraph = Paragraph::new(lines).block(
-            Block::default()
-                .title(" Review Comments ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow)),
-        );
+        let paragraph = Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .title(" Review Comments ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow)),
+            )
+            .wrap(Wrap { trim: false });
+
+        // Paragraph::line_count() で wrap 考慮の正確な視覚行数を取得
+        let visual_total = paragraph.line_count(dialog_width) as u16;
+        let visible_height = dialog_height.saturating_sub(2);
+        self.comment_view_max_scroll = visual_total.saturating_sub(visible_height);
+
+        let paragraph = paragraph.scroll((self.viewing_comment_scroll, 0));
         frame.render_widget(paragraph, dialog);
     }
 
@@ -1168,7 +1186,16 @@ impl App {
         match code {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
                 self.viewing_comments.clear();
+                self.viewing_comment_scroll = 0;
                 self.mode = AppMode::Normal;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.viewing_comment_scroll < self.comment_view_max_scroll {
+                    self.viewing_comment_scroll += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.viewing_comment_scroll = self.viewing_comment_scroll.saturating_sub(1);
             }
             _ => {}
         }
