@@ -161,6 +161,8 @@ pub struct App {
     cursor_line: usize,
     /// Diff ビューの表示可能行数（render 時に更新）
     diff_view_height: u16,
+    /// Diff ビューの内部幅（render 時に更新、wrap 計算用）
+    diff_view_width: u16,
     /// 行選択モードでの選択状態
     line_selection: Option<LineSelection>,
     /// コメント入力バッファ
@@ -191,6 +193,8 @@ pub struct App {
     help_scroll: u16,
     /// Zoom モード（フォーカスペインのみ全画面表示）
     zoomed: bool,
+    /// Diff ペインの行折り返し（`w` キーでトグル）
+    diff_wrap: bool,
     /// viewed 済みファイル名のセット（コミット跨ぎで維持）
     viewed_files: HashSet<String>,
     /// Diff ハイライトキャッシュ（commit_idx, file_idx, highlighted Text）
@@ -246,6 +250,7 @@ impl App {
             diff_scroll: 0,
             cursor_line: 0,
             diff_view_height: 20, // 初期値、render で更新される
+            diff_view_width: 80,  // 初期値、render で更新される
             line_selection: None,
             comment_input: String::new(),
             pending_comments: Vec::new(),
@@ -261,6 +266,7 @@ impl App {
             pending_key: None,
             help_scroll: 0,
             zoomed: false,
+            diff_wrap: false,
             viewed_files: HashSet::new(),
             diff_highlight_cache: None,
             pr_desc_rect: Rect::default(),
@@ -746,8 +752,9 @@ impl App {
             (None, area)
         };
 
-        // DiffView の表示可能行数を更新（ボーダー分を引く）
+        // DiffView の表示可能サイズを更新（ボーダー分を引く）
         self.diff_view_height = diff_area.height.saturating_sub(2);
+        self.diff_view_width = diff_area.width.saturating_sub(2);
 
         // コミットメッセージ描画
         if let Some(msg_area) = msg_area {
@@ -773,7 +780,13 @@ impl App {
                     if count == 1 { "" } else { "s" }
                 )
             }
-            _ => " Diff ".to_string(),
+            _ => {
+                if self.diff_wrap {
+                    " Diff [WRAP] ".to_string()
+                } else {
+                    " Diff ".to_string()
+                }
+            }
         };
 
         let block = Block::default()
@@ -905,6 +918,11 @@ impl App {
         let paragraph = Paragraph::new(text)
             .block(block)
             .scroll((self.diff_scroll, 0));
+        let paragraph = if self.diff_wrap {
+            paragraph.wrap(Wrap { trim: false })
+        } else {
+            paragraph
+        };
         frame.render_widget(paragraph, diff_area);
     }
 
@@ -1105,6 +1123,7 @@ impl App {
             ("y", "Copy SHA / file path"),
             ("Y", "Copy commit message"),
             ("", "Other"),
+            ("w", "Toggle line wrap (Diff)"),
             ("z", "Toggle zoom"),
             ("x", "Toggle viewed (Files)"),
             ("?", "This help"),
@@ -1209,7 +1228,8 @@ impl App {
             }
             Panel::DiffView => {
                 let line_count = self.current_diff_line_count();
-                let max_scroll = (line_count as u16).saturating_sub(self.diff_view_height);
+                let total_visual = self.visual_line_offset(line_count);
+                let max_scroll = (total_visual as u16).saturating_sub(self.diff_view_height);
                 if down {
                     if self.diff_scroll < max_scroll {
                         // ビューポートをスクロール + カーソル追従（見た目位置固定）
@@ -1390,6 +1410,20 @@ impl App {
             KeyCode::Char('S') => {
                 self.review_event_cursor = 0;
                 self.mode = AppMode::ReviewSubmit;
+            }
+            KeyCode::Char('w') => {
+                if self.diff_wrap {
+                    // ON → OFF: 表示行→論理行に変換
+                    let logical = self.visual_to_logical_line(self.diff_scroll as usize);
+                    self.diff_wrap = false;
+                    self.diff_scroll = logical as u16;
+                } else {
+                    // OFF → ON: 論理行→表示行に変換
+                    let visual = self.visual_line_offset(self.diff_scroll as usize);
+                    self.diff_wrap = true;
+                    self.diff_scroll = visual as u16;
+                }
+                self.ensure_cursor_visible();
             }
             KeyCode::Char('z') => {
                 self.zoomed = !self.zoomed;
@@ -1871,6 +1905,62 @@ impl App {
         }
     }
 
+    /// wrap 有効時に論理行の表示行オフセットを計算する。
+    /// 論理行 `logical_line` が始まる表示行番号を返す。
+    /// `logical_line == line_count` のとき、合計表示行数を返す。
+    /// ratatui の Paragraph::line_count() を使って正確なワードラップ行数を取得する。
+    fn visual_line_offset(&self, logical_line: usize) -> usize {
+        if !self.diff_wrap {
+            return logical_line;
+        }
+        let width = self.diff_view_width;
+        if width == 0 {
+            return logical_line;
+        }
+        let patch = match self.current_file().and_then(|f| f.patch.as_deref()) {
+            Some(p) => p,
+            None => return logical_line,
+        };
+        let mut visual = 0;
+        for (i, line) in patch.lines().enumerate() {
+            if i >= logical_line {
+                break;
+            }
+            visual += Paragraph::new(line)
+                .wrap(Wrap { trim: false })
+                .line_count(width)
+                .max(1);
+        }
+        visual
+    }
+
+    /// wrap 有効時に表示行位置から論理行を逆引きする
+    fn visual_to_logical_line(&self, visual_target: usize) -> usize {
+        if !self.diff_wrap {
+            return visual_target;
+        }
+        let width = self.diff_view_width;
+        if width == 0 {
+            return visual_target;
+        }
+        let patch = match self.current_file().and_then(|f| f.patch.as_deref()) {
+            Some(p) => p,
+            None => return visual_target,
+        };
+        let mut visual = 0;
+        for (i, line) in patch.lines().enumerate() {
+            let count = Paragraph::new(line)
+                .wrap(Wrap { trim: false })
+                .line_count(width)
+                .max(1);
+            if visual + count > visual_target {
+                return i;
+            }
+            visual += count;
+        }
+        self.current_diff_line_count().saturating_sub(1)
+    }
+
     /// カーソルが画面内に収まるようスクロールを調整
     fn ensure_cursor_visible(&mut self) {
         let visible_lines = self.diff_view_height as usize;
@@ -1878,13 +1968,22 @@ impl App {
             return;
         }
 
-        let scroll = self.diff_scroll as usize;
-        if self.cursor_line < scroll {
-            // カーソルが画面より上にある → スクロールをカーソル位置に合わせる
-            self.diff_scroll = self.cursor_line as u16;
-        } else if self.cursor_line >= scroll + visible_lines {
-            // カーソルが画面より下にある → スクロールをカーソルが下端になるよう調整
-            self.diff_scroll = (self.cursor_line - visible_lines + 1) as u16;
+        if self.diff_wrap {
+            let cursor_visual = self.visual_line_offset(self.cursor_line);
+            let cursor_visual_end = self.visual_line_offset(self.cursor_line + 1);
+            let scroll = self.diff_scroll as usize;
+            if cursor_visual < scroll {
+                self.diff_scroll = cursor_visual as u16;
+            } else if cursor_visual_end > scroll + visible_lines {
+                self.diff_scroll = cursor_visual_end.saturating_sub(visible_lines) as u16;
+            }
+        } else {
+            let scroll = self.diff_scroll as usize;
+            if self.cursor_line < scroll {
+                self.diff_scroll = self.cursor_line as u16;
+            } else if self.cursor_line >= scroll + visible_lines {
+                self.diff_scroll = (self.cursor_line - visible_lines + 1) as u16;
+            }
         }
     }
 
@@ -1903,7 +2002,14 @@ impl App {
         }
         let half = (self.diff_view_height as usize) / 2;
         let line_count = self.current_diff_line_count();
-        self.cursor_line = (self.cursor_line + half).min(line_count.saturating_sub(1));
+        if self.diff_wrap {
+            let target_visual = self.visual_line_offset(self.cursor_line) + half;
+            self.cursor_line = self
+                .visual_to_logical_line(target_visual)
+                .min(line_count.saturating_sub(1));
+        } else {
+            self.cursor_line = (self.cursor_line + half).min(line_count.saturating_sub(1));
+        }
         self.ensure_cursor_visible();
     }
 
@@ -1913,7 +2019,13 @@ impl App {
             return;
         }
         let half = (self.diff_view_height as usize) / 2;
-        self.cursor_line = self.cursor_line.saturating_sub(half);
+        if self.diff_wrap {
+            let cur_visual = self.visual_line_offset(self.cursor_line);
+            let target_visual = cur_visual.saturating_sub(half);
+            self.cursor_line = self.visual_to_logical_line(target_visual);
+        } else {
+            self.cursor_line = self.cursor_line.saturating_sub(half);
+        }
         self.ensure_cursor_visible();
     }
 
@@ -1933,7 +2045,14 @@ impl App {
         }
         let page = self.diff_view_height as usize;
         let line_count = self.current_diff_line_count();
-        self.cursor_line = (self.cursor_line + page).min(line_count.saturating_sub(1));
+        if self.diff_wrap {
+            let target_visual = self.visual_line_offset(self.cursor_line) + page;
+            self.cursor_line = self
+                .visual_to_logical_line(target_visual)
+                .min(line_count.saturating_sub(1));
+        } else {
+            self.cursor_line = (self.cursor_line + page).min(line_count.saturating_sub(1));
+        }
         self.ensure_cursor_visible();
     }
 
@@ -1943,7 +2062,13 @@ impl App {
             return;
         }
         let page = self.diff_view_height as usize;
-        self.cursor_line = self.cursor_line.saturating_sub(page);
+        if self.diff_wrap {
+            let cur_visual = self.visual_line_offset(self.cursor_line);
+            let target_visual = cur_visual.saturating_sub(page);
+            self.cursor_line = self.visual_to_logical_line(target_visual);
+        } else {
+            self.cursor_line = self.cursor_line.saturating_sub(page);
+        }
         self.ensure_cursor_visible();
     }
 
