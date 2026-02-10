@@ -6,6 +6,10 @@ use app::App;
 use clap::Parser;
 use color_eyre::Result;
 use futures::stream::{FuturesUnordered, StreamExt};
+use github::cache::PrCache;
+use github::commits::CommitInfo;
+use github::files::DiffFile;
+use octocrab::Octocrab;
 use std::collections::HashMap;
 
 #[derive(Parser)]
@@ -18,6 +22,10 @@ struct Cli {
     /// Repository in owner/repo format (default: detect from git remote)
     #[arg(short, long)]
     repo: Option<String>,
+
+    /// Disable cache and always fetch from API
+    #[arg(long)]
+    no_cache: bool,
 }
 
 fn resolve_repo(repo_arg: &Option<String>) -> Result<(String, String)> {
@@ -59,46 +67,34 @@ fn resolve_repo(repo_arg: &Option<String>) -> Result<(String, String)> {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    color_eyre::install()?;
-    let cli = Cli::parse();
-
-    // リポジトリ情報を解決
-    let (owner, repo) = resolve_repo(&cli.repo)?;
-
-    // GitHub APIクライアントを作成してPR情報を取得
-    let client = github::client::create_client()?;
-    eprintln!("Fetching PR #{}...", cli.pr_number);
-    let pr = github::pr::fetch_pr(&client, &owner, &repo, cli.pr_number).await?;
-
-    // PR情報を取得（Option<String>なのでunwrap_or_default）
+/// PR情報とコミットごとのファイルをAPI経由で全取得する
+async fn fetch_all(
+    client: &Octocrab,
+    owner: &str,
+    repo: &str,
+    pr_number: u64,
+    commits: &[CommitInfo],
+) -> Result<(String, String, HashMap<String, Vec<DiffFile>>)> {
+    // PR情報を取得
+    let pr = github::pr::fetch_pr(client, owner, repo, pr_number).await?;
     let pr_title = pr.title.unwrap_or_default();
     let pr_body = pr.body.unwrap_or_default();
-
-    // コミット一覧とレビューコメントを取得
-    eprintln!("Fetching commits and comments...");
-    let commits = github::commits::fetch_commits(&client, &owner, &repo, cli.pr_number).await?;
-    let review_comments =
-        github::comments::fetch_review_comments(&client, &owner, &repo, cli.pr_number).await?;
 
     // 全コミットのファイルを並列取得
     let total = commits.len();
     eprintln!("Fetching files for {} commits...", total);
 
-    // 全コミットの初期状態を表示
-    for commit in &commits {
+    for commit in commits {
         eprintln!("  ⏳ {} {}", commit.short_sha(), commit.message_summary());
     }
 
-    // 並列フェッチを開始
     let futs: FuturesUnordered<_> = commits
         .iter()
         .enumerate()
         .map(|(i, commit)| {
             let client = client.clone();
-            let owner = owner.clone();
-            let repo = repo.clone();
+            let owner = owner.to_string();
+            let repo = repo.to_string();
             let sha = commit.sha.clone();
             async move {
                 let result = github::files::fetch_commit_files(&client, &owner, &repo, &sha).await;
@@ -107,7 +103,7 @@ async fn main() -> Result<()> {
         })
         .collect();
 
-    let mut files_map: HashMap<String, Vec<github::files::DiffFile>> = HashMap::new();
+    let mut files_map: HashMap<String, Vec<DiffFile>> = HashMap::new();
     futures::pin_mut!(futs);
     while let Some((idx, sha, result)) = futs.next().await {
         let files = result?;
@@ -126,6 +122,70 @@ async fn main() -> Result<()> {
             eprint!("\x1b[{}B", down);
         }
     }
+
+    Ok((pr_title, pr_body, files_map))
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    color_eyre::install()?;
+    let cli = Cli::parse();
+
+    // リポジトリ情報を解決
+    let (owner, repo) = resolve_repo(&cli.repo)?;
+
+    // GitHub APIクライアントを作成
+    let client = github::client::create_client()?;
+    eprintln!("Fetching PR #{}...", cli.pr_number);
+
+    // コミット一覧を常にAPI取得（HEAD SHA判定に必要）
+    let commits = github::commits::fetch_commits(&client, &owner, &repo, cli.pr_number).await?;
+    let head_sha = commits.last().map(|c| c.sha.as_str()).unwrap_or("");
+
+    // キャッシュ判定 + レビューコメント取得を並列実行
+    let data_future = async {
+        if !cli.no_cache {
+            if let Some(cached) = github::cache::read_cache(&owner, &repo, cli.pr_number) {
+                if cached.head_sha == head_sha {
+                    eprintln!(
+                        "Using cached data (HEAD: {})",
+                        &head_sha[..7.min(head_sha.len())]
+                    );
+                    return Ok((cached.pr_title, cached.pr_body, cached.files_map));
+                }
+                eprintln!(
+                    "Cache stale (expected {}, got {})",
+                    &cached.head_sha[..7.min(cached.head_sha.len())],
+                    &head_sha[..7.min(head_sha.len())]
+                );
+            } else {
+                eprintln!("No cache found, fetching from API...");
+            }
+        } else {
+            eprintln!("Cache disabled, fetching from API...");
+        }
+        let (title, body, fmap) =
+            fetch_all(&client, &owner, &repo, cli.pr_number, &commits).await?;
+        github::cache::write_cache(
+            &owner,
+            &repo,
+            cli.pr_number,
+            &PrCache {
+                head_sha: head_sha.to_string(),
+                pr_title: title.clone(),
+                pr_body: body.clone(),
+                commits: commits.clone(),
+                files_map: fmap.clone(),
+            },
+        );
+        Ok((title, body, fmap))
+    };
+
+    let comments_future =
+        github::comments::fetch_review_comments(&client, &owner, &repo, cli.pr_number);
+
+    let ((pr_title, pr_body, files_map), review_comments) =
+        tokio::try_join!(data_future, comments_future)?;
 
     let terminal = ratatui::init();
     crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;

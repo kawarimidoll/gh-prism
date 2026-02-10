@@ -1,8 +1,8 @@
 use color_eyre::Result;
 use octocrab::Octocrab;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffFile {
     pub filename: String,
     pub status: String, // "added", "modified", "deleted", "renamed"

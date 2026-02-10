@@ -1,14 +1,14 @@
 use color_eyre::Result;
 use octocrab::Octocrab;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitInfo {
     pub sha: String,
     pub commit: CommitDetail,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitDetail {
     pub message: String,
 }

@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod client;
 pub mod comments;
 pub mod commits;
