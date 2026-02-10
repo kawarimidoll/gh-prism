@@ -1110,8 +1110,8 @@ impl App {
                 }
             }
             KeyCode::Char('c') => {
-                // DiffView で直接 c: カーソル行のみで単一行コメント
-                if self.focused_panel == Panel::DiffView {
+                // DiffView で直接 c: カーソル行のみで単一行コメント（hunk header 上は不可）
+                if self.focused_panel == Panel::DiffView && !self.is_hunk_header(self.cursor_line) {
                     self.line_selection = Some(LineSelection {
                         anchor: self.cursor_line,
                     });
@@ -1143,8 +1143,11 @@ impl App {
         }
     }
 
-    /// 行選択モードに入る
+    /// 行選択モードに入る（hunk header 上では無効）
     fn enter_line_select_mode(&mut self) {
+        if self.is_hunk_header(self.cursor_line) {
+            return;
+        }
         // 現在のカーソル行をアンカーとして選択開始
         self.line_selection = Some(LineSelection {
             anchor: self.cursor_line,
@@ -1374,8 +1377,12 @@ impl App {
     /// 選択範囲を下に拡張（カーソルを下に移動）
     fn extend_selection_down(&mut self) {
         let line_count = self.current_diff_line_count();
-        if self.cursor_line + 1 < line_count {
-            self.cursor_line += 1;
+        let next = self.cursor_line + 1;
+        if next < line_count
+            && !self.is_hunk_header(next)
+            && self.is_same_hunk(self.cursor_line, next)
+        {
+            self.cursor_line = next;
             self.ensure_cursor_visible();
         }
     }
@@ -1383,9 +1390,40 @@ impl App {
     /// 選択範囲を上に拡張（カーソルを上に移動）
     fn extend_selection_up(&mut self) {
         if self.cursor_line > 0 {
-            self.cursor_line -= 1;
-            self.ensure_cursor_visible();
+            let prev = self.cursor_line - 1;
+            if !self.is_hunk_header(prev) && self.is_same_hunk(self.cursor_line, prev) {
+                self.cursor_line = prev;
+                self.ensure_cursor_visible();
+            }
         }
+    }
+
+    /// 指定行が hunk header（`@@` で始まる行）かどうか判定
+    fn is_hunk_header(&self, line_idx: usize) -> bool {
+        self.current_file()
+            .and_then(|f| f.patch.as_deref())
+            .and_then(|p| p.lines().nth(line_idx))
+            .is_some_and(|line| line.starts_with("@@"))
+    }
+
+    /// 2つの diff 行が同一 hunk に属するか判定
+    /// hunk header（`@@` で始まる行）を境界として、間に `@@` がなければ同一 hunk
+    fn is_same_hunk(&self, a: usize, b: usize) -> bool {
+        let patch = match self.current_file().and_then(|f| f.patch.as_deref()) {
+            Some(p) => p,
+            None => return false,
+        };
+        let lines: Vec<&str> = patch.lines().collect();
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        // lo と hi の間（lo は含まない、hi は含む）に @@ 行があれば別 hunk
+        for i in (lo + 1)..=hi {
+            if let Some(line) = lines.get(i)
+                && line.starts_with("@@")
+            {
+                return false;
+            }
+        }
+        true
     }
 
     fn select_next(&mut self) {
@@ -3227,5 +3265,124 @@ mod tests {
         app.handle_comment_view_mode(KeyCode::Esc);
         assert_eq!(app.mode, AppMode::Normal);
         assert!(app.viewing_comments.is_empty());
+    }
+
+    /// 複数 hunk のパッチを持つ App を作成するヘルパー
+    fn create_app_with_multi_hunk_patch() -> App {
+        let commits = create_test_commits();
+        let mut files_map = HashMap::new();
+        // hunk1: 行0-3, hunk2: 行4-7
+        let patch = "@@ -1,3 +1,3 @@\n context\n-old line\n+new line\n@@ -10,3 +10,3 @@\n context2\n-old2\n+new2"
+            .to_string();
+        files_map.insert(
+            "abc1234567890".to_string(),
+            vec![DiffFile {
+                filename: "src/main.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 2,
+                deletions: 2,
+                patch: Some(patch),
+            }],
+        );
+        App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            commits,
+            files_map,
+            vec![],
+            None,
+        )
+    }
+
+    #[test]
+    fn test_hunk_boundary_blocks_selection_down() {
+        let mut app = create_app_with_multi_hunk_patch();
+        app.focused_panel = Panel::DiffView;
+        // カーソルを hunk1 の最後の行 (行3: "+new line") に移動
+        app.cursor_line = 3;
+        app.enter_line_select_mode();
+
+        // 行4 は @@ (hunk2 ヘッダー) → 別 hunk なので移動不可
+        app.extend_selection_down();
+        assert_eq!(app.cursor_line, 3); // 移動しない
+    }
+
+    #[test]
+    fn test_hunk_boundary_blocks_selection_up() {
+        let mut app = create_app_with_multi_hunk_patch();
+        app.focused_panel = Panel::DiffView;
+        // カーソルを hunk2 の最初のコンテンツ行 (行5) に配置
+        app.cursor_line = 5;
+        app.enter_line_select_mode();
+
+        // 行4 は @@ ヘッダー → カーソル不可なので移動しない
+        app.extend_selection_up();
+        assert_eq!(app.cursor_line, 5); // @@ 行にはカーソルを置けない
+    }
+
+    #[test]
+    fn test_selection_within_same_hunk() {
+        let mut app = create_app_with_multi_hunk_patch();
+        app.focused_panel = Panel::DiffView;
+        // hunk1 内 (行0) から選択開始
+        app.cursor_line = 0;
+        app.enter_line_select_mode();
+
+        // hunk1 内で自由に移動できる
+        app.extend_selection_down(); // 行1
+        assert_eq!(app.cursor_line, 1);
+        app.extend_selection_down(); // 行2
+        assert_eq!(app.cursor_line, 2);
+        app.extend_selection_down(); // 行3
+        assert_eq!(app.cursor_line, 3);
+        // 行4 (@@) は別 hunk → 停止
+        app.extend_selection_down();
+        assert_eq!(app.cursor_line, 3);
+    }
+
+    #[test]
+    fn test_is_same_hunk_within_hunk() {
+        let app = create_app_with_multi_hunk_patch();
+        // hunk1 内の行同士
+        assert!(app.is_same_hunk(0, 1));
+        assert!(app.is_same_hunk(0, 3));
+        // hunk2 内の行同士
+        assert!(app.is_same_hunk(4, 7));
+        assert!(app.is_same_hunk(5, 6));
+    }
+
+    #[test]
+    fn test_is_same_hunk_across_hunks() {
+        let app = create_app_with_multi_hunk_patch();
+        // hunk1 と hunk2 を跨ぐ
+        assert!(!app.is_same_hunk(3, 4));
+        assert!(!app.is_same_hunk(0, 5));
+        assert!(!app.is_same_hunk(2, 7));
+    }
+
+    #[test]
+    fn test_hunk_header_not_selectable_with_v() {
+        let mut app = create_app_with_multi_hunk_patch();
+        app.focused_panel = Panel::DiffView;
+        // カーソルを @@ 行 (行0) に配置
+        app.cursor_line = 0;
+        app.enter_line_select_mode();
+        // @@ 行上では選択モードに入れない
+        assert_eq!(app.mode, AppMode::Normal);
+        assert!(app.line_selection.is_none());
+    }
+
+    #[test]
+    fn test_hunk_header_not_selectable_with_c() {
+        let mut app = create_app_with_multi_hunk_patch();
+        app.focused_panel = Panel::DiffView;
+        // カーソルを @@ 行 (行4) に配置
+        app.cursor_line = 4;
+        app.handle_normal_mode(KeyCode::Char('c'), KeyModifiers::NONE);
+        // @@ 行上ではコメント入力に入れない
+        assert_eq!(app.mode, AppMode::Normal);
+        assert!(app.line_selection.is_none());
     }
 }
