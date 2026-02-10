@@ -20,6 +20,14 @@ use std::time::{Duration, Instant};
 use tokio::runtime::Handle;
 use unicode_width::UnicodeWidthStr;
 
+/// ターミナルのカラーテーマ
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ThemeMode {
+    #[default]
+    Dark,
+    Light,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Panel {
     PrDescription,
@@ -200,6 +208,8 @@ pub struct App {
     /// Diff ハイライトキャッシュ（commit_idx, file_idx, highlighted Text）
     /// ファイル選択が変わらない限り delta を再実行しない
     diff_highlight_cache: Option<(usize, usize, ratatui::text::Text<'static>)>,
+    /// カラーテーマ（ライト/ダーク）
+    theme: ThemeMode,
     /// 各ペインの描画領域（マウスヒットテスト用、render 時に更新）
     pr_desc_rect: Rect,
     commit_list_rect: Rect,
@@ -218,6 +228,7 @@ impl App {
         files_map: HashMap<String, Vec<DiffFile>>,
         review_comments: Vec<ReviewComment>,
         client: Option<Octocrab>,
+        theme: ThemeMode,
     ) -> Self {
         let mut commit_list_state = ListState::default();
         if !commits.is_empty() {
@@ -269,6 +280,7 @@ impl App {
             diff_wrap: false,
             viewed_files: HashSet::new(),
             diff_highlight_cache: None,
+            theme,
             pr_desc_rect: Rect::default(),
             commit_list_rect: Rect::default(),
             file_tree_rect: Rect::default(),
@@ -360,6 +372,22 @@ impl App {
             for name in filenames {
                 self.viewed_files.insert(name);
             }
+        }
+    }
+
+    /// リスト選択行のハイライトスタイル（テーマ対応）
+    fn highlight_style(&self) -> Style {
+        match self.theme {
+            ThemeMode::Dark => Style::default().bg(Color::DarkGray).fg(Color::White),
+            ThemeMode::Light => Style::default().bg(Color::Indexed(254)).fg(Color::Black),
+        }
+    }
+
+    /// Hunk ヘッダーのスタイル（テーマ対応）
+    fn hunk_header_style(&self) -> Style {
+        match self.theme {
+            ThemeMode::Dark => Style::default().bg(Color::Indexed(238)).fg(Color::Cyan),
+            ThemeMode::Light => Style::default().bg(Color::Indexed(252)).fg(Color::Cyan),
         }
     }
 
@@ -535,15 +563,25 @@ impl App {
             format!(" [{}💬]", self.pending_comments.len())
         };
 
-        let header_style = match self.mode {
-            AppMode::Normal => Style::default().bg(Color::Blue).fg(Color::White),
-            AppMode::LineSelect => Style::default().bg(Color::Magenta).fg(Color::White),
-            AppMode::CommentInput => Style::default().bg(Color::Green).fg(Color::White),
-            AppMode::CommentView => Style::default().bg(Color::Yellow).fg(Color::Black),
-            AppMode::ReviewSubmit => Style::default().bg(Color::Cyan).fg(Color::Black),
-            AppMode::QuitConfirm => Style::default().bg(Color::Red).fg(Color::White),
-            AppMode::Help => Style::default().bg(Color::DarkGray).fg(Color::White),
+        let header_bg = match self.mode {
+            AppMode::Normal => Color::Blue,
+            AppMode::LineSelect => Color::Magenta,
+            AppMode::CommentInput => Color::Green,
+            AppMode::CommentView => Color::Yellow,
+            AppMode::ReviewSubmit => Color::Cyan,
+            AppMode::QuitConfirm => Color::Red,
+            AppMode::Help => Color::DarkGray,
         };
+        // CommentView / ReviewSubmit は明るい bg なので常に Black。
+        // 他のモードはテーマに応じて White / Black を切り替え。
+        let header_fg = match self.mode {
+            AppMode::CommentView | AppMode::ReviewSubmit => Color::Black,
+            _ => match self.theme {
+                ThemeMode::Dark => Color::White,
+                ThemeMode::Light => Color::Black,
+            },
+        };
+        let header_style = Style::default().bg(header_bg).fg(header_fg);
 
         let zoom_indicator = if self.zoomed { " [ZOOM]" } else { "" };
 
@@ -710,7 +748,7 @@ impl App {
                     .borders(Borders::ALL)
                     .border_style(style),
             )
-            .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
+            .highlight_style(self.highlight_style());
 
         frame.render_stateful_widget(list, area, &mut self.commit_list_state);
     }
@@ -769,7 +807,7 @@ impl App {
                     .borders(Borders::ALL)
                     .border_style(style),
             )
-            .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
+            .highlight_style(self.highlight_style());
 
         frame.render_stateful_widget(list, area, &mut self.file_list_state);
     }
@@ -932,7 +970,7 @@ impl App {
             if let Some(raw) = patch_lines.get(idx)
                 && raw.starts_with("@@")
             {
-                *line = Self::format_hunk_header(raw, inner_width);
+                *line = Self::format_hunk_header(raw, inner_width, self.hunk_header_style());
             }
         }
 
@@ -955,8 +993,12 @@ impl App {
             let existing_count = existing_counts.get(&idx).copied().unwrap_or(0);
 
             // 背景色オーバーレイ（優先順位: 選択 > カーソル > pending(青)）
+            let cursor_bg = match self.theme {
+                ThemeMode::Dark => Color::DarkGray,
+                ThemeMode::Light => Color::Indexed(254),
+            };
             let bg = if is_selected || is_cursor {
-                Some(Color::DarkGray)
+                Some(cursor_bg)
             } else if is_pending {
                 Some(Color::Indexed(17))
             } else {
@@ -1795,7 +1837,7 @@ impl App {
 
     /// @@ hunk header を整形表示用の Line に変換
     /// `@@ -10,5 +12,7 @@ fn main()` → `─── L10-14 → L12-18 ─── fn main() ────`
-    fn format_hunk_header(raw: &str, width: u16) -> Line<'static> {
+    fn format_hunk_header(raw: &str, width: u16, style: Style) -> Line<'static> {
         let width = width as usize;
 
         let (range_text, context) = if let Some(rest) = raw.strip_prefix("@@ ") {
@@ -1852,10 +1894,7 @@ impl App {
             content.push('─');
         }
 
-        Line::styled(
-            content,
-            Style::default().bg(Color::Indexed(238)).fg(Color::Cyan),
-        )
+        Line::styled(content, style)
     }
 
     /// 指定行が hunk header（`@@` で始まる行）かどうか判定
@@ -2320,6 +2359,7 @@ mod tests {
             create_empty_files_map(),
             vec![],
             None,
+            ThemeMode::Dark,
         );
         assert!(!app.should_quit);
         assert_eq!(app.focused_panel, Panel::PrDescription);
@@ -2344,6 +2384,7 @@ mod tests {
             create_empty_files_map(),
             vec![],
             None,
+            ThemeMode::Dark,
         );
         assert_eq!(app.commits.len(), 2);
         assert_eq!(app.commit_list_state.selected(), Some(0));
@@ -2362,6 +2403,7 @@ mod tests {
             files_map,
             vec![],
             None,
+            ThemeMode::Dark,
         );
         assert_eq!(app.files_map.len(), 2);
         assert_eq!(app.file_list_state.selected(), Some(0));
@@ -2378,6 +2420,7 @@ mod tests {
             create_empty_files_map(),
             vec![],
             None,
+            ThemeMode::Dark,
         );
         assert_eq!(app.focused_panel, Panel::PrDescription);
         app.next_panel();
@@ -2399,6 +2442,7 @@ mod tests {
             create_empty_files_map(),
             vec![],
             None,
+            ThemeMode::Dark,
         );
         assert_eq!(app.focused_panel, Panel::PrDescription);
         app.prev_panel();
@@ -2421,6 +2465,7 @@ mod tests {
             create_empty_files_map(),
             vec![],
             None,
+            ThemeMode::Dark,
         );
         app.focused_panel = Panel::CommitList;
         assert_eq!(app.commit_list_state.selected(), Some(0));
@@ -2442,6 +2487,7 @@ mod tests {
             create_empty_files_map(),
             vec![],
             None,
+            ThemeMode::Dark,
         );
         app.focused_panel = Panel::CommitList;
         assert_eq!(app.commit_list_state.selected(), Some(0));
@@ -2464,6 +2510,7 @@ mod tests {
             files_map,
             vec![],
             None,
+            ThemeMode::Dark,
         );
         app.focused_panel = Panel::FileTree;
         assert_eq!(app.file_list_state.selected(), Some(0));
@@ -2486,6 +2533,7 @@ mod tests {
             files_map,
             vec![],
             None,
+            ThemeMode::Dark,
         );
         app.focused_panel = Panel::FileTree;
         assert_eq!(app.file_list_state.selected(), Some(0));
@@ -2508,6 +2556,7 @@ mod tests {
             files_map,
             vec![],
             None,
+            ThemeMode::Dark,
         );
         app.focused_panel = Panel::CommitList;
         // Initial state: CommitList panel
@@ -2536,6 +2585,7 @@ mod tests {
             create_empty_files_map(),
             vec![],
             None,
+            ThemeMode::Dark,
         );
 
         // Verify the commit list state is properly initialized
@@ -2579,6 +2629,7 @@ mod tests {
             files_map,
             vec![],
             None,
+            ThemeMode::Dark,
         );
 
         // 最初のコミットのファイルが返される
@@ -2630,6 +2681,7 @@ mod tests {
             files_map,
             vec![],
             None,
+            ThemeMode::Dark,
         );
 
         // ファイル一覧に移動して2番目のファイルを選択
@@ -2663,6 +2715,7 @@ mod tests {
             create_empty_files_map(),
             vec![],
             None,
+            ThemeMode::Dark,
         );
         assert_eq!(app.diff_scroll, 0);
     }
@@ -2750,6 +2803,7 @@ mod tests {
             files_map,
             vec![],
             None,
+            ThemeMode::Dark,
         );
         app.focused_panel = Panel::DiffView;
 
@@ -2770,6 +2824,7 @@ mod tests {
             files_map,
             vec![],
             None,
+            ThemeMode::Dark,
         );
         app.diff_scroll = 50;
 
@@ -2808,6 +2863,7 @@ mod tests {
             files_map,
             vec![],
             None,
+            ThemeMode::Dark,
         )
     }
 
@@ -2926,6 +2982,7 @@ mod tests {
             create_empty_files_map(),
             vec![],
             None,
+            ThemeMode::Dark,
         );
         let (owner, repo) = app.parse_repo().unwrap();
         assert_eq!(owner, "owner");
@@ -2943,6 +3000,7 @@ mod tests {
             create_empty_files_map(),
             vec![],
             None,
+            ThemeMode::Dark,
         );
         assert!(app.parse_repo().is_none());
     }
@@ -2958,6 +3016,7 @@ mod tests {
             create_empty_files_map(),
             vec![],
             None,
+            ThemeMode::Dark,
         );
         // pending_comments が空なら何もしない（status_message も None のまま）
         app.submit_review_with_event(ReviewEvent::Comment);
@@ -3085,6 +3144,7 @@ mod tests {
             create_empty_files_map(),
             vec![],
             None,
+            ThemeMode::Dark,
         );
         app.handle_normal_mode(KeyCode::Char('2'), KeyModifiers::NONE);
         assert_eq!(app.focused_panel, Panel::CommitList);
@@ -3107,6 +3167,7 @@ mod tests {
             files_map,
             vec![],
             None,
+            ThemeMode::Dark,
         );
         app.focused_panel = Panel::FileTree;
         app.handle_normal_mode(KeyCode::Enter, KeyModifiers::NONE);
@@ -3124,6 +3185,7 @@ mod tests {
             create_empty_files_map(),
             vec![],
             None,
+            ThemeMode::Dark,
         );
         app.focused_panel = Panel::DiffView;
         app.handle_normal_mode(KeyCode::Esc, KeyModifiers::NONE);
@@ -3141,6 +3203,7 @@ mod tests {
             create_empty_files_map(),
             vec![],
             None,
+            ThemeMode::Dark,
         );
         // PrDescription → CommitList → FileTree → PrDescription (DiffView をスキップ)
         app.next_panel();
@@ -3162,6 +3225,7 @@ mod tests {
             create_empty_files_map(),
             vec![],
             None,
+            ThemeMode::Dark,
         );
         app.focused_panel = Panel::DiffView;
         app.next_panel();
@@ -3257,6 +3321,7 @@ mod tests {
             files_map,
             vec![],
             None,
+            ThemeMode::Dark,
         );
         assert_eq!(app.current_diff_line_count(), 0);
     }
@@ -3448,6 +3513,7 @@ mod tests {
             files_map,
             vec![],
             None,
+            ThemeMode::Dark,
         );
         app.focused_panel = Panel::CommitList;
 
@@ -3471,6 +3537,7 @@ mod tests {
             create_empty_files_map(),
             vec![],
             None,
+            ThemeMode::Dark,
         );
         assert_eq!(app.focused_panel, Panel::PrDescription);
 
@@ -3552,6 +3619,7 @@ mod tests {
             files_map,
             vec![],
             None,
+            ThemeMode::Dark,
         );
         // CommitList: y=11 はボーダー、y=12 が最初のアイテム
         app.commit_list_rect = Rect::new(0, 11, 30, 10);
@@ -3613,6 +3681,7 @@ mod tests {
             create_empty_files_map(),
             vec![],
             None,
+            ThemeMode::Dark,
         );
         app.pr_desc_rect = Rect::new(0, 1, 30, 5);
         app.pr_desc_view_height = 3;
@@ -3637,6 +3706,7 @@ mod tests {
             files_map,
             vec![],
             None,
+            ThemeMode::Dark,
         );
         app.commit_list_rect = Rect::new(0, 11, 30, 10);
 
@@ -3660,6 +3730,7 @@ mod tests {
             files_map,
             vec![],
             None,
+            ThemeMode::Dark,
         );
         app.focused_panel = Panel::FileTree;
         assert!(app.viewed_files.is_empty());
@@ -3686,6 +3757,7 @@ mod tests {
             files_map,
             vec![],
             None,
+            ThemeMode::Dark,
         );
         app.focused_panel = Panel::FileTree;
 
@@ -3713,6 +3785,7 @@ mod tests {
             create_empty_files_map(),
             vec![],
             None,
+            ThemeMode::Dark,
         );
 
         // ファイル未選択時は何もしない（パニックしない）
@@ -3733,6 +3806,7 @@ mod tests {
             files_map,
             vec![],
             None,
+            ThemeMode::Dark,
         );
         app.focused_panel = Panel::FileTree;
 
@@ -3808,6 +3882,7 @@ mod tests {
             files_map,
             comments,
             None,
+            ThemeMode::Dark,
         )
     }
 
@@ -3853,6 +3928,7 @@ mod tests {
             files_map,
             comments,
             None,
+            ThemeMode::Dark,
         );
         let counts = app.existing_comment_counts();
         assert!(counts.is_empty());
@@ -3888,6 +3964,7 @@ mod tests {
             files_map,
             comments,
             None,
+            ThemeMode::Dark,
         );
         let counts = app.existing_comment_counts();
         assert!(counts.is_empty());
@@ -3958,6 +4035,7 @@ mod tests {
             files_map,
             vec![],
             None,
+            ThemeMode::Dark,
         )
     }
 
@@ -4222,6 +4300,7 @@ mod tests {
             files_map,
             vec![],
             None,
+            ThemeMode::Dark,
         );
 
         assert!(!app.zoomed);
@@ -4248,6 +4327,7 @@ mod tests {
             files_map,
             vec![],
             None,
+            ThemeMode::Dark,
         );
 
         // 各ペインで zoom できる
@@ -4277,6 +4357,7 @@ mod tests {
             files_map,
             vec![],
             None,
+            ThemeMode::Dark,
         );
 
         app.zoomed = true;
@@ -4292,7 +4373,7 @@ mod tests {
 
     #[test]
     fn test_format_hunk_header_basic() {
-        let line = App::format_hunk_header("@@ -10,5 +12,7 @@ fn main()", 40);
+        let line = App::format_hunk_header("@@ -10,5 +12,7 @@ fn main()", 40, Style::default());
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.starts_with("─── L10-14 → L12-18 ─── fn main() "));
         // 幅40まで ─ で埋められている
@@ -4301,7 +4382,7 @@ mod tests {
 
     #[test]
     fn test_format_hunk_header_no_context() {
-        let line = App::format_hunk_header("@@ -1,3 +1,3 @@", 30);
+        let line = App::format_hunk_header("@@ -1,3 +1,3 @@", 30, Style::default());
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.starts_with("─── L1-3 → L1-3 "));
         // コンテキストなし → range の後にすぐ ─ 埋め
@@ -4311,7 +4392,7 @@ mod tests {
     #[test]
     fn test_format_hunk_header_single_line() {
         // len=1 のとき（カンマなし）→ L10 のように表示
-        let line = App::format_hunk_header("@@ -10 +12,3 @@", 30);
+        let line = App::format_hunk_header("@@ -10 +12,3 @@", 30, Style::default());
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.starts_with("─── L10 → L12-14 "));
     }
@@ -4319,7 +4400,7 @@ mod tests {
     #[test]
     fn test_format_hunk_header_new_file() {
         // 新規ファイル: @@ -0,0 +1,5 @@
-        let line = App::format_hunk_header("@@ -0,0 +1,5 @@", 30);
+        let line = App::format_hunk_header("@@ -0,0 +1,5 @@", 30, Style::default());
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("L1-5"));
     }

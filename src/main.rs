@@ -2,7 +2,7 @@ mod app;
 mod git;
 mod github;
 
-use app::App;
+use app::{App, ThemeMode};
 use clap::Parser;
 use color_eyre::Result;
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -26,6 +26,23 @@ struct Cli {
     /// Disable cache and always fetch from API
     #[arg(long)]
     no_cache: bool,
+
+    /// Force light theme
+    #[arg(long, conflicts_with = "dark")]
+    light: bool,
+
+    /// Force dark theme
+    #[arg(long, conflicts_with = "light")]
+    dark: bool,
+}
+
+/// termbg でターミナル背景色を検出し、ライト/ダークモードを判定する。
+/// 検出失敗時はダークモードにフォールバック。
+fn detect_theme() -> ThemeMode {
+    match termbg::theme(std::time::Duration::from_millis(100)) {
+        Ok(termbg::Theme::Light) => ThemeMode::Light,
+        _ => ThemeMode::Dark,
+    }
 }
 
 fn resolve_repo(repo_arg: &Option<String>) -> Result<(String, String)> {
@@ -187,6 +204,15 @@ async fn main() -> Result<()> {
     let ((pr_title, pr_body, files_map), review_comments) =
         tokio::try_join!(data_future, comments_future)?;
 
+    // テーマ検出（ratatui::init() の前に実行 — raw mode では OSC クエリが動かない）
+    let theme = if cli.light {
+        ThemeMode::Light
+    } else if cli.dark {
+        ThemeMode::Dark
+    } else {
+        detect_theme()
+    };
+
     let terminal = ratatui::init();
     crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
 
@@ -199,6 +225,7 @@ async fn main() -> Result<()> {
         files_map,
         review_comments,
         Some(client),
+        theme,
     );
     let result = app.run(terminal);
 
