@@ -76,9 +76,11 @@ async fn main() -> Result<()> {
     let pr_title = pr.title.unwrap_or_default();
     let pr_body = pr.body.unwrap_or_default();
 
-    // コミット一覧を取得
-    eprintln!("Fetching commits...");
+    // コミット一覧とレビューコメントを取得
+    eprintln!("Fetching commits and comments...");
     let commits = github::commits::fetch_commits(&client, &owner, &repo, cli.pr_number).await?;
+    let review_comments =
+        github::comments::fetch_review_comments(&client, &owner, &repo, cli.pr_number).await?;
 
     // 全コミットのファイルを並列取得
     let total = commits.len();
@@ -135,6 +137,7 @@ async fn main() -> Result<()> {
         pr_body,
         commits,
         files_map,
+        review_comments,
         Some(client),
     );
     let result = app.run(terminal);

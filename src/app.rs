@@ -1,4 +1,5 @@
 use crate::git::diff::highlight_diff;
+use crate::github::comments::ReviewComment;
 use crate::github::commits::CommitInfo;
 use crate::github::files::DiffFile;
 use crate::github::review;
@@ -14,7 +15,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tokio::runtime::Handle;
 use unicode_width::UnicodeWidthStr;
@@ -34,6 +35,7 @@ pub enum AppMode {
     Normal,
     LineSelect,
     CommentInput,
+    CommentView,
     ReviewSubmit,
     QuitConfirm,
 }
@@ -164,6 +166,10 @@ pub struct App {
     comment_input: String,
     /// 保留中のコメント一覧
     pending_comments: Vec<PendingComment>,
+    /// 既存のレビューコメント（GitHub から取得済み）
+    review_comments: Vec<ReviewComment>,
+    /// 現在表示中のコメント（CommentView モード用）
+    viewing_comments: Vec<ReviewComment>,
     /// GitHub API クライアント（テスト時は None）
     client: Option<Octocrab>,
     /// ステータスメッセージ（ヘッダーバーに表示、3秒後に自動クリア）
@@ -174,6 +180,8 @@ pub struct App {
     review_event_cursor: usize,
     /// 送信後に終了するかどうか
     quit_after_submit: bool,
+    /// viewed 済みファイル名のセット（コミット跨ぎで維持）
+    viewed_files: HashSet<String>,
     /// 各ペインの描画領域（マウスヒットテスト用、render 時に更新）
     pr_desc_rect: Rect,
     commit_list_rect: Rect,
@@ -182,6 +190,7 @@ pub struct App {
 }
 
 impl App {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         pr_number: u64,
         repo: String,
@@ -189,6 +198,7 @@ impl App {
         pr_body: String,
         commits: Vec<CommitInfo>,
         files_map: HashMap<String, Vec<DiffFile>>,
+        review_comments: Vec<ReviewComment>,
         client: Option<Octocrab>,
     ) -> Self {
         let mut commit_list_state = ListState::default();
@@ -225,11 +235,14 @@ impl App {
             line_selection: None,
             comment_input: String::new(),
             pending_comments: Vec::new(),
+            review_comments,
+            viewing_comments: Vec::new(),
             client,
             status_message: None,
             needs_submit: None,
             review_event_cursor: 0,
             quit_after_submit: false,
+            viewed_files: HashSet::new(),
             pr_desc_rect: Rect::default(),
             commit_list_rect: Rect::default(),
             file_tree_rect: Rect::default(),
@@ -267,6 +280,91 @@ impl App {
             return files.get(idx);
         }
         None
+    }
+
+    /// viewed フラグをトグル
+    fn toggle_viewed(&mut self) {
+        if let Some(file) = self.current_file() {
+            let name = file.filename.clone();
+            if !self.viewed_files.remove(&name) {
+                self.viewed_files.insert(name);
+            }
+        }
+    }
+
+    /// 現在のファイルの各 diff 行にある既存コメント数を返す（逆引きマッピング）
+    fn existing_comment_counts(&self) -> HashMap<usize, usize> {
+        let mut counts: HashMap<usize, usize> = HashMap::new();
+        let Some(file) = self.current_file() else {
+            return counts;
+        };
+        let Some(patch) = file.patch.as_deref() else {
+            return counts;
+        };
+
+        // ファイルに該当するコメントを絞り込み（outdated な line=None は除外）
+        let file_comments: Vec<&ReviewComment> = self
+            .review_comments
+            .iter()
+            .filter(|c| c.path == file.filename && c.line.is_some())
+            .collect();
+
+        if file_comments.is_empty() {
+            return counts;
+        }
+
+        // patch の逆引きマップ: (file_line, side) → diff_line_index
+        let line_map = review::parse_patch_line_map(patch);
+        let mut reverse: HashMap<(usize, &str), usize> = HashMap::new();
+        for (idx, info) in line_map.iter().enumerate() {
+            if let Some(info) = info {
+                let side_str = match info.side {
+                    review::Side::Left => "LEFT",
+                    review::Side::Right => "RIGHT",
+                };
+                reverse.insert((info.file_line, side_str), idx);
+            }
+        }
+
+        for comment in &file_comments {
+            let line = comment.line.unwrap(); // filter で None は除外済み
+            let side = comment.side.as_deref().unwrap_or("RIGHT");
+            if let Some(&diff_idx) = reverse.get(&(line, side)) {
+                *counts.entry(diff_idx).or_insert(0) += 1;
+            }
+        }
+
+        counts
+    }
+
+    /// 指定 diff 行のコメントを取得（CommentView 用）
+    fn comments_at_diff_line(&self, diff_line: usize) -> Vec<ReviewComment> {
+        let Some(file) = self.current_file() else {
+            return Vec::new();
+        };
+        let Some(patch) = file.patch.as_deref() else {
+            return Vec::new();
+        };
+
+        let line_map = review::parse_patch_line_map(patch);
+        let Some(Some(info)) = line_map.get(diff_line) else {
+            return Vec::new();
+        };
+
+        let side_str = match info.side {
+            review::Side::Left => "LEFT",
+            review::Side::Right => "RIGHT",
+        };
+
+        self.review_comments
+            .iter()
+            .filter(|c| {
+                c.path == file.filename
+                    && c.line == Some(info.file_line)
+                    && c.side.as_deref().unwrap_or("RIGHT") == side_str
+            })
+            .cloned()
+            .collect()
     }
 
     pub fn run(&mut self, mut terminal: DefaultTerminal) -> Result<()> {
@@ -316,6 +414,7 @@ impl App {
             AppMode::Normal => "",
             AppMode::LineSelect => " [LINE SELECT] ",
             AppMode::CommentInput => " [COMMENT] ",
+            AppMode::CommentView => " [VIEWING] ",
             AppMode::ReviewSubmit => " [REVIEW] ",
             AppMode::QuitConfirm => " [CONFIRM] ",
         };
@@ -330,6 +429,7 @@ impl App {
             AppMode::Normal => Style::default().bg(Color::Blue).fg(Color::White),
             AppMode::LineSelect => Style::default().bg(Color::Magenta).fg(Color::White),
             AppMode::CommentInput => Style::default().bg(Color::Green).fg(Color::White),
+            AppMode::CommentView => Style::default().bg(Color::Yellow).fg(Color::Black),
             AppMode::ReviewSubmit => Style::default().bg(Color::Cyan).fg(Color::Black),
             AppMode::QuitConfirm => Style::default().bg(Color::Red).fg(Color::White),
         };
@@ -393,6 +493,7 @@ impl App {
 
         // ダイアログ描画（画面中央にオーバーレイ）
         match self.mode {
+            AppMode::CommentView => self.render_comment_view_dialog(frame, area),
             AppMode::ReviewSubmit => self.render_review_submit_dialog(frame, area),
             AppMode::QuitConfirm => self.render_quit_confirm_dialog(frame, area),
             _ => {}
@@ -460,26 +561,45 @@ impl App {
         };
 
         let files = self.current_files();
+        let viewed_count = files
+            .iter()
+            .filter(|f| self.viewed_files.contains(&f.filename))
+            .count();
         let items: Vec<ListItem> = files
             .iter()
             .map(|f| {
+                let is_viewed = self.viewed_files.contains(&f.filename);
                 let status = f.status_char();
-                let status_color = match status {
-                    'A' => Color::Green,
-                    'M' => Color::Yellow,
-                    'D' => Color::Red,
-                    'R' => Color::Cyan,
-                    _ => Color::White,
+                let status_color = if is_viewed {
+                    Color::DarkGray
+                } else {
+                    match status {
+                        'A' => Color::Green,
+                        'M' => Color::Yellow,
+                        'D' => Color::Red,
+                        'R' => Color::Cyan,
+                        _ => Color::White,
+                    }
                 };
+                let text_style = if is_viewed {
+                    Style::default().fg(Color::DarkGray)
+                } else {
+                    Style::default()
+                };
+                let marker = if is_viewed { "✓ " } else { "  " };
                 let line = Line::from(vec![
+                    Span::styled(marker, text_style),
                     Span::styled(format!("{}", status), Style::default().fg(status_color)),
-                    Span::raw(format!(" {} {}", f.filename, f.changes_display())),
+                    Span::styled(
+                        format!(" {} {}", f.filename, f.changes_display()),
+                        text_style,
+                    ),
                 ]);
                 ListItem::new(line)
             })
             .collect();
 
-        let title = format!(" Files ({}) ", files.len());
+        let title = format!(" Files ({}/{}) ", viewed_count, files.len());
         let list = List::new(items)
             .block(
                 Block::default()
@@ -597,9 +717,10 @@ impl App {
             ratatui::text::Text::from(lines)
         };
 
-        // カーソル/選択/ペンディングコメントのオーバーレイを適用
+        // カーソル/選択/ペンディングコメント/既存コメントのオーバーレイを適用
         let show_cursor = self.focused_panel == Panel::DiffView;
         let has_selection = self.mode == AppMode::LineSelect || self.mode == AppMode::CommentInput;
+        let existing_counts = self.existing_comment_counts();
 
         for (idx, line) in text.lines.iter_mut().enumerate() {
             let is_selected = has_selection
@@ -608,16 +729,19 @@ impl App {
                     idx >= start && idx <= end
                 });
             let is_cursor = show_cursor && !has_selection && idx == self.cursor_line;
-            let is_comment = self
+            let is_pending = self
                 .pending_comments
                 .iter()
                 .any(|c| c.file_path == filename && idx >= c.start_line && idx <= c.end_line);
+            let existing_count = existing_counts.get(&idx).copied().unwrap_or(0);
 
-            // 背景色オーバーレイ（優先順位: 選択 > カーソル > コメント）
+            // 背景色オーバーレイ（優先順位: 選択 > カーソル > pending(青) > existing(グレー)）
             let bg = if is_selected || is_cursor {
                 Some(Color::DarkGray)
-            } else if is_comment {
+            } else if is_pending {
                 Some(Color::Indexed(17))
+            } else if existing_count > 0 {
+                Some(Color::Indexed(236))
             } else {
                 None
             };
@@ -626,6 +750,17 @@ impl App {
                 for span in &mut line.spans {
                     span.style = span.style.bg(bg_color);
                 }
+            }
+
+            // 💬 マーカー（既存コメント行の末尾に付与）
+            if existing_count > 0 {
+                let marker = if existing_count == 1 {
+                    " 💬".to_string()
+                } else {
+                    format!(" 💬{}", existing_count)
+                };
+                line.spans
+                    .push(Span::styled(marker, Style::default().fg(Color::Yellow)));
             }
         }
 
@@ -741,6 +876,51 @@ impl App {
         frame.render_widget(paragraph, dialog);
     }
 
+    fn render_comment_view_dialog(&self, frame: &mut Frame, area: Rect) {
+        // ダイアログサイズ: 幅60, 高さはコメント数に応じて動的（最大 area の 2/3）
+        let content_height: u16 = self
+            .viewing_comments
+            .iter()
+            .map(|c| {
+                // @user (date) + 本文行数 + 空行
+                1 + c.body.lines().count() as u16 + 1
+            })
+            .sum::<u16>()
+            .max(3);
+        let dialog_height = (content_height + 4).min(area.height * 2 / 3); // +4 for borders + footer
+        let dialog_width = 60.min(area.width.saturating_sub(4));
+        let dialog = Self::centered_rect(dialog_width, dialog_height, area);
+        frame.render_widget(ratatui::widgets::Clear, dialog);
+
+        let mut lines = vec![Line::raw("")];
+        for comment in &self.viewing_comments {
+            lines.push(Line::styled(
+                format!(
+                    "  @{} ({})",
+                    comment.user.login,
+                    &comment.created_at[..10.min(comment.created_at.len())]
+                ),
+                Style::default().fg(Color::Cyan),
+            ));
+            for body_line in comment.body.lines() {
+                lines.push(Line::raw(format!("  {}", body_line)));
+            }
+            lines.push(Line::raw(""));
+        }
+        lines.push(Line::styled(
+            "  Esc/Enter/q: close",
+            Style::default().fg(Color::DarkGray),
+        ));
+
+        let paragraph = Paragraph::new(lines).block(
+            Block::default()
+                .title(" Review Comments ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow)),
+        );
+        frame.render_widget(paragraph, dialog);
+    }
+
     /// 座標からペインを特定
     fn panel_at(&self, x: u16, y: u16) -> Option<Panel> {
         let pos = Position::new(x, y);
@@ -832,6 +1012,7 @@ impl App {
                 AppMode::Normal => self.handle_normal_mode(key.code, key.modifiers),
                 AppMode::LineSelect => self.handle_line_select_mode(key.code),
                 AppMode::CommentInput => self.handle_comment_input_mode(key.code),
+                AppMode::CommentView => self.handle_comment_view_mode(key.code),
                 AppMode::ReviewSubmit => self.handle_review_submit_mode(key.code),
                 AppMode::QuitConfirm => self.handle_quit_confirm_mode(key.code),
             },
@@ -868,9 +1049,16 @@ impl App {
             KeyCode::Char('2') => self.focused_panel = Panel::CommitList,
             KeyCode::Char('3') => self.focused_panel = Panel::FileTree,
             KeyCode::Enter => {
-                // Files ペインで Enter → DiffView に移動
                 if self.focused_panel == Panel::FileTree {
+                    // Files ペインで Enter → DiffView に移動
                     self.focused_panel = Panel::DiffView;
+                } else if self.focused_panel == Panel::DiffView {
+                    // DiffView で Enter → カーソル行にコメントがあれば CommentView
+                    let comments = self.comments_at_diff_line(self.cursor_line);
+                    if !comments.is_empty() {
+                        self.viewing_comments = comments;
+                        self.mode = AppMode::CommentView;
+                    }
                 }
             }
             KeyCode::Esc => {
@@ -911,6 +1099,12 @@ impl App {
                     });
                     self.comment_input.clear();
                     self.mode = AppMode::CommentInput;
+                }
+            }
+            KeyCode::Char('x') => {
+                // FileTree ペインで viewed トグル
+                if self.focused_panel == Panel::FileTree {
+                    self.toggle_viewed();
                 }
             }
             KeyCode::Char('S') => {
@@ -964,6 +1158,17 @@ impl App {
             }
             KeyCode::Char(c) => {
                 self.comment_input.push(c);
+            }
+            _ => {}
+        }
+    }
+
+    /// コメント表示ダイアログのキー処理
+    fn handle_comment_view_mode(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                self.viewing_comments.clear();
+                self.mode = AppMode::Normal;
             }
             _ => {}
         }
@@ -1382,6 +1587,7 @@ mod tests {
             String::new(),
             vec![],
             create_empty_files_map(),
+            vec![],
             None,
         );
         assert!(!app.should_quit);
@@ -1405,6 +1611,7 @@ mod tests {
             String::new(),
             commits,
             create_empty_files_map(),
+            vec![],
             None,
         );
         assert_eq!(app.commits.len(), 2);
@@ -1422,6 +1629,7 @@ mod tests {
             String::new(),
             commits,
             files_map,
+            vec![],
             None,
         );
         assert_eq!(app.files_map.len(), 2);
@@ -1437,6 +1645,7 @@ mod tests {
             String::new(),
             vec![],
             create_empty_files_map(),
+            vec![],
             None,
         );
         assert_eq!(app.focused_panel, Panel::PrDescription);
@@ -1457,6 +1666,7 @@ mod tests {
             String::new(),
             vec![],
             create_empty_files_map(),
+            vec![],
             None,
         );
         assert_eq!(app.focused_panel, Panel::PrDescription);
@@ -1478,6 +1688,7 @@ mod tests {
             String::new(),
             commits,
             create_empty_files_map(),
+            vec![],
             None,
         );
         app.focused_panel = Panel::CommitList;
@@ -1498,6 +1709,7 @@ mod tests {
             String::new(),
             commits,
             create_empty_files_map(),
+            vec![],
             None,
         );
         app.focused_panel = Panel::CommitList;
@@ -1519,6 +1731,7 @@ mod tests {
             String::new(),
             commits,
             files_map,
+            vec![],
             None,
         );
         app.focused_panel = Panel::FileTree;
@@ -1540,6 +1753,7 @@ mod tests {
             String::new(),
             commits,
             files_map,
+            vec![],
             None,
         );
         app.focused_panel = Panel::FileTree;
@@ -1561,6 +1775,7 @@ mod tests {
             String::new(),
             commits,
             files_map,
+            vec![],
             None,
         );
         app.focused_panel = Panel::CommitList;
@@ -1588,6 +1803,7 @@ mod tests {
             String::new(),
             commits,
             create_empty_files_map(),
+            vec![],
             None,
         );
 
@@ -1630,6 +1846,7 @@ mod tests {
             String::new(),
             commits,
             files_map,
+            vec![],
             None,
         );
 
@@ -1680,6 +1897,7 @@ mod tests {
             String::new(),
             commits,
             files_map,
+            vec![],
             None,
         );
 
@@ -1712,6 +1930,7 @@ mod tests {
             String::new(),
             commits,
             create_empty_files_map(),
+            vec![],
             None,
         );
         assert_eq!(app.diff_scroll, 0);
@@ -1728,6 +1947,7 @@ mod tests {
             String::new(),
             commits,
             files_map,
+            vec![],
             None,
         );
         app.focused_panel = Panel::DiffView;
@@ -1751,6 +1971,7 @@ mod tests {
             String::new(),
             commits,
             files_map,
+            vec![],
             None,
         );
         app.focused_panel = Panel::DiffView;
@@ -1778,6 +1999,7 @@ mod tests {
             String::new(),
             commits,
             files_map,
+            vec![],
             None,
         );
         // PrDescription panel (default)
@@ -1823,6 +2045,7 @@ mod tests {
             String::new(),
             commits,
             files_map,
+            vec![],
             None,
         );
         app.focused_panel = Panel::DiffView;
@@ -1843,6 +2066,7 @@ mod tests {
             String::new(),
             commits,
             files_map,
+            vec![],
             None,
         );
         app.diff_scroll = 50;
@@ -1880,6 +2104,7 @@ mod tests {
             String::new(),
             commits,
             files_map,
+            vec![],
             None,
         )
     }
@@ -1997,6 +2222,7 @@ mod tests {
             String::new(),
             vec![],
             create_empty_files_map(),
+            vec![],
             None,
         );
         let (owner, repo) = app.parse_repo().unwrap();
@@ -2013,6 +2239,7 @@ mod tests {
             String::new(),
             vec![],
             create_empty_files_map(),
+            vec![],
             None,
         );
         assert!(app.parse_repo().is_none());
@@ -2027,6 +2254,7 @@ mod tests {
             String::new(),
             vec![],
             create_empty_files_map(),
+            vec![],
             None,
         );
         // pending_comments が空なら何もしない（status_message も None のまま）
@@ -2153,6 +2381,7 @@ mod tests {
             String::new(),
             vec![],
             create_empty_files_map(),
+            vec![],
             None,
         );
         app.handle_normal_mode(KeyCode::Char('2'), KeyModifiers::NONE);
@@ -2174,6 +2403,7 @@ mod tests {
             String::new(),
             commits,
             files_map,
+            vec![],
             None,
         );
         app.focused_panel = Panel::FileTree;
@@ -2190,6 +2420,7 @@ mod tests {
             String::new(),
             vec![],
             create_empty_files_map(),
+            vec![],
             None,
         );
         app.focused_panel = Panel::DiffView;
@@ -2206,6 +2437,7 @@ mod tests {
             String::new(),
             vec![],
             create_empty_files_map(),
+            vec![],
             None,
         );
         // PrDescription → CommitList → FileTree → PrDescription (DiffView をスキップ)
@@ -2226,6 +2458,7 @@ mod tests {
             String::new(),
             vec![],
             create_empty_files_map(),
+            vec![],
             None,
         );
         app.focused_panel = Panel::DiffView;
@@ -2320,6 +2553,7 @@ mod tests {
             String::new(),
             commits,
             files_map,
+            vec![],
             None,
         );
         assert_eq!(app.current_diff_line_count(), 0);
@@ -2510,6 +2744,7 @@ mod tests {
             String::new(),
             commits,
             files_map,
+            vec![],
             None,
         );
         app.focused_panel = Panel::CommitList;
@@ -2532,6 +2767,7 @@ mod tests {
             String::new(),
             vec![],
             create_empty_files_map(),
+            vec![],
             None,
         );
         assert_eq!(app.focused_panel, Panel::PrDescription);
@@ -2612,6 +2848,7 @@ mod tests {
             String::new(),
             commits,
             files_map,
+            vec![],
             None,
         );
         // CommitList: y=11 はボーダー、y=12 が最初のアイテム
@@ -2651,6 +2888,7 @@ mod tests {
             "line1\nline2\nline3\nline4\nline5".to_string(),
             vec![],
             create_empty_files_map(),
+            vec![],
             None,
         );
         app.pr_desc_rect = Rect::new(0, 1, 30, 5);
@@ -2674,6 +2912,7 @@ mod tests {
             String::new(),
             commits,
             files_map,
+            vec![],
             None,
         );
         app.commit_list_rect = Rect::new(0, 11, 30, 10);
@@ -2681,5 +2920,285 @@ mod tests {
         // CommitList 上でスクロールしても選択は変わらない
         app.handle_mouse_scroll(5, 15, true);
         assert_eq!(app.commit_list_state.selected(), Some(0));
+    }
+
+    // === N6: viewed フラグテスト ===
+
+    #[test]
+    fn test_toggle_viewed() {
+        let commits = create_test_commits();
+        let files_map = create_test_files_map(&commits);
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            commits,
+            files_map,
+            vec![],
+            None,
+        );
+        app.focused_panel = Panel::FileTree;
+        assert!(app.viewed_files.is_empty());
+
+        // トグル → viewed に追加
+        app.toggle_viewed();
+        assert!(app.viewed_files.contains("src/main.rs"));
+
+        // 再トグル → viewed から削除
+        app.toggle_viewed();
+        assert!(!app.viewed_files.contains("src/main.rs"));
+    }
+
+    #[test]
+    fn test_viewed_persists_across_commits() {
+        let commits = create_test_commits();
+        let files_map = create_test_files_map(&commits);
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            commits,
+            files_map,
+            vec![],
+            None,
+        );
+        app.focused_panel = Panel::FileTree;
+
+        // ファイルを viewed にする
+        app.toggle_viewed();
+        assert!(app.viewed_files.contains("src/main.rs"));
+
+        // コミットを切り替え
+        app.focused_panel = Panel::CommitList;
+        app.select_next();
+        assert_eq!(app.commit_list_state.selected(), Some(1));
+
+        // viewed は維持される
+        assert!(app.viewed_files.contains("src/main.rs"));
+    }
+
+    #[test]
+    fn test_toggle_viewed_no_file_selected() {
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            vec![],
+            create_empty_files_map(),
+            vec![],
+            None,
+        );
+
+        // ファイル未選択時は何もしない（パニックしない）
+        app.toggle_viewed();
+        assert!(app.viewed_files.is_empty());
+    }
+
+    #[test]
+    fn test_x_key_toggles_viewed_in_file_tree() {
+        let commits = create_test_commits();
+        let files_map = create_test_files_map(&commits);
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            commits,
+            files_map,
+            vec![],
+            None,
+        );
+        app.focused_panel = Panel::FileTree;
+
+        // x キーで viewed トグル
+        app.handle_normal_mode(KeyCode::Char('x'), KeyModifiers::NONE);
+        assert!(app.viewed_files.contains("src/main.rs"));
+
+        // FileTree 以外では x キーは無効
+        app.focused_panel = Panel::CommitList;
+        app.handle_normal_mode(KeyCode::Char('x'), KeyModifiers::NONE);
+        assert_eq!(app.viewed_files.len(), 1); // 変化なし
+    }
+
+    // === N6: コメント表示テスト ===
+
+    fn make_review_comment(
+        path: &str,
+        line: Option<usize>,
+        side: &str,
+        body: &str,
+    ) -> ReviewComment {
+        ReviewComment {
+            id: 1,
+            body: body.to_string(),
+            path: path.to_string(),
+            line,
+            start_line: None,
+            side: Some(side.to_string()),
+            start_side: None,
+            commit_id: "abc1234567890".to_string(),
+            user: crate::github::comments::ReviewCommentUser {
+                login: "testuser".to_string(),
+            },
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+            in_reply_to_id: None,
+        }
+    }
+
+    fn create_app_with_comments() -> App {
+        let commits = create_test_commits();
+        let mut files_map = HashMap::new();
+        // @@ -0,0 +1,3 @$ +line1 +line2 +line3
+        let patch = "@@ -0,0 +1,3 @@\n+line1\n+line2\n+line3".to_string();
+        files_map.insert(
+            "abc1234567890".to_string(),
+            vec![DiffFile {
+                filename: "src/main.rs".to_string(),
+                status: "added".to_string(),
+                additions: 3,
+                deletions: 0,
+                patch: Some(patch),
+            }],
+        );
+        let comments = vec![make_review_comment(
+            "src/main.rs",
+            Some(2),
+            "RIGHT",
+            "Nice line!",
+        )];
+        App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            commits,
+            files_map,
+            comments,
+            None,
+        )
+    }
+
+    #[test]
+    fn test_existing_comment_counts_maps_correctly() {
+        let app = create_app_with_comments();
+        let counts = app.existing_comment_counts();
+        // line=2 (RIGHT) → patch行: @@ は idx 0, +line1 は idx 1, +line2 は idx 2
+        assert_eq!(counts.get(&2), Some(&1));
+        // 他の行にはコメントがない
+        assert_eq!(counts.get(&0), None);
+        assert_eq!(counts.get(&1), None);
+        assert_eq!(counts.get(&3), None);
+    }
+
+    #[test]
+    fn test_existing_comment_counts_outdated_skipped() {
+        let commits = create_test_commits();
+        let mut files_map = HashMap::new();
+        files_map.insert(
+            "abc1234567890".to_string(),
+            vec![DiffFile {
+                filename: "src/main.rs".to_string(),
+                status: "added".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -0,0 +1 @@\n+line1".to_string()),
+            }],
+        );
+        // outdated コメント (line=None) はスキップされる
+        let comments = vec![make_review_comment(
+            "src/main.rs",
+            None,
+            "RIGHT",
+            "Outdated comment",
+        )];
+        let app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            commits,
+            files_map,
+            comments,
+            None,
+        );
+        let counts = app.existing_comment_counts();
+        assert!(counts.is_empty());
+    }
+
+    #[test]
+    fn test_existing_comment_counts_no_match() {
+        let commits = create_test_commits();
+        let mut files_map = HashMap::new();
+        files_map.insert(
+            "abc1234567890".to_string(),
+            vec![DiffFile {
+                filename: "src/main.rs".to_string(),
+                status: "added".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -0,0 +1 @@\n+line1".to_string()),
+            }],
+        );
+        // 別ファイルのコメントはマッチしない
+        let comments = vec![make_review_comment(
+            "other.rs",
+            Some(1),
+            "RIGHT",
+            "Wrong file",
+        )];
+        let app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            commits,
+            files_map,
+            comments,
+            None,
+        );
+        let counts = app.existing_comment_counts();
+        assert!(counts.is_empty());
+    }
+
+    #[test]
+    fn test_enter_opens_comment_view_on_comment_line() {
+        let mut app = create_app_with_comments();
+        app.focused_panel = Panel::DiffView;
+        app.cursor_line = 2; // +line2 (コメントがある行)
+
+        app.handle_normal_mode(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.mode, AppMode::CommentView);
+        assert_eq!(app.viewing_comments.len(), 1);
+        assert_eq!(app.viewing_comments[0].body, "Nice line!");
+    }
+
+    #[test]
+    fn test_enter_does_not_open_comment_view_on_empty_line() {
+        let mut app = create_app_with_comments();
+        app.focused_panel = Panel::DiffView;
+        app.cursor_line = 1; // +line1 (コメントがない行)
+
+        app.handle_normal_mode(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.mode, AppMode::Normal);
+        assert!(app.viewing_comments.is_empty());
+    }
+
+    #[test]
+    fn test_comment_view_esc_closes() {
+        let mut app = create_app_with_comments();
+        app.focused_panel = Panel::DiffView;
+        app.cursor_line = 2;
+
+        // CommentView を開く
+        app.handle_normal_mode(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.mode, AppMode::CommentView);
+
+        // Esc で閉じる
+        app.handle_comment_view_mode(KeyCode::Esc);
+        assert_eq!(app.mode, AppMode::Normal);
+        assert!(app.viewing_comments.is_empty());
     }
 }
