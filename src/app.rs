@@ -795,7 +795,7 @@ impl App {
             .border_style(border_style);
 
         // 選択中ファイルを取得し、所有型にクローンして self の借用を解放
-        let (has_file, has_patch, patch, filename) = {
+        let (has_file, has_patch, patch, filename, file_status) = {
             let file = self.current_file();
             let has_file = file.is_some();
             let has_patch = file.is_some_and(|f| f.patch.is_some());
@@ -804,7 +804,8 @@ impl App {
                 .unwrap_or("")
                 .to_string();
             let filename = file.map(|f| f.filename.as_str()).unwrap_or("").to_string();
-            (has_file, has_patch, patch, filename)
+            let file_status = file.map(|f| f.status.as_str()).unwrap_or("").to_string();
+            (has_file, has_patch, patch, filename, file_status)
         };
 
         // バイナリファイルまたは diff がない場合
@@ -829,24 +830,40 @@ impl App {
         );
 
         if !cache_hit {
-            let base_text = if let Some(highlighted) = highlight_diff(&patch, &filename) {
-                highlighted
-            } else {
-                // delta 未使用: 手動色分け
-                let lines: Vec<Line> = patch
-                    .lines()
-                    .map(|line| {
-                        let style = match line.chars().next() {
-                            Some('+') => Style::default().fg(Color::Green),
-                            Some('-') => Style::default().fg(Color::Red),
-                            Some('@') => Style::default().fg(Color::Cyan),
-                            _ => Style::default(),
-                        };
-                        Line::styled(line.to_string(), style)
-                    })
-                    .collect();
-                ratatui::text::Text::from(lines)
-            };
+            let is_whole_file = matches!(file_status.as_str(), "added" | "removed" | "deleted");
+            let base_text =
+                if let Some(highlighted) = highlight_diff(&patch, &filename, &file_status) {
+                    highlighted
+                } else {
+                    // delta 未使用: 手動色分け
+                    let lines: Vec<Line> = patch
+                        .lines()
+                        .map(|line| {
+                            if is_whole_file {
+                                // 全行追加/削除: +/- を除去してデフォルトスタイルで表示
+                                let content = if (line.starts_with('+') || line.starts_with('-'))
+                                    && line.len() > 1
+                                {
+                                    &line[1..]
+                                } else if line.starts_with('+') || line.starts_with('-') {
+                                    ""
+                                } else {
+                                    line
+                                };
+                                Line::styled(content.to_string(), Style::default())
+                            } else {
+                                let style = match line.chars().next() {
+                                    Some('+') => Style::default().fg(Color::Green),
+                                    Some('-') => Style::default().fg(Color::Red),
+                                    Some('@') => Style::default().fg(Color::Cyan),
+                                    _ => Style::default(),
+                                };
+                                Line::styled(line.to_string(), style)
+                            }
+                        })
+                        .collect();
+                    ratatui::text::Text::from(lines)
+                };
             self.diff_highlight_cache = Some((commit_idx, file_idx, base_text));
         }
 
