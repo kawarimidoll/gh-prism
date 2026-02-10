@@ -38,6 +38,7 @@ pub enum AppMode {
     CommentView,
     ReviewSubmit,
     QuitConfirm,
+    Help,
 }
 
 /// レビューイベントタイプ
@@ -186,6 +187,8 @@ pub struct App {
     quit_after_submit: bool,
     /// 2キーシーケンスの1文字目（`]` or `[`）を保持
     pending_key: Option<char>,
+    /// ヘルプ画面のスクロール位置
+    help_scroll: u16,
     /// viewed 済みファイル名のセット（コミット跨ぎで維持）
     viewed_files: HashSet<String>,
     /// 各ペインの描画領域（マウスヒットテスト用、render 時に更新）
@@ -251,6 +254,7 @@ impl App {
             review_event_cursor: 0,
             quit_after_submit: false,
             pending_key: None,
+            help_scroll: 0,
             viewed_files: HashSet::new(),
             pr_desc_rect: Rect::default(),
             commit_list_rect: Rect::default(),
@@ -464,6 +468,7 @@ impl App {
             AppMode::CommentView => " [VIEWING] ",
             AppMode::ReviewSubmit => " [REVIEW] ",
             AppMode::QuitConfirm => " [CONFIRM] ",
+            AppMode::Help => " [HELP] ",
         };
 
         let comments_badge = if self.pending_comments.is_empty() {
@@ -479,10 +484,11 @@ impl App {
             AppMode::CommentView => Style::default().bg(Color::Yellow).fg(Color::Black),
             AppMode::ReviewSubmit => Style::default().bg(Color::Cyan).fg(Color::Black),
             AppMode::QuitConfirm => Style::default().bg(Color::Red).fg(Color::White),
+            AppMode::Help => Style::default().bg(Color::DarkGray).fg(Color::White),
         };
 
         let header_base = format!(
-            " prism - {} PR #{}: {}{}{} | q: quit",
+            " prism - {} PR #{}: {}{}{} | ?: help",
             self.repo, self.pr_number, self.pr_title, mode_indicator, comments_badge
         );
 
@@ -543,6 +549,7 @@ impl App {
             AppMode::CommentView => self.render_comment_view_dialog(frame, area),
             AppMode::ReviewSubmit => self.render_review_submit_dialog(frame, area),
             AppMode::QuitConfirm => self.render_quit_confirm_dialog(frame, area),
+            AppMode::Help => self.render_help_dialog(frame, area),
             _ => {}
         }
     }
@@ -979,6 +986,79 @@ impl App {
         frame.render_widget(paragraph, dialog);
     }
 
+    fn render_help_dialog(&self, frame: &mut Frame, area: Rect) {
+        let dialog_height = (area.height * 2 / 3)
+            .max(20)
+            .min(area.height.saturating_sub(4));
+        let dialog_width = 50.min(area.width.saturating_sub(4));
+        let dialog = Self::centered_rect(dialog_width, dialog_height, area);
+        frame.render_widget(ratatui::widgets::Clear, dialog);
+
+        let s = Style::default().fg(Color::Yellow); // section
+        let k = Style::default().fg(Color::Cyan); // key
+        let d = Style::default(); // desc
+
+        // (key, desc) のペアか、セクションヘッダーを表す enum 的タプル配列
+        let entries: Vec<(&str, &str)> = vec![
+            ("", "Navigation"),
+            ("j / ↓", "Move down"),
+            ("k / ↑", "Move up"),
+            ("l / → / Tab", "Next pane"),
+            ("h / ← / BackTab", "Previous pane"),
+            ("1 / 2 / 3", "Jump to pane"),
+            ("Enter", "Open diff / view comment"),
+            ("Esc", "Back to Files pane"),
+            ("", "Diff Scroll"),
+            ("Ctrl+d / Ctrl+u", "Half page down / up"),
+            ("Ctrl+f / Ctrl+b", "Full page down / up"),
+            ("g / G", "Top / Bottom"),
+            ("", "Diff Jump"),
+            ("]c / [c", "Next / prev change block"),
+            ("]h / [h", "Next / prev hunk"),
+            ("", "Selection & Comment"),
+            ("v", "Enter line select mode"),
+            ("c", "Comment on current line"),
+            ("S", "Submit review"),
+            ("", "Copy"),
+            ("y", "Copy SHA / file path"),
+            ("Y", "Copy commit message"),
+            ("", "Other"),
+            ("x", "Toggle viewed (Files)"),
+            ("?", "This help"),
+            ("q", "Quit"),
+        ];
+
+        let mut lines: Vec<Line> = vec![];
+        for (key, desc) in &entries {
+            if key.is_empty() {
+                // セクションヘッダー
+                lines.push(Line::raw(""));
+                lines.push(Line::styled(format!("  {desc}"), s));
+                lines.push(Line::styled("  ──────────────────────────", s));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {key:<18}"), k),
+                    Span::styled(*desc, d),
+                ]));
+            }
+        }
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            "  ?/Esc/q: close",
+            Style::default().fg(Color::DarkGray),
+        ));
+
+        let paragraph = Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .title(" Help ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::DarkGray)),
+            )
+            .scroll((self.help_scroll, 0));
+        frame.render_widget(paragraph, dialog);
+    }
+
     /// 座標からペインを特定
     fn panel_at(&self, x: u16, y: u16) -> Option<Panel> {
         let pos = Position::new(x, y);
@@ -1084,6 +1164,7 @@ impl App {
                 AppMode::CommentView => self.handle_comment_view_mode(key.code),
                 AppMode::ReviewSubmit => self.handle_review_submit_mode(key.code),
                 AppMode::QuitConfirm => self.handle_quit_confirm_mode(key.code),
+                AppMode::Help => self.handle_help_mode(key.code),
             },
             Event::Mouse(mouse) if self.mode == AppMode::Normal => match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
@@ -1227,6 +1308,10 @@ impl App {
                 self.review_event_cursor = 0;
                 self.mode = AppMode::ReviewSubmit;
             }
+            KeyCode::Char('?') => {
+                self.help_scroll = 0;
+                self.mode = AppMode::Help;
+            }
             KeyCode::Char(']') | KeyCode::Char('[') => {
                 if let KeyCode::Char(ch) = code {
                     self.pending_key = Some(ch);
@@ -1361,6 +1446,21 @@ impl App {
             KeyCode::Char('c') | KeyCode::Esc => {
                 // キャンセル
                 self.mode = AppMode::Normal;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_help_mode(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q') => {
+                self.mode = AppMode::Normal;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.help_scroll = self.help_scroll.saturating_add(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.help_scroll = self.help_scroll.saturating_sub(1);
             }
             _ => {}
         }
