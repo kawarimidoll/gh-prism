@@ -308,11 +308,56 @@ impl App {
         None
     }
 
-    /// viewed フラグをトグル
+    /// viewed フラグをトグル（FileTree 用）
     fn toggle_viewed(&mut self) {
         if let Some(file) = self.current_file() {
             let name = file.filename.clone();
             if !self.viewed_files.remove(&name) {
+                self.viewed_files.insert(name);
+            }
+        }
+    }
+
+    /// コミットの全ファイルが viewed か判定（導出状態）
+    fn is_commit_viewed(&self, sha: &str) -> bool {
+        if let Some(files) = self.files_map.get(sha) {
+            !files.is_empty()
+                && files
+                    .iter()
+                    .all(|f| self.viewed_files.contains(&f.filename))
+        } else {
+            false
+        }
+    }
+
+    /// viewed コミット数を返す
+    fn viewed_commit_count(&self) -> usize {
+        self.commits
+            .iter()
+            .filter(|c| self.is_commit_viewed(&c.sha))
+            .count()
+    }
+
+    /// CommitList で viewed トグル（全ファイル一括）
+    fn toggle_commit_viewed(&mut self) {
+        let sha = if let Some(idx) = self.commit_list_state.selected() {
+            self.commits.get(idx).map(|c| c.sha.clone())
+        } else {
+            None
+        };
+        let Some(sha) = sha else { return };
+        let Some(files) = self.files_map.get(&sha) else {
+            return;
+        };
+        let filenames: Vec<String> = files.iter().map(|f| f.filename.clone()).collect();
+        if self.is_commit_viewed(&sha) {
+            // 全ファイルを unview
+            for name in &filenames {
+                self.viewed_files.remove(name);
+            }
+        } else {
+            // 全ファイルを view
+            for name in filenames {
                 self.viewed_files.insert(name);
             }
         }
@@ -643,10 +688,21 @@ impl App {
         let items: Vec<ListItem> = self
             .commits
             .iter()
-            .map(|c| ListItem::new(format!("{} {}", c.short_sha(), c.message_summary())))
+            .map(|c| {
+                let viewed = self.is_commit_viewed(&c.sha);
+                let marker = if viewed { "✓ " } else { "  " };
+                let text = format!("{}{} {}", marker, c.short_sha(), c.message_summary());
+                let item_style = if viewed {
+                    Style::default().fg(Color::DarkGray)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(text).style(item_style)
+            })
             .collect();
 
-        let title = format!(" Commits ({}) ", self.commits.len());
+        let viewed_count = self.viewed_commit_count();
+        let title = format!(" Commits ({}/{}) ", viewed_count, self.commits.len());
         let list = List::new(items)
             .block(
                 Block::default()
@@ -1142,7 +1198,7 @@ impl App {
             ("", "Other"),
             ("w", "Toggle line wrap (Diff)"),
             ("z", "Toggle zoom"),
-            ("x", "Toggle viewed (Files)"),
+            ("x", "Toggle viewed (Files/Commits)"),
             ("?", "This help"),
             ("q", "Quit"),
         ];
@@ -1392,12 +1448,11 @@ impl App {
                     self.mode = AppMode::CommentInput;
                 }
             }
-            KeyCode::Char('x') => {
-                // FileTree ペインで viewed トグル
-                if self.focused_panel == Panel::FileTree {
-                    self.toggle_viewed();
-                }
-            }
+            KeyCode::Char('x') => match self.focused_panel {
+                Panel::FileTree => self.toggle_viewed(),
+                Panel::CommitList => self.toggle_commit_viewed(),
+                _ => {}
+            },
             KeyCode::Char('y') => match self.focused_panel {
                 Panel::CommitList => {
                     if let Some(idx) = self.commit_list_state.selected()
@@ -3685,10 +3740,17 @@ mod tests {
         app.handle_normal_mode(KeyCode::Char('x'), KeyModifiers::NONE);
         assert!(app.viewed_files.contains("src/main.rs"));
 
-        // FileTree 以外では x キーは無効
+        // CommitList では x キーでコミットの全ファイルをトグル
         app.focused_panel = Panel::CommitList;
         app.handle_normal_mode(KeyCode::Char('x'), KeyModifiers::NONE);
-        assert_eq!(app.viewed_files.len(), 1); // 変化なし
+        // コミット0 の全ファイル (src/main.rs, src/app.rs) が viewed に
+        assert_eq!(app.viewed_files.len(), 2);
+        assert!(app.viewed_files.contains("src/main.rs"));
+        assert!(app.viewed_files.contains("src/app.rs"));
+
+        // もう一度 x → 全ファイルが unview（既に全て viewed なので）
+        app.handle_normal_mode(KeyCode::Char('x'), KeyModifiers::NONE);
+        assert!(app.viewed_files.is_empty());
     }
 
     // === N6: コメント表示テスト ===
