@@ -52,36 +52,6 @@ fn create_diff_header(filename: &str) -> String {
     format!("diff --git a/{filename} b/{filename}\n--- a/{filename}\n+++ b/{filename}\n")
 }
 
-/// 素のソースコードをシンタックスハイライト付きで Text に変換（diff 色分けなし）。
-/// 全行追加/削除ファイルで diff の加減色を抑制するために使用する。
-fn highlight_source(source: &str, filename: &str) -> Option<Text<'static>> {
-    if !has_delta() {
-        return None;
-    }
-
-    // delta に diff ではなくソースコードとして渡す。
-    // --syntax-theme のみで色付けされ、+/- の差分色は付かない。
-    let header = create_diff_header(filename);
-    let header_line_count = header.lines().count();
-    // 全行を context 行（スペースプレフィックス）として渡すことで diff 色を回避
-    let fake_diff: String = source
-        .lines()
-        .map(|l| format!(" {l}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let full_diff = format!("{header}{fake_diff}");
-
-    highlight_with_delta(&full_diff)
-        .ok()
-        .and_then(|highlighted| ansi_to_text(&highlighted).ok())
-        .map(|mut text| {
-            if text.lines.len() > header_line_count {
-                text.lines.drain(..header_line_count);
-            }
-            text
-        })
-}
-
 /// diff をハイライト付きで Text に変換
 /// delta が利用可能なら使用、なければ None を返す
 /// filename を渡すことで delta が言語を検出できる
@@ -94,21 +64,28 @@ pub fn highlight_diff(diff: &str, filename: &str, file_status: &str) -> Option<T
 
     let is_whole_file = matches!(file_status, "added" | "removed" | "deleted");
 
-    if is_whole_file {
-        // +/- プレフィックスを除去した素のソースコードとして delta に渡す
-        let source: String = diff
-            .lines()
-            .filter(|l| !l.starts_with("@@"))
-            .map(|l| if l.len() > 1 { &l[1..] } else { "" })
-            .collect::<Vec<_>>()
-            .join("\n");
-        return highlight_source(&source, filename);
-    }
-
-    // 通常の diff ハイライト
+    // diff ヘッダーを追加してシンタックスハイライトを有効化
     let header = create_diff_header(filename);
     let header_line_count = header.lines().count();
-    let full_diff = format!("{}{}", header, diff);
+
+    let body = if is_whole_file {
+        // +/- を空白（context 行）に変換して diff 色を回避しつつシンタックスハイライトを維持。
+        // @@ 行はそのまま保持して行数を一致させる。
+        diff.lines()
+            .map(|l| {
+                if l.starts_with('+') || l.starts_with('-') {
+                    format!(" {}", &l[1..])
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        diff.to_string()
+    };
+
+    let full_diff = format!("{}{}", header, body);
 
     highlight_with_delta(&full_diff)
         .ok()
