@@ -223,6 +223,282 @@ pub struct PendingComment {
     pub commit_sha: String,
 }
 
+/// メディア種別
+#[derive(Debug, Clone, PartialEq)]
+enum MediaType {
+    Image,
+    Video,
+}
+
+/// PR body 中のメディア参照
+#[derive(Debug, Clone)]
+struct MediaRef {
+    media_type: MediaType,
+    url: String,
+    alt: String,
+    /// 置換後テキスト中の行番号（画像挿入位置の特定用）
+    line_index: usize,
+}
+
+/// PR body 中のメディア参照を検出し、プレースホルダーに置換する。
+/// 戻り値: (置換済みテキスト, 検出されたメディア一覧)
+fn preprocess_pr_body(body: &str) -> (String, Vec<MediaRef>) {
+    let mut refs: Vec<MediaRef> = Vec::new();
+    let mut result_lines: Vec<String> = Vec::new();
+
+    for line in body.lines() {
+        let trimmed = line.trim();
+
+        // --- Pattern 4: HTML <video> tag ---
+        if let Some(processed) = try_parse_html_video(trimmed) {
+            let line_index = result_lines.len();
+            result_lines.push(String::new());
+            result_lines.push("[🎬 Video]".to_string());
+            result_lines.push(String::new());
+            refs.push(MediaRef {
+                media_type: MediaType::Video,
+                url: processed,
+                alt: "Video".to_string(),
+                line_index,
+            });
+            continue;
+        }
+
+        // --- Pattern 3: Bare video URL on its own line ---
+        if let Some(url) = try_parse_bare_video_url(trimmed) {
+            let line_index = result_lines.len();
+            result_lines.push(String::new());
+            result_lines.push("[🎬 Video]".to_string());
+            result_lines.push(String::new());
+            refs.push(MediaRef {
+                media_type: MediaType::Video,
+                url,
+                alt: "Video".to_string(),
+                line_index,
+            });
+            continue;
+        }
+
+        // --- Pattern 2: HTML <img> tag ---
+        // --- Pattern 1: Markdown image ![alt](url) ---
+        // These can appear inline, so we process within the line
+        let processed = process_inline_media(line, &mut refs, &mut result_lines);
+        if !processed {
+            result_lines.push(line.to_string());
+        }
+    }
+
+    // 前後の空行の重複を除去する
+    let output = collapse_blank_lines(&result_lines);
+    (output, refs)
+}
+
+/// 連続する空行を最大1つに縮小する
+fn collapse_blank_lines(lines: &[String]) -> String {
+    let mut result = String::new();
+    let mut prev_blank = false;
+    for (i, line) in lines.iter().enumerate() {
+        let is_blank = line.trim().is_empty();
+        if is_blank && prev_blank {
+            continue;
+        }
+        if i > 0 {
+            result.push('\n');
+        }
+        result.push_str(line);
+        prev_blank = is_blank;
+    }
+    result
+}
+
+/// HTML <video> タグを検出し、src URL を返す
+fn try_parse_html_video(line: &str) -> Option<String> {
+    // <video で始まるかチェック
+    let lower = line.to_lowercase();
+    if !lower.contains("<video") {
+        return None;
+    }
+    // src="..." を抽出
+    extract_html_attr(line, "src")
+}
+
+/// 行が動画ベア URL かどうかチェック
+fn try_parse_bare_video_url(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let is_asset_url = trimmed.starts_with("https://github.com/user-attachments/assets/")
+        || trimmed.starts_with("https://private-user-images.githubusercontent.com/");
+    if !is_asset_url {
+        return None;
+    }
+    // 拡張子チェック（クエリパラメータ除去後）
+    let url_path = trimmed.split('?').next().unwrap_or(trimmed);
+    if url_path.ends_with(".mp4") || url_path.ends_with(".mov") || url_path.ends_with(".webm") {
+        Some(trimmed.to_string())
+    } else {
+        None
+    }
+}
+
+/// 行内の Markdown 画像と HTML img タグを処理する。
+/// 置換が発生した場合は true を返し、result_lines に追加済み。
+fn process_inline_media(
+    line: &str,
+    refs: &mut Vec<MediaRef>,
+    result_lines: &mut Vec<String>,
+) -> bool {
+    let mut replaced = String::new();
+    let mut had_match = false;
+    let mut pos = 0;
+    let bytes = line.as_bytes();
+
+    while pos < bytes.len() {
+        // Try Markdown image: ![alt](url)
+        if bytes[pos] == b'!'
+            && pos + 1 < bytes.len()
+            && bytes[pos + 1] == b'['
+            && let Some((alt, url, end)) = parse_markdown_image(line, pos)
+        {
+            had_match = true;
+            let display_alt = if alt.is_empty() {
+                "Image".to_string()
+            } else {
+                alt.clone()
+            };
+            let line_index = result_lines.len();
+            // 前のテキストがあれば先に追加
+            if !replaced.is_empty() {
+                result_lines.push(replaced.clone());
+                replaced.clear();
+            }
+            result_lines.push(String::new());
+            result_lines.push(format!("[🖼 {}]", display_alt));
+            result_lines.push(String::new());
+            refs.push(MediaRef {
+                media_type: MediaType::Image,
+                url,
+                alt: display_alt,
+                line_index,
+            });
+            pos = end;
+            continue;
+        }
+
+        // Try HTML <img> tag
+        if bytes[pos] == b'<' {
+            let rest = &line[pos..];
+            let lower_rest = rest.to_lowercase();
+            if (lower_rest.starts_with("<img ") || lower_rest.starts_with("<img>"))
+                && let Some((alt, url, end_offset)) = parse_html_img(rest)
+            {
+                had_match = true;
+                let display_alt = if alt.is_empty() {
+                    "Image".to_string()
+                } else {
+                    alt
+                };
+                let line_index = result_lines.len();
+                if !replaced.is_empty() {
+                    result_lines.push(replaced.clone());
+                    replaced.clear();
+                }
+                result_lines.push(String::new());
+                result_lines.push(format!("[🖼 {}]", display_alt));
+                result_lines.push(String::new());
+                refs.push(MediaRef {
+                    media_type: MediaType::Image,
+                    url,
+                    alt: display_alt,
+                    line_index,
+                });
+                pos += end_offset;
+                continue;
+            }
+        }
+
+        // マルチバイト文字に対応するため、文字単位で処理する
+        let ch = line[pos..].chars().next().unwrap();
+        replaced.push(ch);
+        pos += ch.len_utf8();
+    }
+
+    if had_match {
+        // 残りのテキストがあれば追加
+        let trimmed = replaced.trim();
+        if !trimmed.is_empty() {
+            result_lines.push(replaced);
+        }
+        true
+    } else {
+        false
+    }
+}
+
+/// Markdown 画像 `![alt](url)` をパース。成功時は (alt, url, end_pos) を返す。
+fn parse_markdown_image(line: &str, start: usize) -> Option<(String, String, usize)> {
+    // start は '!' の位置、start+1 は '['
+    let after_bang = start + 2; // '[' の次
+    let alt_end = line[after_bang..].find(']')?;
+    let alt = &line[after_bang..after_bang + alt_end];
+
+    let paren_start = after_bang + alt_end + 1; // ']' の次
+    if paren_start >= line.len() || line.as_bytes()[paren_start] != b'(' {
+        return None;
+    }
+    let url_start = paren_start + 1;
+    let paren_end = line[url_start..].find(')')?;
+    let url = &line[url_start..url_start + paren_end];
+
+    Some((alt.to_string(), url.to_string(), url_start + paren_end + 1))
+}
+
+/// HTML <img ...> タグをパース。成功時は (alt, src_url, end_offset) を返す。
+/// end_offset は入力文字列の先頭からの相対位置。
+fn parse_html_img(tag_str: &str) -> Option<(String, String, usize)> {
+    // タグの終端を探す: "/>" or ">"
+    let end_pos = find_tag_end(tag_str)?;
+    let tag_content = &tag_str[..end_pos];
+
+    let src = extract_html_attr(tag_content, "src")?;
+    let alt = extract_html_attr(tag_content, "alt").unwrap_or_default();
+
+    Some((alt, src, end_pos))
+}
+
+/// HTML タグ文字列の終端位置を探す（`/>` or `>` の直後）
+fn find_tag_end(s: &str) -> Option<usize> {
+    let mut i = 0;
+    let bytes = s.as_bytes();
+    while i < bytes.len() {
+        if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'>' {
+            return Some(i + 2);
+        }
+        if bytes[i] == b'>' {
+            // </video> のような閉じタグも考慮
+            // タグ全体の終わりを返す
+            // <video ...>...</video> パターンの場合
+            let rest = &s[i + 1..];
+            let lower_rest = rest.to_lowercase();
+            if let Some(close_pos) = lower_rest.find("</video>") {
+                return Some(i + 1 + close_pos + 8); // 8 = "</video>".len()
+            }
+            return Some(i + 1);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// HTML 属性値を抽出（例: `src="value"` → `value`）
+fn extract_html_attr(tag: &str, attr_name: &str) -> Option<String> {
+    let lower = tag.to_lowercase();
+    let search = format!("{}=\"", attr_name);
+    let idx = lower.find(&search)?;
+    let value_start = idx + search.len();
+    let rest = &tag[value_start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
 pub struct App {
     should_quit: bool,
     focused_panel: Panel,
@@ -299,6 +575,8 @@ pub struct App {
     commit_list_rect: Rect,
     file_tree_rect: Rect,
     diff_view_rect: Rect,
+    /// PR body 中のメディア参照
+    media_refs: Vec<MediaRef>,
 }
 
 impl App {
@@ -375,6 +653,7 @@ impl App {
             commit_list_rect: Rect::default(),
             file_tree_rect: Rect::default(),
             diff_view_rect: Rect::default(),
+            media_refs: Vec::new(),
         }
     }
 
@@ -793,11 +1072,14 @@ impl App {
         if self.pr_desc_rendered.is_some() {
             return;
         }
-        let text: Text<'static> = if self.pr_body.is_empty() {
+        let (processed_body, media_refs) = preprocess_pr_body(&self.pr_body);
+        self.media_refs = media_refs;
+
+        let text: Text<'static> = if processed_body.is_empty() {
             Text::from("(No description)")
         } else {
             let options = tui_markdown::Options::new(PrDescStyleSheet { theme: self.theme });
-            let rendered = tui_markdown::from_str_with_options(&self.pr_body, &options);
+            let rendered = tui_markdown::from_str_with_options(&processed_body, &options);
             // 借用ライフタイムを 'static に変換（各 Span の content を所有文字列化）
             // Line::style（heading/blockquote の色）も保持する
             Text::from(
@@ -5251,5 +5533,101 @@ mod tests {
         // 行番号OFF → 0文字
         app.show_line_numbers = false;
         assert_eq!(app.line_number_prefix_width(), 0);
+    }
+
+    #[test]
+    fn test_preprocess_pr_body_markdown_image() {
+        let body = "Some text\n![screenshot](https://github.com/user-attachments/assets/abc123)\nMore text";
+        let (result, refs) = preprocess_pr_body(body);
+        assert!(result.contains("[🖼 screenshot]"));
+        assert!(!result.contains("![screenshot]"));
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].media_type, MediaType::Image);
+        assert_eq!(refs[0].alt, "screenshot");
+    }
+
+    #[test]
+    fn test_preprocess_pr_body_html_img() {
+        let body =
+            "Before\n<img src=\"https://github.com/user-attachments/assets/abc123\" />\nAfter";
+        let (result, refs) = preprocess_pr_body(body);
+        assert!(result.contains("[🖼 Image]"));
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].media_type, MediaType::Image);
+    }
+
+    #[test]
+    fn test_preprocess_pr_body_video_bare_url() {
+        let body = "Check this:\nhttps://github.com/user-attachments/assets/abc123.mp4\nEnd";
+        let (result, refs) = preprocess_pr_body(body);
+        assert!(result.contains("[🎬 Video]"));
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].media_type, MediaType::Video);
+    }
+
+    #[test]
+    fn test_preprocess_pr_body_html_video() {
+        let body = "<video src=\"https://github.com/user-attachments/assets/abc.mov\"></video>";
+        let (result, refs) = preprocess_pr_body(body);
+        assert!(result.contains("[🎬 Video]"));
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].media_type, MediaType::Video);
+    }
+
+    #[test]
+    fn test_process_inline_media_with_multibyte_characters() {
+        let line = "日本語テキスト![画像](https://example.com/img.png)の後も日本語";
+        let mut refs = Vec::new();
+        let mut result_lines = Vec::new();
+        let matched = process_inline_media(line, &mut refs, &mut result_lines);
+        assert!(matched);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].alt, "画像");
+        assert!(result_lines.iter().any(|l| l.contains("日本語テキスト")));
+        assert!(result_lines.iter().any(|l| l.contains("の後も日本語")));
+    }
+
+    #[test]
+    fn test_process_inline_media_multibyte_only() {
+        let line = "日本語だけのテキスト、画像なし";
+        let mut refs = Vec::new();
+        let mut result_lines = Vec::new();
+        let matched = process_inline_media(line, &mut refs, &mut result_lines);
+        assert!(!matched);
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn test_process_inline_media_html_img_with_japanese() {
+        let line = "前文<img src=\"https://example.com/img.png\" alt=\"日本語alt\">後文";
+        let mut refs = Vec::new();
+        let mut result_lines = Vec::new();
+        let matched = process_inline_media(line, &mut refs, &mut result_lines);
+        assert!(matched);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].alt, "日本語alt");
+    }
+
+    #[test]
+    fn test_preprocess_pr_body_no_media() {
+        let body = "Just plain text\nwith no images";
+        let (result, refs) = preprocess_pr_body(body);
+        assert_eq!(result, body);
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn test_preprocess_pr_body_multiple_media() {
+        let body = "![img1](https://github.com/user-attachments/assets/a)\nText\n![img2](https://github.com/user-attachments/assets/b)";
+        let (_, refs) = preprocess_pr_body(body);
+        assert_eq!(refs.len(), 2);
+    }
+
+    #[test]
+    fn test_preprocess_pr_body_img_with_alt() {
+        let body = r#"<img src="https://example.com/img.png" alt="My Alt" />"#;
+        let (result, refs) = preprocess_pr_body(body);
+        assert!(result.contains("[🖼 My Alt]"));
+        assert_eq!(refs[0].alt, "My Alt");
     }
 }
