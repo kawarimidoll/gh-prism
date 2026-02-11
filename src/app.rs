@@ -10,7 +10,7 @@ use crossterm::event::{
 use octocrab::Octocrab;
 use ratatui::{
     DefaultTerminal, Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
+    layout::{Constraint, Direction, HorizontalAlignment, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
@@ -964,7 +964,7 @@ impl App {
             .borders(Borders::ALL)
             .border_style(border_style);
         if !right_title.is_empty() {
-            block = block.title_top(Line::from(right_title).alignment(Alignment::Right));
+            block = block.title_top(Line::from(right_title).alignment(HorizontalAlignment::Right));
         }
 
         // バイナリファイルまたは diff がない場合
@@ -4793,23 +4793,23 @@ mod tests {
 
     #[test]
     fn test_whitespace_only_lines_cleared_for_wrap() {
-        // 空白のみの行がwrapモードで余分な行数を返すratatatuiのバグへの対策を検証する
+        // 空白のみの行に対するクリア処理が安全に動作することを検証する
         use ratatui::text::Line as RLine;
         use ratatui::widgets::{Paragraph, Wrap};
 
-        // ratatui のバグ: 空白1文字の Line が wrap で line_count 2 を返す
+        // ratatui 0.30 では空白1文字の Line も wrap で正しく line_count 1 を返す
         let count_space = Paragraph::new(RLine::raw(" "))
             .wrap(Wrap { trim: false })
             .line_count(80);
-        assert_eq!(count_space, 2);
+        assert_eq!(count_space, 1);
 
-        // spans が空の Line なら line_count は正しく 1 を返す
+        // spans が空の Line でも line_count は正しく 1 を返す
         let count_default = Paragraph::new(RLine::default())
             .wrap(Wrap { trim: false })
             .line_count(80);
         assert_eq!(count_default, 1);
 
-        // 修正ロジックの検証: 空白のみの spans をクリアすると line_count が 1 になる
+        // クリア処理を適用しても line_count は変わらない（安全であることを検証）
         let mut line = RLine::raw(" ");
         let all_whitespace = line.spans.iter().all(|s| s.content.trim().is_empty());
         assert!(all_whitespace);
