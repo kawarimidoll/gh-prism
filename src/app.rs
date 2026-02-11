@@ -2,6 +2,7 @@ use crate::git::diff::highlight_diff;
 use crate::github::comments::ReviewComment;
 use crate::github::commits::CommitInfo;
 use crate::github::files::DiffFile;
+use crate::github::media::MediaCache;
 use crate::github::review;
 use color_eyre::Result;
 use crossterm::event::{
@@ -15,6 +16,9 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
+use ratatui_image::StatefulImage;
+use ratatui_image::picker::Picker;
+use ratatui_image::protocol::StatefulProtocol;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tokio::runtime::Handle;
@@ -225,24 +229,61 @@ pub struct PendingComment {
 
 /// メディア種別
 #[derive(Debug, Clone, PartialEq)]
-enum MediaType {
+pub enum MediaType {
     Image,
     Video,
 }
 
 /// PR body 中のメディア参照
 #[derive(Debug, Clone)]
-struct MediaRef {
-    media_type: MediaType,
-    url: String,
-    alt: String,
+pub struct MediaRef {
+    pub media_type: MediaType,
+    pub url: String,
+    pub alt: String,
     /// 置換後テキスト中の行番号（画像挿入位置の特定用）
-    line_index: usize,
+    pub line_index: usize,
+}
+
+/// PR body から画像 URL のみを軽量に収集する。
+/// `preprocess_pr_body` と異なり、テキスト置換は行わない。
+/// 対象パターン: `![alt](url)` および `<img src="url" ...>`
+pub fn collect_image_urls(body: &str) -> Vec<String> {
+    let mut urls: Vec<String> = Vec::new();
+    for line in body.lines() {
+        let bytes = line.as_bytes();
+        let mut pos = 0;
+        while pos < bytes.len() {
+            // Markdown image: ![alt](url)
+            if bytes[pos] == b'!'
+                && pos + 1 < bytes.len()
+                && bytes[pos + 1] == b'['
+                && let Some((_alt, url, end)) = parse_markdown_image(line, pos)
+            {
+                urls.push(url);
+                pos = end;
+                continue;
+            }
+            // HTML <img> tag
+            if bytes[pos] == b'<' {
+                let rest = &line[pos..];
+                let lower_rest = rest.to_lowercase();
+                if (lower_rest.starts_with("<img ") || lower_rest.starts_with("<img>"))
+                    && let Some((_alt, url, end_offset)) = parse_html_img(rest)
+                {
+                    urls.push(url);
+                    pos += end_offset;
+                    continue;
+                }
+            }
+            pos += 1;
+        }
+    }
+    urls
 }
 
 /// PR body 中のメディア参照を検出し、プレースホルダーに置換する。
 /// 戻り値: (置換済みテキスト, 検出されたメディア一覧)
-fn preprocess_pr_body(body: &str) -> (String, Vec<MediaRef>) {
+pub fn preprocess_pr_body(body: &str) -> (String, Vec<MediaRef>) {
     let mut refs: Vec<MediaRef> = Vec::new();
     let mut result_lines: Vec<String> = Vec::new();
 
@@ -577,6 +618,12 @@ pub struct App {
     diff_view_rect: Rect,
     /// PR body 中のメディア参照
     media_refs: Vec<MediaRef>,
+    /// 画像プロトコル検出結果（None = 画像表示不可）
+    picker: Option<Picker>,
+    /// ダウンロード済み画像キャッシュ
+    media_cache: MediaCache,
+    /// レンダリング済み画像プロトコル状態（URL → StatefulProtocol）
+    image_states: HashMap<String, StatefulProtocol>,
 }
 
 impl App {
@@ -654,7 +701,16 @@ impl App {
             file_tree_rect: Rect::default(),
             diff_view_rect: Rect::default(),
             media_refs: Vec::new(),
+            picker: None,
+            media_cache: MediaCache::new(),
+            image_states: HashMap::new(),
         }
+    }
+
+    /// 画像プロトコル検出結果と画像キャッシュをセットする
+    pub fn set_media(&mut self, picker: Option<Picker>, media_cache: MediaCache) {
+        self.picker = picker;
+        self.media_cache = media_cache;
     }
 
     /// 現在選択中のコミットのファイル一覧を取得
@@ -5629,5 +5685,43 @@ mod tests {
         let (result, refs) = preprocess_pr_body(body);
         assert!(result.contains("[🖼 My Alt]"));
         assert_eq!(refs[0].alt, "My Alt");
+    }
+
+    #[test]
+    fn test_collect_image_urls_markdown_image() {
+        let body = "Some text\n![screenshot](https://example.com/img.png)\nMore text";
+        let urls = collect_image_urls(body);
+        assert_eq!(urls, vec!["https://example.com/img.png"]);
+    }
+
+    #[test]
+    fn test_collect_image_urls_html_img() {
+        let body = r#"Before<img src="https://example.com/photo.jpg" alt="alt" />After"#;
+        let urls = collect_image_urls(body);
+        assert_eq!(urls, vec!["https://example.com/photo.jpg"]);
+    }
+
+    #[test]
+    fn test_collect_image_urls_multiple() {
+        let body = "![a](https://example.com/1.png)\nText\n![b](https://example.com/2.png)";
+        let urls = collect_image_urls(body);
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[0], "https://example.com/1.png");
+        assert_eq!(urls[1], "https://example.com/2.png");
+    }
+
+    #[test]
+    fn test_collect_image_urls_ignores_video() {
+        // 動画 URL（ベア URL や <video> タグ）は収集しない
+        let body = "https://github.com/user-attachments/assets/abc123.mp4\n<video src=\"https://example.com/v.mov\"></video>";
+        let urls = collect_image_urls(body);
+        assert!(urls.is_empty());
+    }
+
+    #[test]
+    fn test_collect_image_urls_no_media() {
+        let body = "Just plain text\nwith no images";
+        let urls = collect_image_urls(body);
+        assert!(urls.is_empty());
     }
 }
