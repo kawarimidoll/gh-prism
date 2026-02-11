@@ -12,7 +12,7 @@ use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Direction, HorizontalAlignment, Layout, Position, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 use std::collections::{HashMap, HashSet};
@@ -26,6 +26,80 @@ pub enum ThemeMode {
     #[default]
     Dark,
     Light,
+}
+
+/// PR Description のマークダウンレンダリング用カスタム StyleSheet
+#[derive(Clone, Copy, Debug)]
+struct PrDescStyleSheet {
+    theme: ThemeMode,
+}
+
+impl tui_markdown::StyleSheet for PrDescStyleSheet {
+    fn heading(&self, level: u8) -> Style {
+        match self.theme {
+            ThemeMode::Dark => match level {
+                1 => Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                2 => Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+                3 => Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+                _ => Style::default()
+                    .fg(Color::Blue)
+                    .add_modifier(Modifier::BOLD),
+            },
+            ThemeMode::Light => match level {
+                1 => Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                2 => Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+                3 => Style::default()
+                    .fg(Color::Blue)
+                    .add_modifier(Modifier::BOLD),
+                _ => Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            },
+        }
+    }
+
+    fn code(&self) -> Style {
+        match self.theme {
+            // 256色パレットのグレースケール（232=最暗, 255=最明）
+            ThemeMode::Dark => Style::default().bg(Color::Indexed(238)),
+            ThemeMode::Light => Style::default().bg(Color::Indexed(253)),
+        }
+    }
+
+    fn link(&self) -> Style {
+        Style::default()
+            .fg(Color::Blue)
+            .add_modifier(Modifier::UNDERLINED)
+    }
+
+    fn blockquote(&self) -> Style {
+        match self.theme {
+            ThemeMode::Dark => Style::default()
+                .fg(Color::Gray)
+                .add_modifier(Modifier::ITALIC),
+            ThemeMode::Light => Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        }
+    }
+
+    fn heading_meta(&self) -> Style {
+        Style::default().add_modifier(Modifier::DIM)
+    }
+
+    fn metadata_block(&self) -> Style {
+        Style::default().add_modifier(Modifier::DIM)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -214,6 +288,8 @@ pub struct App {
     /// Wrap 有効時の視覚行オフセットキャッシュ
     /// offsets[i] = 論理行 i が始まる視覚行番号（render 時に計算）
     diff_visual_offsets: Option<Vec<usize>>,
+    /// PR Description のマークダウンレンダリングキャッシュ
+    pr_desc_rendered: Option<Text<'static>>,
     /// カラーテーマ（ライト/ダーク）
     theme: ThemeMode,
     /// 各ペインの描画領域（マウスヒットテスト用、render 時に更新）
@@ -290,6 +366,7 @@ impl App {
             viewed_files: HashSet::new(),
             diff_highlight_cache: None,
             diff_visual_offsets: None,
+            pr_desc_rendered: None,
             theme,
             pr_desc_rect: Rect::default(),
             commit_list_rect: Rect::default(),
@@ -708,6 +785,39 @@ impl App {
         }
     }
 
+    /// PR Description のマークダウンレンダリングキャッシュを生成（未生成の場合のみ）
+    fn ensure_pr_desc_rendered(&mut self) {
+        if self.pr_desc_rendered.is_some() {
+            return;
+        }
+        let text: Text<'static> = if self.pr_body.is_empty() {
+            Text::from("(No description)")
+        } else {
+            let options = tui_markdown::Options::new(PrDescStyleSheet { theme: self.theme });
+            let rendered = tui_markdown::from_str_with_options(&self.pr_body, &options);
+            // 借用ライフタイムを 'static に変換（各 Span の content を所有文字列化）
+            // Line::style（heading/blockquote の色）も保持する
+            Text::from(
+                rendered
+                    .lines
+                    .into_iter()
+                    .map(|line| {
+                        let mut new_line = Line::from(
+                            line.spans
+                                .into_iter()
+                                .map(|span| Span::styled(span.content.into_owned(), span.style))
+                                .collect::<Vec<_>>(),
+                        );
+                        new_line.style = line.style;
+                        new_line.alignment = line.alignment;
+                        new_line
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
+        self.pr_desc_rendered = Some(text);
+    }
+
     fn render_pr_description(&mut self, frame: &mut Frame, area: Rect) {
         // ボーダー分を引いた表示可能行数を記録
         self.pr_desc_view_height = area.height.saturating_sub(2);
@@ -718,13 +828,11 @@ impl App {
             Style::default()
         };
 
-        let body = if self.pr_body.is_empty() {
-            "(No description)".to_string()
-        } else {
-            self.pr_body.clone()
-        };
+        self.ensure_pr_desc_rendered();
 
-        let paragraph = Paragraph::new(body)
+        // Paragraph::new は Text をムーブするため clone が必要
+        let text = self.pr_desc_rendered.as_ref().unwrap().clone();
+        let paragraph = Paragraph::new(text)
             .block(
                 Block::default()
                     .title(" PR Description ")
@@ -734,6 +842,15 @@ impl App {
             .wrap(Wrap { trim: false })
             .scroll((self.pr_desc_scroll, 0));
         frame.render_widget(paragraph, area);
+    }
+
+    /// PR Description のレンダリング済み行数を返す
+    fn pr_desc_total_lines(&mut self) -> u16 {
+        self.ensure_pr_desc_rendered();
+        self.pr_desc_rendered
+            .as_ref()
+            .map(|t| t.lines.len() as u16)
+            .unwrap_or(0)
     }
 
     fn render_commit_list_stateful(&mut self, frame: &mut Frame, area: Rect) {
@@ -1512,7 +1629,7 @@ impl App {
         match panel {
             Panel::PrDescription => {
                 if down {
-                    let total_lines = self.pr_body.lines().count() as u16;
+                    let total_lines = self.pr_desc_total_lines();
                     let max_scroll = total_lines.saturating_sub(self.pr_desc_view_height);
                     if self.pr_desc_scroll < max_scroll {
                         self.pr_desc_scroll += 1;
@@ -2147,7 +2264,7 @@ impl App {
     fn select_next(&mut self) {
         match self.focused_panel {
             Panel::PrDescription => {
-                let total_lines = self.pr_body.lines().count() as u16;
+                let total_lines = self.pr_desc_total_lines();
                 let max_scroll = total_lines.saturating_sub(self.pr_desc_view_height);
                 if self.pr_desc_scroll < max_scroll {
                     self.pr_desc_scroll = self.pr_desc_scroll.saturating_add(1);
@@ -4012,11 +4129,12 @@ mod tests {
 
     #[test]
     fn test_mouse_scroll_on_pr_description() {
+        // マークダウンではパラグラフ間に空行が必要（連続行は1段落として結合される）
         let mut app = App::new(
             1,
             "owner/repo".to_string(),
             "Test PR".to_string(),
-            "line1\nline2\nline3\nline4\nline5".to_string(),
+            "line1\n\nline2\n\nline3\n\nline4\n\nline5".to_string(),
             String::new(),
             vec![],
             create_empty_files_map(),
@@ -4026,7 +4144,11 @@ mod tests {
         );
         app.pr_desc_rect = Rect::new(0, 1, 30, 5);
         app.pr_desc_view_height = 3;
+        // ensure_pr_desc_rendered でキャッシュを生成
+        app.ensure_pr_desc_rendered();
 
+        // total_lines > view_height ならスクロール可能
+        assert!(app.pr_desc_total_lines() > app.pr_desc_view_height);
         assert_eq!(app.pr_desc_scroll, 0);
         app.handle_mouse_scroll(5, 3, true);
         assert_eq!(app.pr_desc_scroll, 1);
