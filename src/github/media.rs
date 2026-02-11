@@ -20,10 +20,6 @@ impl MediaCache {
     pub fn get(&self, url: &str) -> Option<&DynamicImage> {
         self.images.get(url)
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.images.is_empty()
-    }
 }
 
 /// GitHub トークンを取得する（環境変数 or gh auth token）
@@ -87,10 +83,10 @@ async fn download_single_image(
     let mut request = client.get(url).header("User-Agent", "gh-prism");
 
     // private-user-images や user-attachments は認証が必要な場合がある
-    if let Some(token) = token {
-        if url.contains("private-user-images") || url.contains("user-attachments") {
-            request = request.header("Authorization", format!("token {}", token));
-        }
+    if let Some(token) = token
+        && (url.contains("private-user-images") || url.contains("user-attachments"))
+    {
+        request = request.header("Authorization", format!("token {}", token));
     }
 
     let response = request.send().await?.error_for_status()?;

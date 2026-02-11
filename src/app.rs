@@ -18,6 +18,7 @@ use ratatui::{
 };
 use ratatui_image::StatefulImage;
 use ratatui_image::picker::Picker;
+use ratatui_image::protocol::StatefulProtocol;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tokio::runtime::Handle;
@@ -124,6 +125,7 @@ pub enum AppMode {
     ReviewSubmit,
     QuitConfirm,
     Help,
+    ImageViewer,
 }
 
 /// レビューイベントタイプ
@@ -239,8 +241,6 @@ pub struct MediaRef {
     pub media_type: MediaType,
     pub url: String,
     pub alt: String,
-    /// 置換後テキスト中の行番号（画像挿入位置の特定用）
-    pub line_index: usize,
 }
 
 /// PR body から画像 URL のみを軽量に収集する。
@@ -291,7 +291,6 @@ pub fn preprocess_pr_body(body: &str) -> (String, Vec<MediaRef>) {
 
         // --- Pattern 4: HTML <video> tag ---
         if let Some(processed) = try_parse_html_video(trimmed) {
-            let line_index = result_lines.len();
             result_lines.push(String::new());
             result_lines.push("[🎬 Video]".to_string());
             result_lines.push(String::new());
@@ -299,14 +298,12 @@ pub fn preprocess_pr_body(body: &str) -> (String, Vec<MediaRef>) {
                 media_type: MediaType::Video,
                 url: processed,
                 alt: "Video".to_string(),
-                line_index,
             });
             continue;
         }
 
         // --- Pattern 3: Bare video URL on its own line ---
         if let Some(url) = try_parse_bare_video_url(trimmed) {
-            let line_index = result_lines.len();
             result_lines.push(String::new());
             result_lines.push("[🎬 Video]".to_string());
             result_lines.push(String::new());
@@ -314,7 +311,6 @@ pub fn preprocess_pr_body(body: &str) -> (String, Vec<MediaRef>) {
                 media_type: MediaType::Video,
                 url,
                 alt: "Video".to_string(),
-                line_index,
             });
             continue;
         }
@@ -404,7 +400,6 @@ fn process_inline_media(
             } else {
                 alt.clone()
             };
-            let line_index = result_lines.len();
             // 前のテキストがあれば先に追加
             if !replaced.is_empty() {
                 result_lines.push(replaced.clone());
@@ -417,7 +412,6 @@ fn process_inline_media(
                 media_type: MediaType::Image,
                 url,
                 alt: display_alt,
-                line_index,
             });
             pos = end;
             continue;
@@ -436,7 +430,6 @@ fn process_inline_media(
                 } else {
                     alt
                 };
-                let line_index = result_lines.len();
                 if !replaced.is_empty() {
                     result_lines.push(replaced.clone());
                     replaced.clear();
@@ -448,7 +441,6 @@ fn process_inline_media(
                     media_type: MediaType::Image,
                     url,
                     alt: display_alt,
-                    line_index,
                 });
                 pos += end_offset;
                 continue;
@@ -621,8 +613,10 @@ pub struct App {
     picker: Option<Picker>,
     /// ダウンロード済み画像キャッシュ
     media_cache: MediaCache,
-    /// 画像を Halfblocks でプリレンダリングした結果のキャッシュ（URL → Vec<Line>）
-    image_text_cache: HashMap<String, Vec<Line<'static>>>,
+    /// 画像ビューアの現在のインデックス（media_refs 内の画像のみ対象）
+    image_viewer_index: usize,
+    /// 画像ビューアの現在のレンダリング状態
+    image_viewer_protocol: Option<StatefulProtocol>,
 }
 
 impl App {
@@ -702,7 +696,8 @@ impl App {
             media_refs: Vec::new(),
             picker: None,
             media_cache: MediaCache::new(),
-            image_text_cache: HashMap::new(),
+            image_viewer_index: 0,
+            image_viewer_protocol: None,
         }
     }
 
@@ -710,6 +705,48 @@ impl App {
     pub fn set_media(&mut self, picker: Option<Picker>, media_cache: MediaCache) {
         self.picker = picker;
         self.media_cache = media_cache;
+    }
+
+    /// PR body 内の画像メディア参照の数を返す
+    fn image_count(&self) -> usize {
+        self.media_refs
+            .iter()
+            .filter(|r| r.media_type == MediaType::Image)
+            .count()
+    }
+
+    /// PR body 内の N 番目の画像メディア参照を返す
+    fn image_ref_at(&self, index: usize) -> Option<&MediaRef> {
+        self.media_refs
+            .iter()
+            .filter(|r| r.media_type == MediaType::Image)
+            .nth(index)
+    }
+
+    /// 画像ビューアモードに入る（画像がある場合のみ）
+    fn enter_image_viewer(&mut self) {
+        self.ensure_pr_desc_rendered();
+        if self.image_count() == 0 {
+            self.status_message = Some(StatusMessage::info("No images in PR description"));
+            return;
+        }
+        self.image_viewer_index = 0;
+        self.prepare_image_protocol();
+        self.mode = AppMode::ImageViewer;
+    }
+
+    /// 現在の image_viewer_index に対応する画像のレンダリングプロトコルを準備する
+    fn prepare_image_protocol(&mut self) {
+        let url = self
+            .image_ref_at(self.image_viewer_index)
+            .map(|r| r.url.clone());
+        let protocol = url.and_then(|url| {
+            let picker = self.picker.as_ref()?;
+            let img = self.media_cache.get(&url)?;
+            // new_resize_protocol は DynamicImage を所有で受け取るためクローンが必要
+            Some(picker.new_resize_protocol(img.clone()))
+        });
+        self.image_viewer_protocol = protocol;
     }
 
     /// 現在選択中のコミットのファイル一覧を取得
@@ -982,6 +1019,7 @@ impl App {
             AppMode::ReviewSubmit => " [REVIEW] ",
             AppMode::QuitConfirm => " [CONFIRM] ",
             AppMode::Help => " [HELP] ",
+            AppMode::ImageViewer => " [IMAGE] ",
         };
 
         let comments_badge = if self.pending_comments.is_empty() {
@@ -998,6 +1036,7 @@ impl App {
             AppMode::ReviewSubmit => Color::Cyan,
             AppMode::QuitConfirm => Color::Red,
             AppMode::Help => Color::DarkGray,
+            AppMode::ImageViewer => Color::DarkGray,
         };
         // CommentView / ReviewSubmit は明るい bg なので常に Black。
         // 他のモードはテーマに応じて White / Black を切り替え。
@@ -1118,6 +1157,7 @@ impl App {
             AppMode::ReviewSubmit => self.render_review_submit_dialog(frame, area),
             AppMode::QuitConfirm => self.render_quit_confirm_dialog(frame, area),
             AppMode::Help => self.render_help_dialog(frame, area),
+            AppMode::ImageViewer => self.render_image_viewer_overlay(frame, area),
             _ => {}
         }
     }
@@ -1137,7 +1177,7 @@ impl App {
             let rendered = tui_markdown::from_str_with_options(&processed_body, &options);
             // 借用ライフタイムを 'static に変換（各 Span の content を所有文字列化）
             // Line::style（heading/blockquote の色）も保持する
-            let mut lines: Vec<Line<'static>> = rendered
+            let lines: Vec<Line<'static>> = rendered
                 .lines
                 .into_iter()
                 .map(|line| {
@@ -1152,11 +1192,6 @@ impl App {
                     new_line
                 })
                 .collect();
-
-            // zoom モードで画像が利用可能なら、プレースホルダーを画像テキストに置換
-            if self.zoomed {
-                self.replace_image_placeholders(&mut lines);
-            }
 
             Text::from(lines)
         };
@@ -1195,57 +1230,6 @@ impl App {
         self.clamp_pr_desc_scroll();
 
         frame.render_widget(paragraph, area);
-    }
-
-    /// zoom モード時にプレースホルダー行を Halfblocks プリレンダリング画像に置換する
-    fn replace_image_placeholders(&mut self, lines: &mut Vec<Line<'static>>) {
-        // picker を一時的に取り出す（borrow checker 対策）
-        let Some(mut picker) = self.picker.take() else {
-            return;
-        };
-
-        let mut i = 0;
-        while i < lines.len() {
-            let line_text: String = lines[i].spans.iter().map(|s| s.content.as_ref()).collect();
-            let trimmed = line_text.trim();
-
-            if !trimmed.starts_with("[🖼") {
-                i += 1;
-                continue;
-            }
-
-            // プレースホルダーに対応する MediaRef を探す
-            let matched = self
-                .media_refs
-                .iter()
-                .find(|r| r.media_type == MediaType::Image && trimmed == format!("[🖼 {}]", r.alt));
-
-            let Some(media_ref) = matched else {
-                i += 1;
-                continue;
-            };
-
-            let url = media_ref.url.clone();
-
-            // キャッシュにあればそれを使用、なければプリレンダリング
-            if !self.image_text_cache.contains_key(&url) {
-                if let Some(img) = self.media_cache.get(&url) {
-                    let img_lines = prerender_image_halfblocks(&mut picker, img, 80);
-                    self.image_text_cache.insert(url.clone(), img_lines);
-                }
-            }
-
-            if let Some(img_lines) = self.image_text_cache.get(&url) {
-                let img_lines = img_lines.clone();
-                let count = img_lines.len();
-                lines.splice(i..=i, img_lines);
-                i += count;
-            } else {
-                i += 1;
-            }
-        }
-
-        self.picker = Some(picker);
     }
 
     /// PR Description の Wrap 考慮済み視覚行数を返す
@@ -1940,7 +1924,7 @@ impl App {
             ("l / → / Tab", "Next pane"),
             ("h / ← / BackTab", "Previous pane"),
             ("1 / 2 / 3", "Jump to pane"),
-            ("Enter", "Open diff / view comment"),
+            ("Enter", "Open diff / comment / images"),
             ("Esc", "Back to Files pane"),
             ("", "Scroll (Desc / Diff)"),
             ("Ctrl+d / Ctrl+u", "Half page down / up"),
@@ -1994,6 +1978,61 @@ impl App {
             )
             .scroll((self.help_scroll, 0));
         frame.render_widget(paragraph, dialog);
+    }
+
+    /// 画像ビューアオーバーレイを描画する
+    fn render_image_viewer_overlay(&mut self, frame: &mut Frame, area: Rect) {
+        frame.render_widget(ratatui::widgets::Clear, area);
+
+        let total = self.image_count();
+        let alt = self
+            .image_ref_at(self.image_viewer_index)
+            .map(|r| r.alt.as_str())
+            .unwrap_or("Image");
+        let title = format!(" {alt} ({}/{total}) ", self.image_viewer_index + 1);
+
+        let block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        // フッターナビゲーションヒント（inner の最下行）
+        let footer_area = Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(1),
+            inner.width,
+            1,
+        );
+        let image_area = Rect::new(
+            inner.x,
+            inner.y,
+            inner.width,
+            inner.height.saturating_sub(1),
+        );
+
+        let k = Style::default().fg(Color::Cyan);
+        let footer = Line::from(vec![
+            Span::styled(" ← → ", k),
+            Span::raw("Navigate  "),
+            Span::styled("o ", k),
+            Span::raw("Open in browser  "),
+            Span::styled("Esc ", k),
+            Span::raw("Close"),
+        ]);
+        frame.render_widget(Paragraph::new(footer), footer_area);
+
+        if let Some(ref mut protocol) = self.image_viewer_protocol {
+            let widget = StatefulImage::default();
+            frame.render_stateful_widget(widget, image_area, protocol);
+        } else {
+            let msg = Paragraph::new("[Image not available — press o to open in browser]")
+                .style(Style::default().fg(Color::DarkGray))
+                .wrap(Wrap { trim: false });
+            let centered = Self::centered_rect(50, 1, image_area);
+            frame.render_widget(msg, centered);
+        }
     }
 
     /// 座標からペインを特定
@@ -2106,6 +2145,7 @@ impl App {
                 AppMode::ReviewSubmit => self.handle_review_submit_mode(key.code),
                 AppMode::QuitConfirm => self.handle_quit_confirm_mode(key.code),
                 AppMode::Help => self.handle_help_mode(key.code),
+                AppMode::ImageViewer => self.handle_image_viewer_mode(key.code),
             },
             Event::Mouse(mouse) if self.mode == AppMode::Normal => match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
@@ -2154,7 +2194,10 @@ impl App {
             KeyCode::Char('2') => self.focused_panel = Panel::CommitList,
             KeyCode::Char('3') => self.focused_panel = Panel::FileTree,
             KeyCode::Enter => {
-                if self.focused_panel == Panel::FileTree {
+                if self.focused_panel == Panel::PrDescription {
+                    // PR Description で Enter → 画像があれば ImageViewer
+                    self.enter_image_viewer();
+                } else if self.focused_panel == Panel::FileTree {
                     // Files ペインで Enter → DiffView に移動
                     self.focused_panel = Panel::DiffView;
                 } else if self.focused_panel == Panel::DiffView {
@@ -2307,11 +2350,8 @@ impl App {
             }
             KeyCode::Char('z') => {
                 self.zoomed = !self.zoomed;
-                // zoom 切替で描画幅が変わり、Wrap 済み視覚行数も変わる。
-                // また、zoom/非zoom でプレースホルダー/画像テキストが切り替わるため
-                // レンダリングキャッシュもリセットする。
+                // zoom 切替で描画幅が変わり、Wrap 済み視覚行数も変わる
                 self.pr_desc_visual_total = 0;
-                self.pr_desc_rendered = None;
             }
             KeyCode::Char('?') => {
                 self.help_scroll = 0;
@@ -2466,6 +2506,41 @@ impl App {
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.help_scroll = self.help_scroll.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_image_viewer_mode(&mut self, code: KeyCode) {
+        let count = self.image_count();
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.image_viewer_protocol = None;
+                self.mode = AppMode::Normal;
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                if count > 0 {
+                    self.image_viewer_index = (self.image_viewer_index + 1) % count;
+                    self.prepare_image_protocol();
+                }
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                if count > 0 {
+                    self.image_viewer_index = if self.image_viewer_index == 0 {
+                        count - 1
+                    } else {
+                        self.image_viewer_index - 1
+                    };
+                    self.prepare_image_protocol();
+                }
+            }
+            KeyCode::Char('o') => {
+                if let Some(url) = self
+                    .image_ref_at(self.image_viewer_index)
+                    .map(|r| r.url.clone())
+                {
+                    open_url_in_browser(&url);
+                }
             }
             _ => {}
         }
@@ -3157,52 +3232,14 @@ impl App {
     }
 }
 
-/// 画像を Halfblocks でプリレンダリングして Vec<Line<'static>> に変換する
-fn prerender_image_halfblocks(
-    picker: &mut Picker,
-    img: &image::DynamicImage,
-    max_width: u16,
-) -> Vec<Line<'static>> {
-    use ratatui::buffer::Buffer;
-    use ratatui::widgets::StatefulWidget;
-
-    let font_size = picker.font_size();
-    let (fw, fh) = font_size;
-    if fw == 0 || fh == 0 {
-        return vec![Line::from("[🖼 Image (render error)]")];
-    }
-
-    // 画像の表示サイズを計算
-    let display_width = max_width.min(img.width() as u16);
-    let pixel_width = display_width as u32 * fw as u32;
-    let scale = pixel_width as f64 / img.width() as f64;
-    let pixel_height = (img.height() as f64 * scale) as u32;
-    let display_height = (pixel_height / fh as u32).max(1) as u16;
-    // 高さを制限（あまりに大きい画像は省略）
-    let display_height = display_height.min(60);
-
-    let rect = Rect::new(0, 0, display_width, display_height);
-    let mut buf = Buffer::empty(rect);
-
-    // Halfblocks 用の Picker で画像をバッファにレンダリング
-    #[allow(deprecated)]
-    let halfblocks_picker = Picker::from_fontsize(font_size);
-    let mut protocol = halfblocks_picker.new_resize_protocol(img.clone());
-    let widget = StatefulImage::default();
-    StatefulWidget::render(widget, rect, &mut buf, &mut protocol);
-
-    // バッファを Vec<Line<'static>> に変換
-    let mut lines = Vec::with_capacity(display_height as usize);
-    for y in 0..display_height {
-        let mut spans = Vec::with_capacity(display_width as usize);
-        for x in 0..display_width {
-            let cell = buf.cell(Position::new(x, y)).unwrap();
-            spans.push(Span::styled(cell.symbol().to_string(), cell.style()));
-        }
-        lines.push(Line::from(spans));
-    }
-
-    lines
+/// URL をシステムのデフォルトブラウザで開く
+fn open_url_in_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let cmd = "open";
+    #[cfg(target_os = "linux")]
+    let cmd = "xdg-open";
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let _ = std::process::Command::new(cmd).arg(url).spawn();
 }
 
 /// パスを最大幅に収まるように先頭を省略する（ASCII パスを前提）
