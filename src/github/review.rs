@@ -60,7 +60,7 @@ pub fn parse_patch_line_map(patch: &str) -> Vec<Option<DiffLineInfo>> {
 }
 
 /// @@ -old,len +new,len @@ からold開始行とnew開始行を抽出
-fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
+pub fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
     // 形式: @@ -old_start[,old_len] +new_start[,new_len] @@
     let line = line.strip_prefix("@@ ")?;
     let at_end = line.find(" @@")?;

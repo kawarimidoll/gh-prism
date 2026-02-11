@@ -204,6 +204,8 @@ pub struct App {
     zoomed: bool,
     /// Diff ペインの行折り返し（`w` キーでトグル）
     diff_wrap: bool,
+    /// Diff ペインの行番号表示（`n` キーでトグル）
+    show_line_numbers: bool,
     /// viewed 済みファイル名のセット（コミット跨ぎで維持）
     viewed_files: HashSet<String>,
     /// Diff ハイライトキャッシュ（commit_idx, file_idx, highlighted Text）
@@ -284,6 +286,7 @@ impl App {
             help_scroll: 0,
             zoomed: false,
             diff_wrap: false,
+            show_line_numbers: false,
             viewed_files: HashSet::new(),
             diff_highlight_cache: None,
             diff_visual_offsets: None,
@@ -1050,6 +1053,59 @@ impl App {
             }
         }
 
+        // 行番号プレフィックスを各行の先頭に挿入
+        if self.show_line_numbers {
+            use crate::github::review::parse_hunk_header;
+
+            let line_num_style = Style::default().fg(Color::DarkGray);
+            let separator_style = Style::default().fg(Color::DarkGray);
+            let mut old_line: usize = 0;
+            let mut new_line: usize = 0;
+
+            // 追加/削除ファイルは片側の行番号のみ表示
+            let show_old = !matches!(file_status.as_str(), "added");
+            let show_new = !matches!(file_status.as_str(), "removed" | "deleted");
+
+            for (idx, text_line) in text.lines.iter_mut().enumerate() {
+                if let Some(raw) = patch_lines.get(idx) {
+                    if raw.starts_with("@@") {
+                        // hunk ヘッダー: 行番号をパースして状態更新、表示はなし
+                        if let Some((old, new)) = parse_hunk_header(raw) {
+                            old_line = old;
+                            new_line = new;
+                        }
+                    } else {
+                        let mut prefix = Vec::new();
+
+                        if show_old {
+                            let old_str = if raw.starts_with('+') {
+                                "     ".to_string()
+                            } else {
+                                let s = format!("{:>4} ", old_line);
+                                old_line += 1;
+                                s
+                            };
+                            prefix.push(Span::styled(old_str, line_num_style));
+                        }
+
+                        if show_new {
+                            let new_str = if raw.starts_with('-') {
+                                "     ".to_string()
+                            } else {
+                                let s = format!("{:>4} ", new_line);
+                                new_line += 1;
+                                s
+                            };
+                            prefix.push(Span::styled(new_str, line_num_style));
+                        }
+
+                        prefix.push(Span::styled("│", separator_style));
+                        text_line.spans.splice(0..0, prefix);
+                    }
+                }
+            }
+        }
+
         // 既存コメントの下線 / 💬 マーカーをテキスト側に適用
         // 背景色オーバーレイ（カーソル/選択/pending）は render 後に Buffer で全幅適用する
         let show_cursor = self.focused_panel == Panel::DiffView;
@@ -1361,6 +1417,7 @@ impl App {
             ("y", "Copy SHA / file path"),
             ("Y", "Copy commit message"),
             ("", "Other"),
+            ("n", "Toggle line numbers (Diff)"),
             ("w", "Toggle line wrap (Diff)"),
             ("z", "Toggle zoom"),
             ("x", "Toggle viewed (Files/Commits)"),
@@ -1670,6 +1727,11 @@ impl App {
                     self.diff_scroll = visual as u16;
                 }
                 // 次の render で再計算されるまでの1フレームの不整合を防ぐ
+                self.diff_visual_offsets = None;
+                self.ensure_cursor_visible();
+            }
+            KeyCode::Char('n') => {
+                self.show_line_numbers = !self.show_line_numbers;
                 self.diff_visual_offsets = None;
                 self.ensure_cursor_visible();
             }
@@ -2178,6 +2240,20 @@ impl App {
         }
     }
 
+    /// 行番号プレフィックスの表示幅を返す
+    fn line_number_prefix_width(&self) -> u16 {
+        if !self.show_line_numbers {
+            return 0;
+        }
+        let file_status = self.current_file().map(|f| f.status.as_str()).unwrap_or("");
+        match file_status {
+            // 片側のみ: "NNNN │" = 6文字
+            "added" | "removed" | "deleted" => 6,
+            // 両側: "NNNN NNNN │" = 11文字
+            _ => 11,
+        }
+    }
+
     /// wrap 有効時に論理行の表示行オフセットを計算する。
     /// 論理行 `logical_line` が始まる表示行番号を返す。
     /// `logical_line == line_count` のとき、合計表示行数を返す。
@@ -2198,6 +2274,7 @@ impl App {
         if width == 0 {
             return logical_line;
         }
+        let prefix_width = self.line_number_prefix_width() as usize;
         let patch = match self.current_file().and_then(|f| f.patch.as_deref()) {
             Some(p) => p,
             None => return logical_line,
@@ -2207,10 +2284,20 @@ impl App {
             if i >= logical_line {
                 break;
             }
-            visual += Paragraph::new(line)
-                .wrap(Wrap { trim: false })
-                .line_count(width)
-                .max(1);
+            // @@ 行はプレフィックスなし、それ以外はプレフィックス幅分を加味
+            let count = if line.starts_with("@@") || prefix_width == 0 {
+                Paragraph::new(line)
+                    .wrap(Wrap { trim: false })
+                    .line_count(width)
+                    .max(1)
+            } else {
+                let padded = format!("{}{}", " ".repeat(prefix_width), line);
+                Paragraph::new(padded.as_str())
+                    .wrap(Wrap { trim: false })
+                    .line_count(width)
+                    .max(1)
+            };
+            visual += count;
         }
         visual
     }
@@ -2233,16 +2320,25 @@ impl App {
         if width == 0 {
             return visual_target;
         }
+        let prefix_width = self.line_number_prefix_width() as usize;
         let patch = match self.current_file().and_then(|f| f.patch.as_deref()) {
             Some(p) => p,
             None => return visual_target,
         };
         let mut visual = 0;
         for (i, line) in patch.lines().enumerate() {
-            let count = Paragraph::new(line)
-                .wrap(Wrap { trim: false })
-                .line_count(width)
-                .max(1);
+            let count = if line.starts_with("@@") || prefix_width == 0 {
+                Paragraph::new(line)
+                    .wrap(Wrap { trim: false })
+                    .line_count(width)
+                    .max(1)
+            } else {
+                let padded = format!("{}{}", " ".repeat(prefix_width), line);
+                Paragraph::new(padded.as_str())
+                    .wrap(Wrap { trim: false })
+                    .line_count(width)
+                    .max(1)
+            };
             if visual + count > visual_target {
                 return i;
             }
@@ -4798,5 +4894,175 @@ mod tests {
         assert_eq!(app.visual_line_offset(0), 0);
         assert_eq!(app.visual_line_offset(5), 5);
         assert_eq!(app.visual_to_logical_line(5), 5);
+    }
+
+    /// 長い行を含むパッチで wrap + 行番号の visual_line_offset を検証
+    #[test]
+    fn test_visual_line_offset_with_line_numbers() {
+        let commits = create_test_commits();
+        let mut files_map = HashMap::new();
+        let long_line = format!("+{}", "x".repeat(120));
+        let patch = format!("@@ -1,3 +1,3 @@\n context\n-old\n{}", long_line);
+        files_map.insert(
+            "abc1234567890".to_string(),
+            vec![DiffFile {
+                filename: "src/main.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 1,
+                patch: Some(patch),
+            }],
+        );
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            String::new(),
+            commits,
+            files_map,
+            vec![],
+            None,
+            ThemeMode::Dark,
+        );
+        app.diff_view_width = 80;
+        app.diff_wrap = true;
+        app.show_line_numbers = true;
+
+        let with_numbers = app.visual_line_offset(4);
+        assert!(
+            with_numbers > 4,
+            "行番号ONで長い行は wrap により視覚行数が論理行数より多い"
+        );
+
+        app.show_line_numbers = false;
+        let without_numbers = app.visual_line_offset(4);
+        assert!(
+            with_numbers >= without_numbers,
+            "行番号ONは行番号OFFより視覚行数が多い（もしくは同じ）"
+        );
+    }
+
+    /// wrap + 行番号で ensure_cursor_visible がカーソルを画面内に収める
+    #[test]
+    fn test_ensure_cursor_visible_with_wrap_and_line_numbers() {
+        let commits = create_test_commits();
+        let mut files_map = HashMap::new();
+        let lines: Vec<String> = (0..20)
+            .map(|i| format!("+{}", format!("line{} ", i).repeat(20)))
+            .collect();
+        let patch = format!("@@ -0,0 +1,20 @@\n{}", lines.join("\n"));
+        files_map.insert(
+            "abc1234567890".to_string(),
+            vec![DiffFile {
+                filename: "src/main.rs".to_string(),
+                status: "added".to_string(),
+                additions: 20,
+                deletions: 0,
+                patch: Some(patch),
+            }],
+        );
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            String::new(),
+            commits,
+            files_map,
+            vec![],
+            None,
+            ThemeMode::Dark,
+        );
+        app.diff_view_width = 80;
+        app.diff_view_height = 10;
+        app.diff_wrap = true;
+        app.show_line_numbers = true;
+        app.focused_panel = Panel::DiffView;
+
+        app.cursor_line = 20;
+        app.ensure_cursor_visible();
+
+        let cursor_visual = app.visual_line_offset(app.cursor_line);
+        let cursor_visual_end = app.visual_line_offset(app.cursor_line + 1);
+        let scroll = app.diff_scroll as usize;
+        let visible = app.diff_view_height as usize;
+
+        assert!(
+            cursor_visual >= scroll,
+            "カーソルの先頭がスクロール位置より下にある: cursor_visual={}, scroll={}",
+            cursor_visual,
+            scroll
+        );
+        assert!(
+            cursor_visual_end <= scroll + visible,
+            "カーソルの末尾が画面内に収まっている: cursor_visual_end={}, scroll+visible={}",
+            cursor_visual_end,
+            scroll + visible
+        );
+    }
+
+    /// line_number_prefix_width が file_status に応じた正しい幅を返す
+    #[test]
+    fn test_line_number_prefix_width() {
+        let commits = create_test_commits();
+
+        // modified ファイル → 両カラム 11文字
+        let mut files_map = HashMap::new();
+        files_map.insert(
+            "abc1234567890".to_string(),
+            vec![DiffFile {
+                filename: "src/main.rs".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 1,
+                patch: Some("@@ -1 +1 @@\n-old\n+new".to_string()),
+            }],
+        );
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            String::new(),
+            commits.clone(),
+            files_map,
+            vec![],
+            None,
+            ThemeMode::Dark,
+        );
+        app.show_line_numbers = true;
+        assert_eq!(app.line_number_prefix_width(), 11);
+
+        // added ファイル → 片カラム 6文字
+        let mut files_map = HashMap::new();
+        files_map.insert(
+            "abc1234567890".to_string(),
+            vec![DiffFile {
+                filename: "src/new.rs".to_string(),
+                status: "added".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("@@ -0,0 +1 @@\n+new".to_string()),
+            }],
+        );
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            String::new(),
+            commits,
+            files_map,
+            vec![],
+            None,
+            ThemeMode::Dark,
+        );
+        app.show_line_numbers = true;
+        assert_eq!(app.line_number_prefix_width(), 6);
+
+        // 行番号OFF → 0文字
+        app.show_line_numbers = false;
+        assert_eq!(app.line_number_prefix_width(), 0);
     }
 }
