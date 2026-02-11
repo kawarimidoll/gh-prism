@@ -309,6 +309,9 @@ impl App {
         }
         self.cursor_line = 0;
         self.diff_scroll = 0;
+        // 先頭の @@ 行をスキップ
+        let max = self.current_diff_line_count();
+        self.cursor_line = self.skip_hunk_header_forward(0, max);
     }
 
     /// 現在選択中のファイルを取得
@@ -1396,17 +1399,23 @@ impl App {
                         self.diff_scroll += 1;
                         if self.cursor_line + 1 < line_count {
                             self.cursor_line += 1;
+                            self.cursor_line =
+                                self.skip_hunk_header_forward(self.cursor_line, line_count);
                         }
                     } else if self.cursor_line + 1 < line_count {
                         // ページ末尾に到達 → カーソルのみ移動
                         self.cursor_line += 1;
+                        self.cursor_line =
+                            self.skip_hunk_header_forward(self.cursor_line, line_count);
                     }
                 } else if self.diff_scroll > 0 {
                     self.diff_scroll -= 1;
                     self.cursor_line = self.cursor_line.saturating_sub(1);
+                    self.cursor_line = self.skip_hunk_header_backward(self.cursor_line, line_count);
                 } else if self.cursor_line > 0 {
                     // ページ先頭に到達 → カーソルのみ移動
                     self.cursor_line -= 1;
+                    self.cursor_line = self.skip_hunk_header_backward(self.cursor_line, line_count);
                 }
             }
             _ => {}
@@ -1512,6 +1521,9 @@ impl App {
                 if self.focused_panel == Panel::DiffView {
                     self.cursor_line = 0;
                     self.diff_scroll = 0;
+                    // 先頭の @@ 行をスキップ
+                    let max = self.current_diff_line_count();
+                    self.cursor_line = self.skip_hunk_header_forward(0, max);
                 }
             }
             KeyCode::Char('G') => {
@@ -1950,6 +1962,29 @@ impl App {
             .is_some_and(|line| line.starts_with("@@"))
     }
 
+    /// hunk header をスキップして次の非 @@ 行に進む（下方向）
+    fn skip_hunk_header_forward(&self, line: usize, max: usize) -> usize {
+        let mut l = line;
+        while l < max && self.is_hunk_header(l) {
+            l += 1;
+        }
+        if l >= max { line } else { l }
+    }
+
+    /// hunk header をスキップして前の非 @@ 行に戻る（上方向）
+    fn skip_hunk_header_backward(&self, line: usize, max: usize) -> usize {
+        let mut l = line;
+        while l > 0 && self.is_hunk_header(l) {
+            l -= 1;
+        }
+        // 行 0 が @@ の場合は下方向にスキップ
+        if self.is_hunk_header(l) {
+            self.skip_hunk_header_forward(l, max)
+        } else {
+            l
+        }
+    }
+
     /// 2つの diff 行が同一 hunk に属するか判定
     /// hunk header（`@@` で始まる行）を境界として、間に `@@` がなければ同一 hunk
     fn is_same_hunk(&self, a: usize, b: usize) -> bool {
@@ -2038,25 +2073,30 @@ impl App {
         }
     }
 
-    /// カーソルをリセット
+    /// カーソルをリセット（先頭の @@ 行をスキップ）
     fn reset_cursor(&mut self) {
         self.cursor_line = 0;
         self.diff_scroll = 0;
+        let max = self.current_diff_line_count();
+        self.cursor_line = self.skip_hunk_header_forward(0, max);
     }
 
-    /// カーソルを下に移動
+    /// カーソルを下に移動（@@ 行をスキップ）
     fn move_cursor_down(&mut self) {
         let line_count = self.current_diff_line_count();
         if self.cursor_line + 1 < line_count {
             self.cursor_line += 1;
+            self.cursor_line = self.skip_hunk_header_forward(self.cursor_line, line_count);
             self.ensure_cursor_visible();
         }
     }
 
-    /// カーソルを上に移動
+    /// カーソルを上に移動（@@ 行をスキップ）
     fn move_cursor_up(&mut self) {
         if self.cursor_line > 0 {
             self.cursor_line -= 1;
+            let max = self.current_diff_line_count();
+            self.cursor_line = self.skip_hunk_header_backward(self.cursor_line, max);
             self.ensure_cursor_visible();
         }
     }
@@ -2166,6 +2206,7 @@ impl App {
         } else {
             self.cursor_line = (self.cursor_line + half).min(line_count.saturating_sub(1));
         }
+        self.cursor_line = self.skip_hunk_header_forward(self.cursor_line, line_count);
         self.ensure_cursor_visible();
     }
 
@@ -2175,6 +2216,7 @@ impl App {
             return;
         }
         let half = (self.diff_view_height as usize) / 2;
+        let line_count = self.current_diff_line_count();
         if self.diff_wrap {
             let cur_visual = self.visual_line_offset(self.cursor_line);
             let target_visual = cur_visual.saturating_sub(half);
@@ -2182,6 +2224,7 @@ impl App {
         } else {
             self.cursor_line = self.cursor_line.saturating_sub(half);
         }
+        self.cursor_line = self.skip_hunk_header_backward(self.cursor_line, line_count);
         self.ensure_cursor_visible();
     }
 
@@ -2190,6 +2233,7 @@ impl App {
         let line_count = self.current_diff_line_count();
         if line_count > 0 {
             self.cursor_line = line_count - 1;
+            self.cursor_line = self.skip_hunk_header_backward(self.cursor_line, line_count);
             self.ensure_cursor_visible();
         }
     }
@@ -2209,6 +2253,7 @@ impl App {
         } else {
             self.cursor_line = (self.cursor_line + page).min(line_count.saturating_sub(1));
         }
+        self.cursor_line = self.skip_hunk_header_forward(self.cursor_line, line_count);
         self.ensure_cursor_visible();
     }
 
@@ -2218,6 +2263,7 @@ impl App {
             return;
         }
         let page = self.diff_view_height as usize;
+        let line_count = self.current_diff_line_count();
         if self.diff_wrap {
             let cur_visual = self.visual_line_offset(self.cursor_line);
             let target_visual = cur_visual.saturating_sub(page);
@@ -2225,6 +2271,7 @@ impl App {
         } else {
             self.cursor_line = self.cursor_line.saturating_sub(page);
         }
+        self.cursor_line = self.skip_hunk_header_backward(self.cursor_line, line_count);
         self.ensure_cursor_visible();
     }
 
@@ -2284,31 +2331,39 @@ impl App {
         matches!(line.chars().next(), Some('+') | Some('-'))
     }
 
-    /// 次の hunk header（`@@` 行）にジャンプ
+    /// 次の hunk header（`@@` 行）の次の実コード行にジャンプ
     fn jump_to_next_hunk(&mut self) {
         let patch = match self.current_file().and_then(|f| f.patch.as_deref()) {
             Some(p) => p,
             None => return,
         };
+        let line_count = patch.lines().count();
         for (i, line) in patch.lines().enumerate().skip(self.cursor_line + 1) {
             if line.starts_with("@@") {
-                self.cursor_line = i;
+                // @@ の次の実コード行にカーソルを置く
+                self.cursor_line = self.skip_hunk_header_forward(i, line_count);
                 self.ensure_cursor_visible();
                 return;
             }
         }
     }
 
-    /// 前の hunk header（`@@` 行）にジャンプ
+    /// 前の hunk header（`@@` 行）の次の実コード行にジャンプ
     fn jump_to_prev_hunk(&mut self) {
         let patch = match self.current_file().and_then(|f| f.patch.as_deref()) {
             Some(p) => p,
             None => return,
         };
         let lines: Vec<&str> = patch.lines().collect();
+        let line_count = lines.len();
         for i in (0..self.cursor_line).rev() {
             if lines[i].starts_with("@@") {
-                self.cursor_line = i;
+                let target = self.skip_hunk_header_forward(i, line_count);
+                // スキップ先が現在位置と同じなら、さらに前の hunk を探す
+                if target >= self.cursor_line {
+                    continue;
+                }
+                self.cursor_line = target;
                 self.ensure_cursor_visible();
                 return;
             }
@@ -4278,14 +4333,14 @@ mod tests {
     fn test_jump_to_next_hunk() {
         let mut app = create_app_with_multi_hunk_patch();
         app.focused_panel = Panel::DiffView;
-        app.cursor_line = 0; // 最初の @@ 行
+        app.cursor_line = 1; // 最初の hunk 内
 
         app.jump_to_next_hunk();
-        assert_eq!(app.cursor_line, 4); // 2番目の @@ 行
+        assert_eq!(app.cursor_line, 5); // 2番目の @@ の次の実コード行
 
         // それ以降に @@ がないのでカーソルは動かない
         app.jump_to_next_hunk();
-        assert_eq!(app.cursor_line, 4);
+        assert_eq!(app.cursor_line, 5);
     }
 
     #[test]
@@ -4295,10 +4350,10 @@ mod tests {
         app.cursor_line = 7; // 最終行
 
         app.jump_to_prev_hunk();
-        assert_eq!(app.cursor_line, 4); // 2番目の @@
+        assert_eq!(app.cursor_line, 5); // 2番目の @@ の次の実コード行
 
         app.jump_to_prev_hunk();
-        assert_eq!(app.cursor_line, 0); // 最初の @@
+        assert_eq!(app.cursor_line, 1); // 最初の @@ の次の実コード行
     }
 
     #[test]
@@ -4327,15 +4382,15 @@ mod tests {
         app.focused_panel = Panel::DiffView;
         app.cursor_line = 1;
 
-        // ]h → 次の hunk
+        // ]h → 次の hunk の実コード行
         app.handle_normal_mode(KeyCode::Char(']'), KeyModifiers::NONE);
         app.handle_normal_mode(KeyCode::Char('h'), KeyModifiers::NONE);
-        assert_eq!(app.cursor_line, 4);
+        assert_eq!(app.cursor_line, 5);
 
-        // [h → 前の hunk
+        // [h → 前の hunk の実コード行
         app.handle_normal_mode(KeyCode::Char('['), KeyModifiers::NONE);
         app.handle_normal_mode(KeyCode::Char('h'), KeyModifiers::NONE);
-        assert_eq!(app.cursor_line, 0);
+        assert_eq!(app.cursor_line, 1);
     }
 
     #[test]
