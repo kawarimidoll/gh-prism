@@ -239,6 +239,8 @@ pub struct App {
     pr_desc_scroll: u16,
     /// PR Description ペインの表示可能行数（render 時に更新）
     pr_desc_view_height: u16,
+    /// PR Description の Wrap 考慮済み視覚行数（render 時に更新）
+    pr_desc_visual_total: u16,
     diff_scroll: u16,
     /// Diff ビュー内のカーソル行（0-indexed）
     cursor_line: usize,
@@ -342,6 +344,7 @@ impl App {
             file_list_state,
             pr_desc_scroll: 0,
             pr_desc_view_height: 10, // 初期値、render で更新される
+            pr_desc_visual_total: 0, // 初期値、render で更新される
             diff_scroll: 0,
             cursor_line: 0,
             diff_view_height: 20, // 初期値、render で更新される
@@ -821,6 +824,8 @@ impl App {
     fn render_pr_description(&mut self, frame: &mut Frame, area: Rect) {
         // ボーダー分を引いた表示可能行数を記録
         self.pr_desc_view_height = area.height.saturating_sub(2);
+        // ボーダー左右分を引いた内部幅
+        let inner_width = area.width.saturating_sub(2);
 
         let style = if self.focused_panel == Panel::PrDescription {
             Style::default().fg(Color::Yellow)
@@ -841,16 +846,41 @@ impl App {
             )
             .wrap(Wrap { trim: false })
             .scroll((self.pr_desc_scroll, 0));
+
+        // Wrap 考慮済み視覚行数を計算（スクロール上限に使用）
+        self.pr_desc_visual_total = paragraph.line_count(inner_width) as u16;
+        // zoom 切替等で描画幅が変わった場合にスクロール位置をクランプ
+        self.clamp_pr_desc_scroll();
+
         frame.render_widget(paragraph, area);
     }
 
-    /// PR Description のレンダリング済み行数を返す
+    /// PR Description の Wrap 考慮済み視覚行数を返す
+    /// render 前は論理行数にフォールバック
     fn pr_desc_total_lines(&mut self) -> u16 {
+        if self.pr_desc_visual_total > 0 {
+            return self.pr_desc_visual_total;
+        }
+        // render 前のフォールバック（テスト等）
         self.ensure_pr_desc_rendered();
         self.pr_desc_rendered
             .as_ref()
             .map(|t| t.lines.len() as u16)
             .unwrap_or(0)
+    }
+
+    /// PR Description のスクロール上限を返す
+    fn pr_desc_max_scroll(&mut self) -> u16 {
+        self.pr_desc_total_lines()
+            .saturating_sub(self.pr_desc_view_height)
+    }
+
+    /// PR Description のスクロール位置を上限にクランプする
+    fn clamp_pr_desc_scroll(&mut self) {
+        let max = self.pr_desc_max_scroll();
+        if self.pr_desc_scroll > max {
+            self.pr_desc_scroll = max;
+        }
     }
 
     fn render_commit_list_stateful(&mut self, frame: &mut Frame, area: Rect) {
@@ -1519,7 +1549,7 @@ impl App {
             ("1 / 2 / 3", "Jump to pane"),
             ("Enter", "Open diff / view comment"),
             ("Esc", "Back to Files pane"),
-            ("", "Diff Scroll"),
+            ("", "Scroll (Desc / Diff)"),
             ("Ctrl+d / Ctrl+u", "Half page down / up"),
             ("Ctrl+f / Ctrl+b", "Full page down / up"),
             ("g / G", "Top / Bottom"),
@@ -1629,11 +1659,8 @@ impl App {
         match panel {
             Panel::PrDescription => {
                 if down {
-                    let total_lines = self.pr_desc_total_lines();
-                    let max_scroll = total_lines.saturating_sub(self.pr_desc_view_height);
-                    if self.pr_desc_scroll < max_scroll {
-                        self.pr_desc_scroll += 1;
-                    }
+                    self.pr_desc_scroll = self.pr_desc_scroll.saturating_add(1);
+                    self.clamp_pr_desc_scroll();
                 } else {
                     self.pr_desc_scroll = self.pr_desc_scroll.saturating_sub(1);
                 }
@@ -1755,31 +1782,64 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => self.select_next(),
             KeyCode::Char('k') | KeyCode::Up => self.select_prev(),
             KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.scroll_diff_down();
+                match self.focused_panel {
+                    Panel::PrDescription => {
+                        let half = self.pr_desc_view_height / 2;
+                        self.pr_desc_scroll = self.pr_desc_scroll.saturating_add(half);
+                        self.clamp_pr_desc_scroll();
+                    }
+                    _ => self.scroll_diff_down(),
+                }
             }
             KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.scroll_diff_up();
+                match self.focused_panel {
+                    Panel::PrDescription => {
+                        let half = self.pr_desc_view_height / 2;
+                        self.pr_desc_scroll = self.pr_desc_scroll.saturating_sub(half);
+                    }
+                    _ => self.scroll_diff_up(),
+                }
             }
             KeyCode::Char('f') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.page_down();
+                match self.focused_panel {
+                    Panel::PrDescription => {
+                        self.pr_desc_scroll =
+                            self.pr_desc_scroll.saturating_add(self.pr_desc_view_height);
+                        self.clamp_pr_desc_scroll();
+                    }
+                    _ => self.page_down(),
+                }
             }
             KeyCode::Char('b') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.page_up();
+                match self.focused_panel {
+                    Panel::PrDescription => {
+                        self.pr_desc_scroll =
+                            self.pr_desc_scroll.saturating_sub(self.pr_desc_view_height);
+                    }
+                    _ => self.page_up(),
+                }
             }
-            KeyCode::Char('g') => {
-                if self.focused_panel == Panel::DiffView {
+            KeyCode::Char('g') => match self.focused_panel {
+                Panel::PrDescription => {
+                    self.pr_desc_scroll = 0;
+                }
+                Panel::DiffView => {
                     self.cursor_line = 0;
                     self.diff_scroll = 0;
-                    // 先頭の @@ 行をスキップ
                     let max = self.current_diff_line_count();
                     self.cursor_line = self.skip_hunk_header_forward(0, max);
                 }
-            }
-            KeyCode::Char('G') => {
-                if self.focused_panel == Panel::DiffView {
+                _ => {}
+            },
+            KeyCode::Char('G') => match self.focused_panel {
+                Panel::PrDescription => {
+                    self.pr_desc_scroll = self.pr_desc_max_scroll();
+                }
+                Panel::DiffView => {
                     self.scroll_diff_to_end();
                 }
-            }
+                _ => {}
+            },
             KeyCode::Char('v') => {
                 // DiffView パネルでのみ行選択モードに入る
                 if self.focused_panel == Panel::DiffView {
@@ -1854,6 +1914,10 @@ impl App {
             }
             KeyCode::Char('z') => {
                 self.zoomed = !self.zoomed;
+                // zoom 切替で描画幅が変わり、Wrap 済み視覚行数も変わる。
+                // 次の render で pr_desc_visual_total が再計算されるまで
+                // スクロール位置が範囲外にならないようリセットする。
+                self.pr_desc_visual_total = 0;
             }
             KeyCode::Char('?') => {
                 self.help_scroll = 0;
@@ -2264,11 +2328,8 @@ impl App {
     fn select_next(&mut self) {
         match self.focused_panel {
             Panel::PrDescription => {
-                let total_lines = self.pr_desc_total_lines();
-                let max_scroll = total_lines.saturating_sub(self.pr_desc_view_height);
-                if self.pr_desc_scroll < max_scroll {
-                    self.pr_desc_scroll = self.pr_desc_scroll.saturating_add(1);
-                }
+                self.pr_desc_scroll = self.pr_desc_scroll.saturating_add(1);
+                self.clamp_pr_desc_scroll();
             }
             Panel::CommitList if !self.commits.is_empty() => {
                 let current = self.commit_list_state.selected().unwrap_or(0);
@@ -4154,6 +4215,10 @@ mod tests {
         assert_eq!(app.pr_desc_scroll, 1);
         app.handle_mouse_scroll(5, 3, false);
         assert_eq!(app.pr_desc_scroll, 0);
+
+        // pr_desc_visual_total が設定されている場合はそちらを優先
+        app.pr_desc_visual_total = 20;
+        assert_eq!(app.pr_desc_total_lines(), 20);
     }
 
     #[test]
