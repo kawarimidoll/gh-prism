@@ -18,7 +18,6 @@ use ratatui::{
 };
 use ratatui_image::StatefulImage;
 use ratatui_image::picker::Picker;
-use ratatui_image::protocol::StatefulProtocol;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tokio::runtime::Handle;
@@ -622,8 +621,8 @@ pub struct App {
     picker: Option<Picker>,
     /// ダウンロード済み画像キャッシュ
     media_cache: MediaCache,
-    /// レンダリング済み画像プロトコル状態（URL → StatefulProtocol）
-    image_states: HashMap<String, StatefulProtocol>,
+    /// 画像を Halfblocks でプリレンダリングした結果のキャッシュ（URL → Vec<Line>）
+    image_text_cache: HashMap<String, Vec<Line<'static>>>,
 }
 
 impl App {
@@ -703,7 +702,7 @@ impl App {
             media_refs: Vec::new(),
             picker: None,
             media_cache: MediaCache::new(),
-            image_states: HashMap::new(),
+            image_text_cache: HashMap::new(),
         }
     }
 
@@ -1138,35 +1137,33 @@ impl App {
             let rendered = tui_markdown::from_str_with_options(&processed_body, &options);
             // 借用ライフタイムを 'static に変換（各 Span の content を所有文字列化）
             // Line::style（heading/blockquote の色）も保持する
-            Text::from(
-                rendered
-                    .lines
-                    .into_iter()
-                    .map(|line| {
-                        let mut new_line = Line::from(
-                            line.spans
-                                .into_iter()
-                                .map(|span| Span::styled(span.content.into_owned(), span.style))
-                                .collect::<Vec<_>>(),
-                        );
-                        new_line.style = line.style;
-                        new_line.alignment = line.alignment;
-                        new_line
-                    })
-                    .collect::<Vec<_>>(),
-            )
+            let mut lines: Vec<Line<'static>> = rendered
+                .lines
+                .into_iter()
+                .map(|line| {
+                    let mut new_line = Line::from(
+                        line.spans
+                            .into_iter()
+                            .map(|span| Span::styled(span.content.into_owned(), span.style))
+                            .collect::<Vec<_>>(),
+                    );
+                    new_line.style = line.style;
+                    new_line.alignment = line.alignment;
+                    new_line
+                })
+                .collect();
+
+            // zoom モードで画像が利用可能なら、プレースホルダーを画像テキストに置換
+            if self.zoomed {
+                self.replace_image_placeholders(&mut lines);
+            }
+
+            Text::from(lines)
         };
         self.pr_desc_rendered = Some(text);
     }
 
     fn render_pr_description(&mut self, frame: &mut Frame, area: Rect) {
-        // zoom モードで画像表示可能な場合はセグメントベース描画に切り替え
-        if self.zoomed && self.picker.is_some() && !self.media_refs.is_empty() {
-            self.render_pr_description_zoomed(frame, area);
-            return;
-        }
-
-        // --- 通常ビュー（既存ロジック）---
         // ボーダー分を引いた表示可能行数を記録
         self.pr_desc_view_height = area.height.saturating_sub(2);
         // ボーダー左右分を引いた内部幅
@@ -1200,204 +1197,55 @@ impl App {
         frame.render_widget(paragraph, area);
     }
 
-    /// zoom モード時の PR Description 描画（画像インライン表示対応）
-    fn render_pr_description_zoomed(&mut self, frame: &mut Frame, area: Rect) {
-        self.pr_desc_view_height = area.height.saturating_sub(2);
-
-        let style = if self.focused_panel == Panel::PrDescription {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        };
-
-        self.ensure_pr_desc_rendered();
-
-        let block = Block::default()
-            .title(" PR Description ")
-            .borders(Borders::ALL)
-            .border_style(style);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
-        // picker がない場合は通常テキスト描画にフォールバック
-        if self.picker.is_none() || self.media_refs.is_empty() {
-            let text = self.pr_desc_rendered.as_ref().unwrap().clone();
-            let paragraph = Paragraph::new(text)
-                .wrap(Wrap { trim: false })
-                .scroll((self.pr_desc_scroll, 0));
-            self.pr_desc_visual_total = paragraph.line_count(inner.width) as u16;
-            self.clamp_pr_desc_scroll();
-            frame.render_widget(paragraph, inner);
-            return;
-        }
-
-        // 画像の StatefulProtocol を初期化（まだされていない場合）
-        self.ensure_image_states();
-
-        // セグメントに分割（self の借用を分離するため先に構築）
-        let text = self.pr_desc_rendered.as_ref().unwrap().clone();
-        let segments = Self::build_desc_segments(
-            &text,
-            inner.width,
-            &self.media_refs,
-            &self.image_states,
-            &self.media_cache,
-            self.picker.as_ref().unwrap(),
-        );
-
-        // 合計高さを計算
-        let total_height: u16 = segments.iter().map(|s| s.height).sum();
-        self.pr_desc_visual_total = total_height;
-        self.clamp_pr_desc_scroll();
-
-        // スクロールオフセットを考慮して各セグメントを描画
-        let mut y_offset: u16 = 0;
-        let scroll = self.pr_desc_scroll;
-        let view_height = inner.height;
-
-        for seg in &segments {
-            let seg_end = y_offset + seg.height;
-
-            // スクロール範囲外はスキップ
-            if seg_end <= scroll {
-                y_offset = seg_end;
-                continue;
-            }
-            if y_offset >= scroll + view_height {
-                break;
-            }
-
-            // 表示領域内のセグメントを描画
-            let visible_start = scroll.saturating_sub(y_offset);
-            let screen_y = y_offset.saturating_sub(scroll);
-            let available_height = view_height.saturating_sub(screen_y);
-            let seg_visible_height = seg
-                .height
-                .saturating_sub(visible_start)
-                .min(available_height);
-
-            if seg_visible_height == 0 {
-                y_offset = seg_end;
-                continue;
-            }
-
-            let seg_rect = Rect::new(inner.x, inner.y + screen_y, inner.width, seg_visible_height);
-
-            match &seg.kind {
-                SegmentKind::Text(lines) => {
-                    let text = Text::from(lines.clone());
-                    let paragraph = Paragraph::new(text)
-                        .wrap(Wrap { trim: false })
-                        .scroll((visible_start, 0));
-                    frame.render_widget(paragraph, seg_rect);
-                }
-                SegmentKind::Image(url) => {
-                    if let Some(state) = self.image_states.get_mut(url) {
-                        let widget = StatefulImage::default();
-                        frame.render_stateful_widget(widget, seg_rect, state);
-                    }
-                }
-            }
-
-            y_offset = seg_end;
-        }
-    }
-
-    /// 画像の StatefulProtocol を初期化する（未初期化のもののみ）
-    fn ensure_image_states(&mut self) {
-        // borrow checker 対策: picker を一時的に take して処理後に戻す
-        let Some(picker) = self.picker.take() else {
+    /// zoom モード時にプレースホルダー行を Halfblocks プリレンダリング画像に置換する
+    fn replace_image_placeholders(&mut self, lines: &mut Vec<Line<'static>>) {
+        // picker を一時的に取り出す（borrow checker 対策）
+        let Some(mut picker) = self.picker.take() else {
             return;
         };
 
-        for media_ref in &self.media_refs {
-            if media_ref.media_type != MediaType::Image {
+        let mut i = 0;
+        while i < lines.len() {
+            let line_text: String = lines[i].spans.iter().map(|s| s.content.as_ref()).collect();
+            let trimmed = line_text.trim();
+
+            if !trimmed.starts_with("[🖼") {
+                i += 1;
                 continue;
             }
-            if self.image_states.contains_key(&media_ref.url) {
+
+            // プレースホルダーに対応する MediaRef を探す
+            let matched = self
+                .media_refs
+                .iter()
+                .find(|r| r.media_type == MediaType::Image && trimmed == format!("[🖼 {}]", r.alt));
+
+            let Some(media_ref) = matched else {
+                i += 1;
                 continue;
+            };
+
+            let url = media_ref.url.clone();
+
+            // キャッシュにあればそれを使用、なければプリレンダリング
+            if !self.image_text_cache.contains_key(&url) {
+                if let Some(img) = self.media_cache.get(&url) {
+                    let img_lines = prerender_image_halfblocks(&mut picker, img, 80);
+                    self.image_text_cache.insert(url.clone(), img_lines);
+                }
             }
-            if let Some(img) = self.media_cache.get(&media_ref.url) {
-                let protocol = picker.new_resize_protocol(img.clone());
-                self.image_states.insert(media_ref.url.clone(), protocol);
+
+            if let Some(img_lines) = self.image_text_cache.get(&url) {
+                let img_lines = img_lines.clone();
+                let count = img_lines.len();
+                lines.splice(i..=i, img_lines);
+                i += count;
+            } else {
+                i += 1;
             }
         }
 
         self.picker = Some(picker);
-    }
-
-    /// レンダリング済みテキストをセグメントリストに分割する
-    /// borrow checker 対策のため、self の各フィールドを個別参照で受け取る
-    fn build_desc_segments(
-        text: &Text<'static>,
-        width: u16,
-        media_refs: &[MediaRef],
-        image_states: &HashMap<String, StatefulProtocol>,
-        media_cache: &MediaCache,
-        picker: &Picker,
-    ) -> Vec<DescSegment> {
-        let mut segments: Vec<DescSegment> = Vec::new();
-        let mut current_lines: Vec<Line<'static>> = Vec::new();
-        let lines = &text.lines;
-
-        // プレースホルダー行を検出するための URL マッピング
-        // レンダリング後のテキストから `[🖼` を含む行を検出し、対応する MediaRef を探す
-        let image_refs: Vec<&MediaRef> = media_refs
-            .iter()
-            .filter(|r| r.media_type == MediaType::Image && image_states.contains_key(&r.url))
-            .collect();
-
-        let font_size = picker.font_size();
-
-        for line in lines.iter() {
-            // レンダリング後テキストからプレースホルダー `[🖼` を含む行を検出
-            let line_text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-            let trimmed = line_text.trim();
-
-            if let Some(matched_ref) = trimmed
-                .starts_with("[🖼")
-                .then(|| {
-                    // プレースホルダーの alt テキストを抽出してマッチ
-                    image_refs.iter().find(|r| {
-                        let placeholder = format!("[🖼 {}]", r.alt);
-                        trimmed == placeholder
-                    })
-                })
-                .flatten()
-            {
-                // 現在のテキストブロックをフラッシュ
-                if !current_lines.is_empty() {
-                    let h = text_height(&current_lines, width);
-                    segments.push(DescSegment {
-                        kind: SegmentKind::Text(current_lines.clone()),
-                        height: h,
-                    });
-                    current_lines.clear();
-                }
-
-                // 画像セグメントを追加
-                if let Some(img) = media_cache.get(&matched_ref.url) {
-                    let h = image_display_height(img, width, font_size);
-                    segments.push(DescSegment {
-                        kind: SegmentKind::Image(matched_ref.url.clone()),
-                        height: h,
-                    });
-                }
-            } else {
-                current_lines.push(line.clone());
-            }
-        }
-
-        // 残りのテキスト
-        if !current_lines.is_empty() {
-            let h = text_height(&current_lines, width);
-            segments.push(DescSegment {
-                kind: SegmentKind::Text(current_lines),
-                height: h,
-            });
-        }
-
-        segments
     }
 
     /// PR Description の Wrap 考慮済み視覚行数を返す
@@ -2460,9 +2308,10 @@ impl App {
             KeyCode::Char('z') => {
                 self.zoomed = !self.zoomed;
                 // zoom 切替で描画幅が変わり、Wrap 済み視覚行数も変わる。
-                // 次の render で pr_desc_visual_total が再計算されるまで
-                // スクロール位置が範囲外にならないようリセットする。
+                // また、zoom/非zoom でプレースホルダー/画像テキストが切り替わるため
+                // レンダリングキャッシュもリセットする。
                 self.pr_desc_visual_total = 0;
+                self.pr_desc_rendered = None;
             }
             KeyCode::Char('?') => {
                 self.help_scroll = 0;
@@ -3308,46 +3157,52 @@ impl App {
     }
 }
 
-/// PR Description のセグメント種別（テキスト or 画像）
-enum SegmentKind {
-    /// テキストブロック
-    Text(Vec<Line<'static>>),
-    /// 画像（URL）
-    Image(String),
-}
-
-/// PR Description のセグメント（テキストまたは画像）
-struct DescSegment {
-    kind: SegmentKind,
-    /// このセグメントの高さ（行数 or 画像セル行数）
-    height: u16,
-}
-
-/// テキスト行の表示高さ（Wrap 考慮）を計算
-fn text_height(lines: &[Line<'_>], width: u16) -> u16 {
-    if width == 0 {
-        return lines.len() as u16;
-    }
-    let text = Text::from(lines.to_vec());
-    Paragraph::new(text)
-        .wrap(Wrap { trim: false })
-        .line_count(width) as u16
-}
-
-/// 画像の表示高さ（セル行数）を計算
-fn image_display_height(
+/// 画像を Halfblocks でプリレンダリングして Vec<Line<'static>> に変換する
+fn prerender_image_halfblocks(
+    picker: &mut Picker,
     img: &image::DynamicImage,
-    available_width: u16,
-    font_size: (u16, u16),
-) -> u16 {
+    max_width: u16,
+) -> Vec<Line<'static>> {
+    use ratatui::buffer::Buffer;
+    use ratatui::widgets::StatefulWidget;
+
+    let font_size = picker.font_size();
     let (fw, fh) = font_size;
     if fw == 0 || fh == 0 {
-        return 1;
+        return vec![Line::from("[🖼 Image (render error)]")];
     }
-    let pixel_width = available_width as u32 * fw as u32;
+
+    // 画像の表示サイズを計算
+    let display_width = max_width.min(img.width() as u16);
+    let pixel_width = display_width as u32 * fw as u32;
     let scale = pixel_width as f64 / img.width() as f64;
     let pixel_height = (img.height() as f64 * scale) as u32;
-    (pixel_height / fh as u32).max(1) as u16
+    let display_height = (pixel_height / fh as u32).max(1) as u16;
+    // 高さを制限（あまりに大きい画像は省略）
+    let display_height = display_height.min(60);
+
+    let rect = Rect::new(0, 0, display_width, display_height);
+    let mut buf = Buffer::empty(rect);
+
+    // Halfblocks 用の Picker で画像をバッファにレンダリング
+    #[allow(deprecated)]
+    let halfblocks_picker = Picker::from_fontsize(font_size);
+    let mut protocol = halfblocks_picker.new_resize_protocol(img.clone());
+    let widget = StatefulImage::default();
+    StatefulWidget::render(widget, rect, &mut buf, &mut protocol);
+
+    // バッファを Vec<Line<'static>> に変換
+    let mut lines = Vec::with_capacity(display_height as usize);
+    for y in 0..display_height {
+        let mut spans = Vec::with_capacity(display_width as usize);
+        for x in 0..display_width {
+            let cell = buf.cell(Position::new(x, y)).unwrap();
+            spans.push(Span::styled(cell.symbol().to_string(), cell.style()));
+        }
+        lines.push(Line::from(spans));
+    }
+
+    lines
 }
 
 /// パスを最大幅に収まるように先頭を省略する（ASCII パスを前提）
