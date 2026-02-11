@@ -125,7 +125,7 @@ pub enum AppMode {
     ReviewSubmit,
     QuitConfirm,
     Help,
-    ImageViewer,
+    MediaViewer,
 }
 
 /// レビューイベントタイプ
@@ -358,7 +358,9 @@ fn try_parse_html_video(line: &str) -> Option<String> {
     extract_html_attr(line, "src")
 }
 
-/// 行が動画ベア URL かどうかチェック
+/// 行が動画ベア URL かどうかチェック。
+/// GitHub user-attachments URL は拡張子なし（UUID のみ）の場合がある。
+/// Markdown 画像 `![](url)` でラップされていないベア URL は動画と推定する。
 fn try_parse_bare_video_url(line: &str) -> Option<String> {
     let trimmed = line.trim();
     let is_asset_url = trimmed.starts_with("https://github.com/user-attachments/assets/")
@@ -366,13 +368,14 @@ fn try_parse_bare_video_url(line: &str) -> Option<String> {
     if !is_asset_url {
         return None;
     }
-    // 拡張子チェック（クエリパラメータ除去後）
+    // 明示的な動画拡張子があれば動画確定
     let url_path = trimmed.split('?').next().unwrap_or(trimmed);
     if url_path.ends_with(".mp4") || url_path.ends_with(".mov") || url_path.ends_with(".webm") {
-        Some(trimmed.to_string())
-    } else {
-        None
+        return Some(trimmed.to_string());
     }
+    // 拡張子なしのアセット URL がベア URL として出現する場合、
+    // 動画の可能性が高い（画像は通常 ![alt](url) でラップされるため）
+    Some(trimmed.to_string())
 }
 
 /// 行内の Markdown 画像と HTML img タグを処理する。
@@ -613,10 +616,10 @@ pub struct App {
     picker: Option<Picker>,
     /// ダウンロード済み画像キャッシュ
     media_cache: MediaCache,
-    /// 画像ビューアの現在のインデックス（media_refs 内の画像のみ対象）
-    image_viewer_index: usize,
-    /// 画像ビューアの現在のレンダリング状態
-    image_viewer_protocol: Option<StatefulProtocol>,
+    /// メディアビューアの現在のインデックス
+    media_viewer_index: usize,
+    /// メディアビューアの現在のレンダリング状態（画像のみ、動画は None）
+    media_viewer_protocol: Option<StatefulProtocol>,
 }
 
 impl App {
@@ -696,8 +699,8 @@ impl App {
             media_refs: Vec::new(),
             picker: None,
             media_cache: MediaCache::new(),
-            image_viewer_index: 0,
-            image_viewer_protocol: None,
+            media_viewer_index: 0,
+            media_viewer_protocol: None,
         }
     }
 
@@ -707,46 +710,45 @@ impl App {
         self.media_cache = media_cache;
     }
 
-    /// PR body 内の画像メディア参照の数を返す
-    fn image_count(&self) -> usize {
-        self.media_refs
-            .iter()
-            .filter(|r| r.media_type == MediaType::Image)
-            .count()
+    /// PR body 内のメディア参照の数を返す（画像 + 動画）
+    fn media_count(&self) -> usize {
+        self.media_refs.len()
     }
 
-    /// PR body 内の N 番目の画像メディア参照を返す
-    fn image_ref_at(&self, index: usize) -> Option<&MediaRef> {
-        self.media_refs
-            .iter()
-            .filter(|r| r.media_type == MediaType::Image)
-            .nth(index)
+    /// PR body 内の N 番目のメディア参照を返す
+    fn media_ref_at(&self, index: usize) -> Option<&MediaRef> {
+        self.media_refs.get(index)
     }
 
-    /// 画像ビューアモードに入る（画像がある場合のみ）
-    fn enter_image_viewer(&mut self) {
+    /// メディアビューアモードに入る（メディアがある場合のみ）
+    fn enter_media_viewer(&mut self) {
         self.ensure_pr_desc_rendered();
-        if self.image_count() == 0 {
-            self.status_message = Some(StatusMessage::info("No images in PR description"));
+        if self.media_refs.is_empty() {
+            self.status_message =
+                Some(StatusMessage::info("No images or videos in PR description"));
             return;
         }
-        self.image_viewer_index = 0;
-        self.prepare_image_protocol();
-        self.mode = AppMode::ImageViewer;
+        self.media_viewer_index = 0;
+        self.prepare_media_protocol();
+        self.mode = AppMode::MediaViewer;
     }
 
-    /// 現在の image_viewer_index に対応する画像のレンダリングプロトコルを準備する
-    fn prepare_image_protocol(&mut self) {
-        let url = self
-            .image_ref_at(self.image_viewer_index)
-            .map(|r| r.url.clone());
-        let protocol = url.and_then(|url| {
+    /// 現在の media_viewer_index に対応するメディアのレンダリングプロトコルを準備する。
+    /// 動画の場合はプロトコルを作成しない（サムネイル未対応）。
+    fn prepare_media_protocol(&mut self) {
+        let info = self
+            .media_ref_at(self.media_viewer_index)
+            .map(|r| (r.media_type.clone(), r.url.clone()));
+        let protocol = info.and_then(|(media_type, url)| {
+            if media_type == MediaType::Video {
+                return None;
+            }
             let picker = self.picker.as_ref()?;
             let img = self.media_cache.get(&url)?;
             // new_resize_protocol は DynamicImage を所有で受け取るためクローンが必要
             Some(picker.new_resize_protocol(img.clone()))
         });
-        self.image_viewer_protocol = protocol;
+        self.media_viewer_protocol = protocol;
     }
 
     /// 現在選択中のコミットのファイル一覧を取得
@@ -1019,7 +1021,7 @@ impl App {
             AppMode::ReviewSubmit => " [REVIEW] ",
             AppMode::QuitConfirm => " [CONFIRM] ",
             AppMode::Help => " [HELP] ",
-            AppMode::ImageViewer => " [IMAGE] ",
+            AppMode::MediaViewer => " [MEDIA] ",
         };
 
         let comments_badge = if self.pending_comments.is_empty() {
@@ -1036,7 +1038,7 @@ impl App {
             AppMode::ReviewSubmit => Color::Cyan,
             AppMode::QuitConfirm => Color::Red,
             AppMode::Help => Color::DarkGray,
-            AppMode::ImageViewer => Color::DarkGray,
+            AppMode::MediaViewer => Color::DarkGray,
         };
         // CommentView / ReviewSubmit は明るい bg なので常に Black。
         // 他のモードはテーマに応じて White / Black を切り替え。
@@ -1157,7 +1159,7 @@ impl App {
             AppMode::ReviewSubmit => self.render_review_submit_dialog(frame, area),
             AppMode::QuitConfirm => self.render_quit_confirm_dialog(frame, area),
             AppMode::Help => self.render_help_dialog(frame, area),
-            AppMode::ImageViewer => self.render_image_viewer_overlay(frame, area),
+            AppMode::MediaViewer => self.render_media_viewer_overlay(frame, area),
             _ => {}
         }
     }
@@ -1924,7 +1926,7 @@ impl App {
             ("l / → / Tab", "Next pane"),
             ("h / ← / BackTab", "Previous pane"),
             ("1 / 2 / 3", "Jump to pane"),
-            ("Enter", "Open diff / comment / images"),
+            ("Enter", "Open diff / comment / media"),
             ("Esc", "Back to Files pane"),
             ("", "Scroll (Desc / Diff)"),
             ("Ctrl+d / Ctrl+u", "Half page down / up"),
@@ -1980,16 +1982,16 @@ impl App {
         frame.render_widget(paragraph, dialog);
     }
 
-    /// 画像ビューアオーバーレイを描画する
-    fn render_image_viewer_overlay(&mut self, frame: &mut Frame, area: Rect) {
+    /// メディアビューアオーバーレイを描画する
+    fn render_media_viewer_overlay(&mut self, frame: &mut Frame, area: Rect) {
         frame.render_widget(ratatui::widgets::Clear, area);
 
-        let total = self.image_count();
-        let alt = self
-            .image_ref_at(self.image_viewer_index)
-            .map(|r| r.alt.as_str())
-            .unwrap_or("Image");
-        let title = format!(" {alt} ({}/{total}) ", self.image_viewer_index + 1);
+        let total = self.media_count();
+        let current = self.media_ref_at(self.media_viewer_index);
+        let is_video = current.is_some_and(|r| r.media_type == MediaType::Video);
+        let icon = if is_video { "🎬" } else { "🖼" };
+        let alt = current.map(|r| r.alt.as_str()).unwrap_or("Media");
+        let title = format!(" {icon} {alt} ({}/{total}) ", self.media_viewer_index + 1);
 
         let block = Block::default()
             .title(title)
@@ -2005,7 +2007,7 @@ impl App {
             inner.width,
             1,
         );
-        let image_area = Rect::new(
+        let content_area = Rect::new(
             inner.x,
             inner.y,
             inner.width,
@@ -2023,14 +2025,23 @@ impl App {
         ]);
         frame.render_widget(Paragraph::new(footer), footer_area);
 
-        if let Some(ref mut protocol) = self.image_viewer_protocol {
+        if is_video {
+            let msg = Paragraph::new(
+                "🎬 Video cannot be played in terminal\n\nPress o to open in browser",
+            )
+            .style(Style::default().fg(Color::DarkGray))
+            .wrap(Wrap { trim: false })
+            .alignment(ratatui::layout::Alignment::Center);
+            let centered = Self::centered_rect(45, 3, content_area);
+            frame.render_widget(msg, centered);
+        } else if let Some(ref mut protocol) = self.media_viewer_protocol {
             let widget = StatefulImage::default();
-            frame.render_stateful_widget(widget, image_area, protocol);
+            frame.render_stateful_widget(widget, content_area, protocol);
         } else {
-            let msg = Paragraph::new("[Image not available — press o to open in browser]")
+            let msg = Paragraph::new("Press o to open in browser")
                 .style(Style::default().fg(Color::DarkGray))
                 .wrap(Wrap { trim: false });
-            let centered = Self::centered_rect(50, 1, image_area);
+            let centered = Self::centered_rect(30, 1, content_area);
             frame.render_widget(msg, centered);
         }
     }
@@ -2145,7 +2156,7 @@ impl App {
                 AppMode::ReviewSubmit => self.handle_review_submit_mode(key.code),
                 AppMode::QuitConfirm => self.handle_quit_confirm_mode(key.code),
                 AppMode::Help => self.handle_help_mode(key.code),
-                AppMode::ImageViewer => self.handle_image_viewer_mode(key.code),
+                AppMode::MediaViewer => self.handle_media_viewer_mode(key.code),
             },
             Event::Mouse(mouse) if self.mode == AppMode::Normal => match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
@@ -2196,7 +2207,7 @@ impl App {
             KeyCode::Enter => {
                 if self.focused_panel == Panel::PrDescription {
                     // PR Description で Enter → 画像があれば ImageViewer
-                    self.enter_image_viewer();
+                    self.enter_media_viewer();
                 } else if self.focused_panel == Panel::FileTree {
                     // Files ペインで Enter → DiffView に移動
                     self.focused_panel = Panel::DiffView;
@@ -2511,32 +2522,32 @@ impl App {
         }
     }
 
-    fn handle_image_viewer_mode(&mut self, code: KeyCode) {
-        let count = self.image_count();
+    fn handle_media_viewer_mode(&mut self, code: KeyCode) {
+        let count = self.media_count();
         match code {
             KeyCode::Esc | KeyCode::Char('q') => {
-                self.image_viewer_protocol = None;
+                self.media_viewer_protocol = None;
                 self.mode = AppMode::Normal;
             }
             KeyCode::Char('l') | KeyCode::Right => {
                 if count > 0 {
-                    self.image_viewer_index = (self.image_viewer_index + 1) % count;
-                    self.prepare_image_protocol();
+                    self.media_viewer_index = (self.media_viewer_index + 1) % count;
+                    self.prepare_media_protocol();
                 }
             }
             KeyCode::Char('h') | KeyCode::Left => {
                 if count > 0 {
-                    self.image_viewer_index = if self.image_viewer_index == 0 {
+                    self.media_viewer_index = if self.media_viewer_index == 0 {
                         count - 1
                     } else {
-                        self.image_viewer_index - 1
+                        self.media_viewer_index - 1
                     };
-                    self.prepare_image_protocol();
+                    self.prepare_media_protocol();
                 }
             }
             KeyCode::Char('o') => {
                 if let Some(url) = self
-                    .image_ref_at(self.image_viewer_index)
+                    .media_ref_at(self.media_viewer_index)
                     .map(|r| r.url.clone())
                 {
                     open_url_in_browser(&url);
@@ -5758,6 +5769,28 @@ mod tests {
         let body = "Check this:\nhttps://github.com/user-attachments/assets/abc123.mp4\nEnd";
         let (result, refs) = preprocess_pr_body(body);
         assert!(result.contains("[🎬 Video]"));
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].media_type, MediaType::Video);
+    }
+
+    #[test]
+    fn test_preprocess_pr_body_video_bare_uuid_url() {
+        // GitHub user-attachments の動画 URL は拡張子なし（UUID のみ）の場合がある
+        let body = "Summary\nhttps://github.com/user-attachments/assets/997a4417-2117-4a04-83ab-bcd341df33d3\nEnd";
+        let (result, refs) = preprocess_pr_body(body);
+        assert!(result.contains("[🎬 Video]"));
+        assert!(!result.contains("997a4417"));
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].media_type, MediaType::Video);
+    }
+
+    #[test]
+    fn test_preprocess_pr_body_video_bare_private_user_images_url() {
+        // private-user-images URL も拡張子なしでベア URL の場合は動画と推定する
+        let body = "Summary\nhttps://private-user-images.githubusercontent.com/12345/997a4417-2117-4a04-83ab-bcd341df33d3?jwt=abc\nEnd";
+        let (result, refs) = preprocess_pr_body(body);
+        assert!(result.contains("[🎬 Video]"));
+        assert!(!result.contains("997a4417"));
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].media_type, MediaType::Video);
     }
