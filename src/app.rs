@@ -10,7 +10,7 @@ use crossterm::event::{
 use octocrab::Octocrab;
 use ratatui::{
     DefaultTerminal, Frame,
-    layout::{Constraint, Direction, Layout, Position, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
@@ -586,7 +586,7 @@ impl App {
         let zoom_indicator = if self.zoomed { " [ZOOM]" } else { "" };
 
         let header_base = format!(
-            " prism - {} PR #{}: {}{}{}{} | ?: help",
+            " prism - {}#{}: {}{}{}{} | ?: help",
             self.repo,
             self.pr_number,
             self.pr_title,
@@ -864,32 +864,8 @@ impl App {
             frame.render_widget(msg_paragraph, msg_area);
         }
 
-        // Diff タイトル
-        let title = match (&self.mode, &self.line_selection) {
-            (AppMode::LineSelect | AppMode::CommentInput, Some(selection)) => {
-                let count = selection.count(self.cursor_line);
-                format!(
-                    " Diff - {} line{} selected ",
-                    count,
-                    if count == 1 { "" } else { "s" }
-                )
-            }
-            _ => {
-                if self.diff_wrap {
-                    " Diff [WRAP] ".to_string()
-                } else {
-                    " Diff ".to_string()
-                }
-            }
-        };
-
-        let block = Block::default()
-            .title(title)
-            .borders(Borders::ALL)
-            .border_style(border_style);
-
         // 選択中ファイルを取得し、所有型にクローンして self の借用を解放
-        let (has_file, has_patch, patch, filename, file_status) = {
+        let (has_file, has_patch, patch, filename, file_status, additions, deletions) = {
             let file = self.current_file();
             let has_file = file.is_some();
             let has_patch = file.is_some_and(|f| f.patch.is_some());
@@ -899,8 +875,77 @@ impl App {
                 .to_string();
             let filename = file.map(|f| f.filename.as_str()).unwrap_or("").to_string();
             let file_status = file.map(|f| f.status.as_str()).unwrap_or("").to_string();
-            (has_file, has_patch, patch, filename, file_status)
+            let additions = file.map(|f| f.additions).unwrap_or(0);
+            let deletions = file.map(|f| f.deletions).unwrap_or(0);
+            (
+                has_file,
+                has_patch,
+                patch,
+                filename,
+                file_status,
+                additions,
+                deletions,
+            )
         };
+
+        // Diff タイトル（左: パス+選択状態, 右: 変更行数）
+        let right_title = if has_file && !filename.is_empty() {
+            format!(" +{} -{} ", additions, deletions)
+        } else {
+            String::new()
+        };
+
+        let left_title = {
+            let selection_suffix = match (&self.mode, &self.line_selection) {
+                (AppMode::LineSelect | AppMode::CommentInput, Some(sel)) => {
+                    let count = sel.count(self.cursor_line);
+                    format!(
+                        " - {} line{} selected",
+                        count,
+                        if count == 1 { "" } else { "s" }
+                    )
+                }
+                _ => String::new(),
+            };
+
+            let file_path_part = if has_file && !filename.is_empty() {
+                let wrap_width = if self.diff_wrap { 7 } else { 0 }; // " [WRAP]"
+                let max_path_width = (area.width as usize)
+                    .saturating_sub(2) // borders
+                    .saturating_sub(7) // " Diff " + trailing " "
+                    .saturating_sub(right_title.len())
+                    .saturating_sub(wrap_width)
+                    .saturating_sub(selection_suffix.len());
+                truncate_path(&filename, max_path_width)
+            } else {
+                String::new()
+            };
+
+            let wrap_suffix = if self.diff_wrap { " [WRAP]" } else { "" };
+
+            if file_path_part.is_empty() {
+                if selection_suffix.is_empty() {
+                    format!(" Diff{} ", wrap_suffix)
+                } else {
+                    format!(" Diff{}{} ", selection_suffix, wrap_suffix)
+                }
+            } else if selection_suffix.is_empty() {
+                format!(" Diff {}{} ", file_path_part, wrap_suffix)
+            } else {
+                format!(
+                    " Diff {}{}{} ",
+                    file_path_part, selection_suffix, wrap_suffix
+                )
+            }
+        };
+
+        let mut block = Block::default()
+            .title(left_title)
+            .borders(Borders::ALL)
+            .border_style(border_style);
+        if !right_title.is_empty() {
+            block = block.title_top(Line::from(right_title).alignment(Alignment::Right));
+        }
 
         // バイナリファイルまたは diff がない場合
         if has_file && !has_patch {
@@ -2292,6 +2337,27 @@ impl App {
             Panel::FileTree => Panel::CommitList,
             Panel::DiffView => unreachable!(),
         }
+    }
+}
+
+/// パスを最大幅に収まるように先頭を省略する（ASCII パスを前提）
+/// 例: "src/components/MyComponent/index.tsx" → ".../MyComponent/index.tsx"
+fn truncate_path(path: &str, max_width: usize) -> String {
+    if path.len() <= max_width {
+        return path.to_string();
+    }
+    if max_width < 4 {
+        // "..." すら収まらない幅ではそのまま切り詰める
+        return path[..max_width].to_string();
+    }
+    // "..." prefix = 3 chars
+    let available = max_width - 3;
+    // パスの後ろから available 文字分を取り、最初の '/' 以降を使う
+    let tail = &path[path.len() - available..];
+    if let Some(pos) = tail.find('/') {
+        format!("...{}", &tail[pos..])
+    } else {
+        format!("...{}", tail)
     }
 }
 
@@ -4403,5 +4469,38 @@ mod tests {
         let line = App::format_hunk_header("@@ -0,0 +1,5 @@", 30, Style::default());
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("L1-5"));
+    }
+
+    #[test]
+    fn test_truncate_path_no_truncation() {
+        assert_eq!(truncate_path("src/main.rs", 20), "src/main.rs");
+    }
+
+    #[test]
+    fn test_truncate_path_exact_width() {
+        assert_eq!(truncate_path("src/main.rs", 11), "src/main.rs");
+    }
+
+    #[test]
+    fn test_truncate_path_with_slash() {
+        let result = truncate_path("src/components/MyComponent/index.tsx", 20);
+        assert!(result.starts_with("..."));
+        assert!(result.len() <= 20);
+        assert!(result.contains("/"));
+    }
+
+    #[test]
+    fn test_truncate_path_without_slash_in_tail() {
+        // tail 部分に '/' がない場合はそのまま "...tail"
+        let result = truncate_path("abcdefghij", 8);
+        assert_eq!(result, "...fghij");
+    }
+
+    #[test]
+    fn test_truncate_path_small_width() {
+        assert_eq!(truncate_path("src/main.rs", 3), "src");
+        assert_eq!(truncate_path("src/main.rs", 2), "sr");
+        assert_eq!(truncate_path("src/main.rs", 1), "s");
+        assert_eq!(truncate_path("src/main.rs", 0), "");
     }
 }
