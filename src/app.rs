@@ -209,6 +209,9 @@ pub struct App {
     /// Diff ハイライトキャッシュ（commit_idx, file_idx, highlighted Text）
     /// ファイル選択が変わらない限り delta を再実行しない
     diff_highlight_cache: Option<(usize, usize, ratatui::text::Text<'static>)>,
+    /// Wrap 有効時の視覚行オフセットキャッシュ
+    /// offsets[i] = 論理行 i が始まる視覚行番号（render 時に計算）
+    diff_visual_offsets: Option<Vec<usize>>,
     /// カラーテーマ（ライト/ダーク）
     theme: ThemeMode,
     /// 各ペインの描画領域（マウスヒットテスト用、render 時に更新）
@@ -283,6 +286,7 @@ impl App {
             diff_wrap: false,
             viewed_files: HashSet::new(),
             diff_highlight_cache: None,
+            diff_visual_offsets: None,
             theme,
             pr_desc_rect: Rect::default(),
             commit_list_rect: Rect::default(),
@@ -1024,6 +1028,9 @@ impl App {
 
         // Hunk ヘッダーを整形表示に置換
         let patch_lines: Vec<&str> = patch.lines().collect();
+
+        // delta 出力の余分な末尾行を除去（patch 行数と一致させる）
+        text.lines.truncate(patch_lines.len());
         for (idx, line) in text.lines.iter_mut().enumerate() {
             if let Some(raw) = patch_lines.get(idx)
                 && raw.starts_with("@@")
@@ -1032,10 +1039,29 @@ impl App {
             }
         }
 
-        // カーソル/選択/ペンディングコメント/既存コメントのオーバーレイを適用
+        // Wrap モードで空白のみの行が余分に折り返されるのを防ぐ。
+        // ratatui の Paragraph + Wrap { trim: false } は " " を 2 visual rows に展開するため、
+        // 空白のみの spans をクリアして空 Line にする（1 visual row でレンダリングされる）。
+        if self.diff_wrap {
+            for line in &mut text.lines {
+                if line.spans.iter().all(|s| s.content.trim().is_empty()) {
+                    line.spans.clear();
+                }
+            }
+        }
+
+        // 既存コメントの下線 / 💬 マーカーをテキスト側に適用
+        // 背景色オーバーレイ（カーソル/選択/pending）は render 後に Buffer で全幅適用する
         let show_cursor = self.focused_panel == Panel::DiffView;
         let has_selection = self.mode == AppMode::LineSelect || self.mode == AppMode::CommentInput;
         let existing_counts = self.existing_comment_counts();
+        let cursor_bg = match self.theme {
+            ThemeMode::Dark => Color::DarkGray,
+            ThemeMode::Light => Color::Indexed(254),
+        };
+
+        // 背景色が必要な論理行を収集（render 後に Buffer で適用）
+        let mut bg_lines: Vec<(usize, Color)> = Vec::new();
 
         for (idx, line) in text.lines.iter_mut().enumerate() {
             let is_selected = has_selection
@@ -1050,23 +1076,10 @@ impl App {
                 .any(|c| c.file_path == filename && idx >= c.start_line && idx <= c.end_line);
             let existing_count = existing_counts.get(&idx).copied().unwrap_or(0);
 
-            // 背景色オーバーレイ（優先順位: 選択 > カーソル > pending(青)）
-            let cursor_bg = match self.theme {
-                ThemeMode::Dark => Color::DarkGray,
-                ThemeMode::Light => Color::Indexed(254),
-            };
-            let bg = if is_selected || is_cursor {
-                Some(cursor_bg)
+            if is_selected || is_cursor {
+                bg_lines.push((idx, cursor_bg));
             } else if is_pending {
-                Some(Color::Indexed(17))
-            } else {
-                None
-            };
-
-            if let Some(bg_color) = bg {
-                for span in &mut line.spans {
-                    span.style = span.style.bg(bg_color);
-                }
+                bg_lines.push((idx, Color::Indexed(17)));
             }
 
             // 既存コメント行は下線で表示（背景色だとテーマ依存で文字が見えなくなるため）
@@ -1088,6 +1101,25 @@ impl App {
             }
         }
 
+        // Wrap 有効時、レンダリングに使う実テキストから視覚行オフセットを計算してキャッシュ。
+        // visual_line_offset / visual_to_logical_line はこのキャッシュを参照する。
+        if self.diff_wrap {
+            let mut offsets = Vec::with_capacity(text.lines.len() + 1);
+            let mut visual = 0usize;
+            offsets.push(0);
+            for line in &text.lines {
+                let count = Paragraph::new(line.clone())
+                    .wrap(Wrap { trim: false })
+                    .line_count(inner_width)
+                    .max(1);
+                visual += count;
+                offsets.push(visual);
+            }
+            self.diff_visual_offsets = Some(offsets);
+        } else {
+            self.diff_visual_offsets = None;
+        }
+
         let paragraph = Paragraph::new(text)
             .block(block)
             .scroll((self.diff_scroll, 0));
@@ -1097,6 +1129,39 @@ impl App {
             paragraph
         };
         frame.render_widget(paragraph, diff_area);
+
+        // Buffer に直接背景色を適用（全幅ハイライト）
+        // Paragraph render 後に適用することで空行や行末の余白もカバーする
+        if !bg_lines.is_empty() {
+            let inner = Rect {
+                x: diff_area.x + 1,
+                y: diff_area.y + 1,
+                width: inner_width,
+                height: diff_area.height.saturating_sub(2),
+            };
+            let scroll = self.diff_scroll as usize;
+            let buf = frame.buffer_mut();
+            for &(logical_line, bg_color) in &bg_lines {
+                let vis_start = self.visual_line_offset(logical_line);
+                let vis_end = self.visual_line_offset(logical_line + 1);
+                for vis_row in vis_start..vis_end {
+                    if vis_row < scroll {
+                        continue;
+                    }
+                    let screen_row = (vis_row - scroll) as u16;
+                    if screen_row >= inner.height {
+                        continue;
+                    }
+                    let row_rect = Rect {
+                        x: inner.x,
+                        y: inner.y + screen_row,
+                        width: inner.width,
+                        height: 1,
+                    };
+                    buf.set_style(row_rect, Style::default().bg(bg_color));
+                }
+            }
+        }
     }
 
     fn render_comment_input(&self, frame: &mut Frame, area: Rect) {
@@ -1604,6 +1669,8 @@ impl App {
                     self.diff_wrap = true;
                     self.diff_scroll = visual as u16;
                 }
+                // 次の render で再計算されるまでの1フレームの不整合を防ぐ
+                self.diff_visual_offsets = None;
                 self.ensure_cursor_visible();
             }
             KeyCode::Char('z') => {
@@ -2114,11 +2181,19 @@ impl App {
     /// wrap 有効時に論理行の表示行オフセットを計算する。
     /// 論理行 `logical_line` が始まる表示行番号を返す。
     /// `logical_line == line_count` のとき、合計表示行数を返す。
-    /// ratatui の Paragraph::line_count() を使って正確なワードラップ行数を取得する。
+    /// render 時に計算したキャッシュを優先し、未計算時は patch テキストからフォールバック。
     fn visual_line_offset(&self, logical_line: usize) -> usize {
         if !self.diff_wrap {
             return logical_line;
         }
+        // キャッシュがあればそれを使う（レンダリングと同じデータソース）
+        if let Some(offsets) = &self.diff_visual_offsets {
+            return offsets
+                .get(logical_line)
+                .copied()
+                .unwrap_or_else(|| offsets.last().copied().unwrap_or(logical_line));
+        }
+        // フォールバック: patch テキストから計算（初回 render 前・テスト用）
         let width = self.diff_view_width;
         if width == 0 {
             return logical_line;
@@ -2145,6 +2220,15 @@ impl App {
         if !self.diff_wrap {
             return visual_target;
         }
+        // キャッシュがあればそれを使う
+        if let Some(offsets) = &self.diff_visual_offsets {
+            // offsets[i] = 論理行 i の開始表示行。visual_target 以下で最大の i を探す。
+            return match offsets.binary_search(&visual_target) {
+                Ok(i) => i,
+                Err(i) => i.saturating_sub(1),
+            };
+        }
+        // フォールバック: patch テキストから計算
         let width = self.diff_view_width;
         if width == 0 {
             return visual_target;
@@ -4609,5 +4693,110 @@ mod tests {
         assert_eq!(truncate_path("src/main.rs", 2), "sr");
         assert_eq!(truncate_path("src/main.rs", 1), "s");
         assert_eq!(truncate_path("src/main.rs", 0), "");
+    }
+
+    #[test]
+    fn test_whitespace_only_lines_cleared_for_wrap() {
+        // 空白のみの行がwrapモードで余分な行数を返すratatatuiのバグへの対策を検証する
+        use ratatui::text::Line as RLine;
+        use ratatui::widgets::{Paragraph, Wrap};
+
+        // ratatui のバグ: 空白1文字の Line が wrap で line_count 2 を返す
+        let count_space = Paragraph::new(RLine::raw(" "))
+            .wrap(Wrap { trim: false })
+            .line_count(80);
+        assert_eq!(count_space, 2);
+
+        // spans が空の Line なら line_count は正しく 1 を返す
+        let count_default = Paragraph::new(RLine::default())
+            .wrap(Wrap { trim: false })
+            .line_count(80);
+        assert_eq!(count_default, 1);
+
+        // 修正ロジックの検証: 空白のみの spans をクリアすると line_count が 1 になる
+        let mut line = RLine::raw(" ");
+        let all_whitespace = line.spans.iter().all(|s| s.content.trim().is_empty());
+        assert!(all_whitespace);
+        line.spans.clear();
+        let count_cleared = Paragraph::new(line)
+            .wrap(Wrap { trim: false })
+            .line_count(80);
+        assert_eq!(count_cleared, 1);
+    }
+
+    // キャッシュされた表示行オフセットから論理行の開始位置を正しく返すことを検証
+    #[test]
+    fn test_visual_line_offset_with_cache() {
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            String::new(),
+            vec![],
+            create_empty_files_map(),
+            vec![],
+            None,
+            ThemeMode::Dark,
+        );
+        app.diff_wrap = true;
+        // line 0 → row 0, line 1 → row 1, line 2 → row 3, line 3 → row 4, total → 7
+        app.diff_visual_offsets = Some(vec![0, 1, 3, 4, 7]);
+
+        assert_eq!(app.visual_line_offset(0), 0);
+        assert_eq!(app.visual_line_offset(1), 1);
+        assert_eq!(app.visual_line_offset(2), 3);
+        assert_eq!(app.visual_line_offset(3), 4);
+        assert_eq!(app.visual_line_offset(4), 7); // 合計表示行数
+    }
+
+    // キャッシュから表示行→論理行の逆引きが正しく行われることを検証
+    #[test]
+    fn test_visual_to_logical_line_with_cache() {
+        let mut app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            String::new(),
+            vec![],
+            create_empty_files_map(),
+            vec![],
+            None,
+            ThemeMode::Dark,
+        );
+        app.diff_wrap = true;
+        // line 0 → row 0, line 1 → rows 1-2, line 2 → row 3, line 3 → rows 4-6, total → 7
+        app.diff_visual_offsets = Some(vec![0, 1, 3, 4, 7]);
+
+        assert_eq!(app.visual_to_logical_line(0), 0);
+        assert_eq!(app.visual_to_logical_line(1), 1);
+        assert_eq!(app.visual_to_logical_line(2), 1); // row 2 は line 1 の折り返し部分
+        assert_eq!(app.visual_to_logical_line(3), 2);
+        assert_eq!(app.visual_to_logical_line(4), 3);
+        assert_eq!(app.visual_to_logical_line(5), 3); // row 5 は line 3 の折り返し部分
+        assert_eq!(app.visual_to_logical_line(6), 3); // row 6 も line 3 の一部
+    }
+
+    // wrap 無効時は論理行＝表示行としてそのまま返すことを検証
+    #[test]
+    fn test_visual_line_offset_no_wrap() {
+        let app = App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            String::new(),
+            vec![],
+            create_empty_files_map(),
+            vec![],
+            None,
+            ThemeMode::Dark,
+        );
+        // diff_wrap はデフォルトで false
+
+        assert_eq!(app.visual_line_offset(0), 0);
+        assert_eq!(app.visual_line_offset(5), 5);
+        assert_eq!(app.visual_to_logical_line(5), 5);
     }
 }
