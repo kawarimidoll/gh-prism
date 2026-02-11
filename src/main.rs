@@ -91,11 +91,16 @@ async fn fetch_all(
     repo: &str,
     pr_number: u64,
     commits: &[CommitInfo],
-) -> Result<(String, String, HashMap<String, Vec<DiffFile>>)> {
+) -> Result<(String, String, String, HashMap<String, Vec<DiffFile>>)> {
     // PR情報を取得
     let pr = github::pr::fetch_pr(client, owner, repo, pr_number).await?;
     let pr_title = pr.title.unwrap_or_default();
     let pr_body = pr.body.unwrap_or_default();
+    let pr_author = pr
+        .user
+        .as_ref()
+        .map(|u| u.login.clone())
+        .unwrap_or_default();
 
     // 全コミットのファイルを並列取得
     let total = commits.len();
@@ -140,7 +145,7 @@ async fn fetch_all(
         }
     }
 
-    Ok((pr_title, pr_body, files_map))
+    Ok((pr_title, pr_body, pr_author, files_map))
 }
 
 #[tokio::main]
@@ -168,7 +173,12 @@ async fn main() -> Result<()> {
                         "Using cached data (HEAD: {})",
                         &head_sha[..7.min(head_sha.len())]
                     );
-                    return Ok((cached.pr_title, cached.pr_body, cached.files_map));
+                    return Ok((
+                        cached.pr_title,
+                        cached.pr_body,
+                        cached.pr_author,
+                        cached.files_map,
+                    ));
                 }
                 eprintln!(
                     "Cache stale (expected {}, got {})",
@@ -181,7 +191,7 @@ async fn main() -> Result<()> {
         } else {
             eprintln!("Cache disabled, fetching from API...");
         }
-        let (title, body, fmap) =
+        let (title, body, author, fmap) =
             fetch_all(&client, &owner, &repo, cli.pr_number, &commits).await?;
         github::cache::write_cache(
             &owner,
@@ -191,17 +201,18 @@ async fn main() -> Result<()> {
                 head_sha: head_sha.to_string(),
                 pr_title: title.clone(),
                 pr_body: body.clone(),
+                pr_author: author.clone(),
                 commits: commits.clone(),
                 files_map: fmap.clone(),
             },
         );
-        Ok((title, body, fmap))
+        Ok((title, body, author, fmap))
     };
 
     let comments_future =
         github::comments::fetch_review_comments(&client, &owner, &repo, cli.pr_number);
 
-    let ((pr_title, pr_body, files_map), review_comments) =
+    let ((pr_title, pr_body, pr_author, files_map), review_comments) =
         tokio::try_join!(data_future, comments_future)?;
 
     // テーマ検出（ratatui::init() の前に実行 — raw mode では OSC クエリが動かない）
@@ -221,6 +232,7 @@ async fn main() -> Result<()> {
         format!("{}/{}", owner, repo),
         pr_title,
         pr_body,
+        pr_author,
         commits,
         files_map,
         review_comments,

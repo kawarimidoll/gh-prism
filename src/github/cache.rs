@@ -10,6 +10,7 @@ pub struct PrCache {
     pub head_sha: String,
     pub pr_title: String,
     pub pr_body: String,
+    pub pr_author: String,
     pub commits: Vec<CommitInfo>,
     pub files_map: HashMap<String, Vec<DiffFile>>,
 }
@@ -63,6 +64,7 @@ mod tests {
             head_sha: "abc1234".to_string(),
             pr_title: "Test PR".to_string(),
             pr_body: "Test body".to_string(),
+            pr_author: "test-author".to_string(),
             commits: vec![CommitInfo {
                 sha: "abc1234".to_string(),
                 commit: CommitDetail {
@@ -92,6 +94,7 @@ mod tests {
         let loaded = loaded.unwrap();
         assert_eq!(loaded.head_sha, "abc1234");
         assert_eq!(loaded.pr_title, "Test PR");
+        assert_eq!(loaded.pr_author, "test-author");
         assert_eq!(loaded.commits.len(), 1);
         assert_eq!(loaded.files_map.len(), 1);
 
