@@ -1,3 +1,9 @@
+mod style;
+mod types;
+
+use style::PrDescStyleSheet;
+pub use types::*;
+
 use crate::git::diff::highlight_diff;
 use crate::github::comments::ReviewComment;
 use crate::github::commits::CommitInfo;
@@ -20,229 +26,9 @@ use ratatui_image::StatefulImage;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::runtime::Handle;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-
-/// ターミナルのカラーテーマ
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum ThemeMode {
-    #[default]
-    Dark,
-    Light,
-}
-
-/// PR Description のマークダウンレンダリング用カスタム StyleSheet
-#[derive(Clone, Copy, Debug)]
-struct PrDescStyleSheet {
-    theme: ThemeMode,
-}
-
-impl tui_markdown::StyleSheet for PrDescStyleSheet {
-    fn heading(&self, level: u8) -> Style {
-        match self.theme {
-            ThemeMode::Dark => match level {
-                1 => Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-                2 => Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-                3 => Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-                _ => Style::default()
-                    .fg(Color::Blue)
-                    .add_modifier(Modifier::BOLD),
-            },
-            ThemeMode::Light => match level {
-                1 => Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-                2 => Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-                3 => Style::default()
-                    .fg(Color::Blue)
-                    .add_modifier(Modifier::BOLD),
-                _ => Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            },
-        }
-    }
-
-    fn code(&self) -> Style {
-        match self.theme {
-            // 256色パレットのグレースケール（232=最暗, 255=最明）
-            ThemeMode::Dark => Style::default().bg(Color::Indexed(238)),
-            ThemeMode::Light => Style::default().bg(Color::Indexed(253)),
-        }
-    }
-
-    fn link(&self) -> Style {
-        Style::default()
-            .fg(Color::Blue)
-            .add_modifier(Modifier::UNDERLINED)
-    }
-
-    fn blockquote(&self) -> Style {
-        match self.theme {
-            ThemeMode::Dark => Style::default()
-                .fg(Color::Gray)
-                .add_modifier(Modifier::ITALIC),
-            ThemeMode::Light => Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::ITALIC),
-        }
-    }
-
-    fn heading_meta(&self) -> Style {
-        Style::default().add_modifier(Modifier::DIM)
-    }
-
-    fn metadata_block(&self) -> Style {
-        Style::default().add_modifier(Modifier::DIM)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Panel {
-    PrDescription,
-    CommitList,
-    FileTree,
-    DiffView,
-}
-
-/// アプリケーションのモード
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum AppMode {
-    #[default]
-    Normal,
-    LineSelect,
-    CommentInput,
-    CommentView,
-    ReviewSubmit,
-    ReviewBodyInput,
-    QuitConfirm,
-    Help,
-    MediaViewer,
-}
-
-/// レビューイベントタイプ
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ReviewEvent {
-    Comment,
-    Approve,
-    RequestChanges,
-}
-
-impl ReviewEvent {
-    pub const ALL: [ReviewEvent; 3] = [
-        ReviewEvent::Comment,
-        ReviewEvent::Approve,
-        ReviewEvent::RequestChanges,
-    ];
-
-    pub fn as_api_str(&self) -> &str {
-        match self {
-            ReviewEvent::Comment => "COMMENT",
-            ReviewEvent::Approve => "APPROVE",
-            ReviewEvent::RequestChanges => "REQUEST_CHANGES",
-        }
-    }
-
-    pub fn label(&self) -> &str {
-        match self {
-            ReviewEvent::Comment => "Comment",
-            ReviewEvent::Approve => "Approve",
-            ReviewEvent::RequestChanges => "Request Changes",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StatusLevel {
-    Info,
-    Error,
-}
-
-#[derive(Clone, Debug)]
-pub struct StatusMessage {
-    pub body: String,
-    pub level: StatusLevel,
-    pub created_at: Instant,
-}
-
-impl StatusMessage {
-    pub fn info(body: impl Into<String>) -> Self {
-        Self {
-            body: body.into(),
-            level: StatusLevel::Info,
-            created_at: Instant::now(),
-        }
-    }
-
-    pub fn error(body: impl Into<String>) -> Self {
-        Self {
-            body: body.into(),
-            level: StatusLevel::Error,
-            created_at: Instant::now(),
-        }
-    }
-
-    pub fn is_expired(&self) -> bool {
-        self.created_at.elapsed() >= Duration::from_secs(3)
-    }
-}
-
-/// 行選択の状態（アンカー位置を保持）
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct LineSelection {
-    /// 選択開始位置（v を押した時のカーソル位置）
-    pub anchor: usize,
-}
-
-impl LineSelection {
-    /// 選択範囲を取得（常に start <= end）
-    pub fn range(&self, cursor: usize) -> (usize, usize) {
-        if self.anchor <= cursor {
-            (self.anchor, cursor)
-        } else {
-            (cursor, self.anchor)
-        }
-    }
-
-    /// 選択行数を取得
-    pub fn count(&self, cursor: usize) -> usize {
-        let (start, end) = self.range(cursor);
-        end - start + 1
-    }
-}
-
-/// 保留中のレビューコメント
-pub struct PendingComment {
-    pub file_path: String,
-    pub start_line: usize,
-    pub end_line: usize,
-    pub body: String,
-    pub commit_sha: String,
-}
-
-/// メディア種別
-#[derive(Debug, Clone, PartialEq)]
-pub enum MediaType {
-    Image,
-    Video,
-}
-
-/// PR body 中のメディア参照
-#[derive(Debug, Clone)]
-pub struct MediaRef {
-    pub media_type: MediaType,
-    pub url: String,
-    pub alt: String,
-}
 
 /// PR body から画像 URL のみを軽量に収集する。
 /// `preprocess_pr_body` と異なり、テキスト置換は行わない。
@@ -3558,6 +3344,7 @@ fn truncate_path(path: &str, max_width: usize) -> String {
 mod tests {
     use super::*;
     use crate::github::commits::{CommitDetail, CommitInfo};
+    use std::time::Instant;
 
     fn create_test_commits() -> Vec<CommitInfo> {
         vec![
