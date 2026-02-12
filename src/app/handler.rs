@@ -1,3 +1,5 @@
+//! キーボード・マウスイベントのハンドラー関数群
+
 use super::*;
 use crossterm::event::{
     self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
@@ -84,6 +86,7 @@ impl App {
         }
     }
 
+    /// イベントループからのイベント受信・ディスパッチ
     pub(super) fn handle_events(&mut self) -> Result<()> {
         // 250ms 以内にイベントがなければ早期リターン（render ループを回す）
         if !event::poll(Duration::from_millis(250))? {
@@ -119,6 +122,7 @@ impl App {
         Ok(())
     }
 
+    /// 通常モードのキー処理
     pub(super) fn handle_normal_mode(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         // 2キーシーケンスの処理（] or [ の後の2文字目）
         if let Some(first) = self.pending_key.take() {
@@ -321,6 +325,7 @@ impl App {
         }
     }
 
+    /// 行選択モードのキー処理
     pub(super) fn handle_line_select_mode(&mut self, code: KeyCode) {
         match code {
             KeyCode::Esc => self.exit_line_select_mode(),
@@ -448,6 +453,7 @@ impl App {
         }
     }
 
+    /// ヘルプ表示モードのキー処理
     pub(super) fn handle_help_mode(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q') => {
@@ -463,6 +469,7 @@ impl App {
         }
     }
 
+    /// メディアビューアーモードのキー処理
     pub(super) fn handle_media_viewer_mode(&mut self, code: KeyCode) {
         let count = self.media_count();
         match code {
