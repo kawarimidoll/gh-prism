@@ -623,6 +623,8 @@ pub struct App {
     media_viewer_index: usize,
     /// メディアビューアの現在のレンダリング状態（画像のみ、動画は None）
     media_viewer_protocol: Option<StatefulProtocol>,
+    /// (commit_sha, filename) → 可視レビューコメント数のキャッシュ（起動時に計算）
+    visible_review_comment_cache: HashMap<(String, String), usize>,
 }
 
 impl App {
@@ -643,6 +645,10 @@ impl App {
         if !commits.is_empty() {
             commit_list_state.select(Some(0));
         }
+
+        // (commit_sha, filename) → 可視レビューコメント数を事前計算
+        let visible_review_comment_cache =
+            Self::build_visible_comment_cache(&review_comments, &files_map);
 
         // 最初のコミットのファイル数に基づいて file_list_state を初期化
         let mut file_list_state = ListState::default();
@@ -705,6 +711,7 @@ impl App {
             media_cache: MediaCache::new(),
             media_viewer_index: 0,
             media_viewer_protocol: None,
+            visible_review_comment_cache,
         }
     }
 
@@ -820,14 +827,19 @@ impl App {
             .count()
     }
 
+    /// 現在選択中のコミット SHA を返す
+    fn current_commit_sha(&self) -> Option<String> {
+        self.commit_list_state
+            .selected()
+            .and_then(|idx| self.commits.get(idx))
+            .map(|c| c.sha.clone())
+    }
+
     /// CommitList で viewed トグル（全ファイル一括）
     fn toggle_commit_viewed(&mut self) {
-        let sha = if let Some(idx) = self.commit_list_state.selected() {
-            self.commits.get(idx).map(|c| c.sha.clone())
-        } else {
-            None
+        let Some(sha) = self.current_commit_sha() else {
+            return;
         };
-        let Some(sha) = sha else { return };
         let Some(files) = self.files_map.get(&sha) else {
             return;
         };
@@ -897,6 +909,57 @@ impl App {
                 self.status_message = Some(StatusMessage::error("✗ Failed to copy to clipboard"));
             }
         }
+    }
+
+    /// (commit_sha, filename) → 可視レビューコメント数のキャッシュを構築する
+    fn build_visible_comment_cache(
+        review_comments: &[ReviewComment],
+        files_map: &HashMap<String, Vec<DiffFile>>,
+    ) -> HashMap<(String, String), usize> {
+        let mut cache = HashMap::new();
+        for (sha, files) in files_map {
+            for f in files {
+                let Some(patch) = f.patch.as_deref() else {
+                    continue;
+                };
+                let file_comments: Vec<&ReviewComment> = review_comments
+                    .iter()
+                    .filter(|c| c.path == f.filename && c.line.is_some())
+                    .collect();
+                if file_comments.is_empty() {
+                    continue;
+                }
+                let line_map = review::parse_patch_line_map(patch);
+                let mut line_set: HashSet<(usize, &str)> = HashSet::new();
+                for info in line_map.iter().flatten() {
+                    let side_str = match info.side {
+                        review::Side::Left => "LEFT",
+                        review::Side::Right => "RIGHT",
+                    };
+                    line_set.insert((info.file_line, side_str));
+                }
+                let count = file_comments
+                    .iter()
+                    .filter(|c| {
+                        let line = c.line.unwrap();
+                        let side = c.side.as_deref().unwrap_or("RIGHT");
+                        line_set.contains(&(line, side))
+                    })
+                    .count();
+                if count > 0 {
+                    cache.insert((sha.clone(), f.filename.clone()), count);
+                }
+            }
+        }
+        cache
+    }
+
+    /// キャッシュから (commit_sha, filename) の可視レビューコメント数を取得
+    fn cached_visible_comment_count(&self, commit_sha: &str, filename: &str) -> usize {
+        self.visible_review_comment_cache
+            .get(&(commit_sha.to_string(), filename.to_string()))
+            .copied()
+            .unwrap_or(0)
     }
 
     /// 現在のファイルの各 diff 行にある既存コメント数を返す（逆引きマッピング）
@@ -1303,13 +1366,47 @@ impl App {
             .map(|c| {
                 let viewed = self.is_commit_viewed(&c.sha);
                 let marker = if viewed { "✓ " } else { "  " };
-                let text = format!("{}{} {}", marker, c.short_sha(), c.message_summary());
                 let item_style = if viewed {
                     Style::default().fg(Color::DarkGray)
                 } else {
                     Style::default()
                 };
-                ListItem::new(text).style(item_style)
+                // キャッシュから可視コメント数を取得 + pending を加算
+                let comment_count = self
+                    .files_map
+                    .get(&c.sha)
+                    .map(|files| {
+                        let mut count = 0usize;
+                        for f in files {
+                            count += self.cached_visible_comment_count(&c.sha, &f.filename);
+                            count += self
+                                .pending_comments
+                                .iter()
+                                .filter(|pc| pc.commit_sha == c.sha && pc.file_path == f.filename)
+                                .count();
+                        }
+                        count
+                    })
+                    .unwrap_or(0);
+                let left_part = format!("{}{} {}", marker, c.short_sha(), c.message_summary());
+                // ボーダー左右 (2) を除いた内部幅
+                let inner = area.width.saturating_sub(2) as usize;
+                if comment_count > 0 {
+                    let badge = format!("💬 {} ", comment_count);
+                    let badge_width = UnicodeWidthStr::width(badge.as_str());
+                    let text_max = inner.saturating_sub(badge_width);
+                    let left_text = truncate_str(&left_part, text_max);
+                    let left_width = UnicodeWidthStr::width(left_text.as_str());
+                    let pad = inner.saturating_sub(left_width + badge_width);
+                    ListItem::new(Line::from(vec![
+                        Span::styled(left_text, item_style),
+                        Span::styled(" ".repeat(pad), item_style),
+                        Span::styled(badge, Style::default().fg(Color::Yellow)),
+                    ]))
+                } else {
+                    let left_text = truncate_str(&left_part, inner);
+                    ListItem::new(Line::from(vec![Span::styled(left_text, item_style)]))
+                }
             })
             .collect();
 
@@ -1335,6 +1432,7 @@ impl App {
         };
 
         let files = self.current_files();
+        let current_sha = self.current_commit_sha();
         let viewed_count = files
             .iter()
             .filter(|f| self.viewed_files.contains(&f.filename))
@@ -1361,12 +1459,39 @@ impl App {
                     Style::default()
                 };
                 let marker = if is_viewed { "✓ " } else { "  " };
-                let line = Line::from(vec![
+                // キャッシュから可視コメント数を取得 + 当該コミットの pending を加算
+                let visible_existing = current_sha
+                    .as_deref()
+                    .map(|sha| self.cached_visible_comment_count(sha, &f.filename))
+                    .unwrap_or(0);
+                let visible_pending = self
+                    .pending_comments
+                    .iter()
+                    .filter(|pc| {
+                        pc.file_path == f.filename
+                            && current_sha
+                                .as_deref()
+                                .is_some_and(|sha| sha == pc.commit_sha)
+                    })
+                    .count();
+                let comment_count = visible_existing + visible_pending;
+                let left_part = format!("{}{} {}", marker, status, f.filename);
+                let mut spans = vec![
                     Span::styled(marker, text_style),
                     Span::styled(format!("{}", status), Style::default().fg(status_color)),
                     Span::styled(format!(" {}", f.filename), text_style),
-                ]);
-                ListItem::new(line)
+                ];
+                if comment_count > 0 {
+                    let badge = format!("💬 {} ", comment_count);
+                    // ボーダー左右 (2) を除いた内部幅
+                    let inner = area.width.saturating_sub(2) as usize;
+                    let left_width = UnicodeWidthStr::width(left_part.as_str());
+                    let badge_width = UnicodeWidthStr::width(badge.as_str());
+                    let pad = inner.saturating_sub(left_width + badge_width);
+                    spans.push(Span::styled(" ".repeat(pad), text_style));
+                    spans.push(Span::styled(badge, Style::default().fg(Color::Yellow)));
+                }
+                ListItem::new(Line::from(spans))
             })
             .collect();
 
