@@ -168,6 +168,7 @@ pub async fn submit_review(
     pending_comments: &[PendingComment],
     files_map: &HashMap<String, Vec<DiffFile>>,
     event: &str,
+    body: &str,
 ) -> Result<()> {
     let mut comments = Vec::new();
 
@@ -182,7 +183,7 @@ pub async fn submit_review(
 
     let request = CreateReviewRequest {
         commit_id: head_sha.to_string(),
-        body: String::new(),
+        body: body.to_string(),
         event: event.to_string(),
         comments,
     };

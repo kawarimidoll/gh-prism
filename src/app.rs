@@ -22,7 +22,7 @@ use ratatui_image::protocol::StatefulProtocol;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tokio::runtime::Handle;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// ターミナルのカラーテーマ
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -123,6 +123,7 @@ pub enum AppMode {
     CommentInput,
     CommentView,
     ReviewSubmit,
+    ReviewBodyInput,
     QuitConfirm,
     Help,
     MediaViewer,
@@ -581,6 +582,8 @@ pub struct App {
     needs_submit: Option<ReviewEvent>,
     /// レビュー送信ダイアログのカーソル位置（0=Comment, 1=Approve, 2=RequestChanges）
     review_event_cursor: usize,
+    /// レビュー本文入力（ReviewBodyInput モード用）
+    review_body_input: String,
     /// 送信後に終了するかどうか
     quit_after_submit: bool,
     /// 2キーシーケンスの1文字目（`]` or `[`）を保持
@@ -681,6 +684,7 @@ impl App {
             status_message: None,
             needs_submit: None,
             review_event_cursor: 0,
+            review_body_input: String::new(),
             quit_after_submit: false,
             pending_key: None,
             help_scroll: 0,
@@ -1019,6 +1023,7 @@ impl App {
             AppMode::CommentInput => " [COMMENT] ",
             AppMode::CommentView => " [VIEWING] ",
             AppMode::ReviewSubmit => " [REVIEW] ",
+            AppMode::ReviewBodyInput => " [REVIEW] ",
             AppMode::QuitConfirm => " [CONFIRM] ",
             AppMode::Help => " [HELP] ",
             AppMode::MediaViewer => " [MEDIA] ",
@@ -1036,6 +1041,7 @@ impl App {
             AppMode::CommentInput => Color::Green,
             AppMode::CommentView => Color::Yellow,
             AppMode::ReviewSubmit => Color::Cyan,
+            AppMode::ReviewBodyInput => Color::Green,
             AppMode::QuitConfirm => Color::Red,
             AppMode::Help => Color::DarkGray,
             AppMode::MediaViewer => Color::DarkGray,
@@ -1043,7 +1049,7 @@ impl App {
         // CommentView / ReviewSubmit は明るい bg なので常に Black。
         // 他のモードはテーマに応じて White / Black を切り替え。
         let header_fg = match self.mode {
-            AppMode::CommentView | AppMode::ReviewSubmit => Color::Black,
+            AppMode::CommentView | AppMode::ReviewSubmit | AppMode::ReviewBodyInput => Color::Black,
             _ => match self.theme {
                 ThemeMode::Dark => Color::White,
                 ThemeMode::Light => Color::Black,
@@ -1157,6 +1163,7 @@ impl App {
         match self.mode {
             AppMode::CommentView => self.render_comment_view_dialog(frame, area),
             AppMode::ReviewSubmit => self.render_review_submit_dialog(frame, area),
+            AppMode::ReviewBodyInput => self.render_review_body_input_dialog(frame, area),
             AppMode::QuitConfirm => self.render_quit_confirm_dialog(frame, area),
             AppMode::Help => self.render_help_dialog(frame, area),
             AppMode::MediaViewer => self.render_media_viewer_overlay(frame, area),
@@ -1809,7 +1816,7 @@ impl App {
         ));
         lines.push(Line::raw(""));
         lines.push(Line::styled(
-            "  j/k: select  Enter: submit",
+            "  j/k: select  Enter: next",
             Style::default().fg(Color::DarkGray),
         ));
         lines.push(Line::styled(
@@ -1824,6 +1831,62 @@ impl App {
                 .border_style(Style::default().fg(Color::Cyan)),
         );
         frame.render_widget(paragraph, dialog);
+    }
+
+    fn render_review_body_input_dialog(&self, frame: &mut Frame, area: Rect) {
+        let dialog = Self::centered_rect(50, 8, area);
+        frame.render_widget(ratatui::widgets::Clear, dialog);
+
+        let event = ReviewEvent::ALL[self.review_event_cursor];
+
+        // ダイアログ内で表示できる入力テキスト幅を計算
+        // dialog 内部幅 = dialog.width - 2(border), プレフィックス "  > " = 4文字
+        let max_visible = dialog.width.saturating_sub(2 + 4) as usize;
+        let input_width = self.review_body_input.width();
+        let visible_text = if input_width <= max_visible {
+            self.review_body_input.as_str()
+        } else {
+            // 末尾を表示: バイト境界を正しく扱うため文字単位でスキップ
+            let skip_width = input_width - max_visible;
+            let mut w = 0;
+            let mut byte_offset = 0;
+            for (i, ch) in self.review_body_input.char_indices() {
+                if w >= skip_width {
+                    byte_offset = i;
+                    break;
+                }
+                w += ch.width().unwrap_or(0);
+                byte_offset = i + ch.len_utf8();
+            }
+            &self.review_body_input[byte_offset..]
+        };
+
+        let lines = vec![
+            Line::raw(""),
+            Line::styled(
+                format!("  Event: {}", event.label()),
+                Style::default().fg(Color::Cyan),
+            ),
+            Line::raw(""),
+            Line::styled(format!("  > {}", visible_text), Style::default()),
+            Line::raw(""),
+            Line::styled(
+                "  Enter: submit  Esc: back",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ];
+
+        let paragraph = Paragraph::new(lines).block(
+            Block::default()
+                .title(" Review Body (optional) ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Green)),
+        );
+        frame.render_widget(paragraph, dialog);
+
+        // カーソル表示（表示テキストの末尾に配置）
+        let cursor_x = dialog.x + 5 + visible_text.width() as u16;
+        frame.set_cursor_position((cursor_x, dialog.y + 4));
     }
 
     fn render_quit_confirm_dialog(&self, frame: &mut Frame, area: Rect) {
@@ -2154,6 +2217,7 @@ impl App {
                 AppMode::CommentInput => self.handle_comment_input_mode(key.code),
                 AppMode::CommentView => self.handle_comment_view_mode(key.code),
                 AppMode::ReviewSubmit => self.handle_review_submit_mode(key.code),
+                AppMode::ReviewBodyInput => self.handle_review_body_input_mode(key.code),
                 AppMode::QuitConfirm => self.handle_quit_confirm_mode(key.code),
                 AppMode::Help => self.handle_help_mode(key.code),
                 AppMode::MediaViewer => self.handle_media_viewer_mode(key.code),
@@ -2474,12 +2538,34 @@ impl App {
                     self.mode = AppMode::Normal;
                     return;
                 }
+                self.review_body_input.clear();
+                self.mode = AppMode::ReviewBodyInput;
+            }
+            _ => {}
+        }
+    }
+
+    /// レビュー本文入力モードのキー処理
+    fn handle_review_body_input_mode(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.review_body_input.clear();
+                self.mode = AppMode::ReviewSubmit;
+            }
+            KeyCode::Enter => {
+                let event = ReviewEvent::ALL[self.review_event_cursor];
                 self.status_message = Some(StatusMessage::info(format!(
                     "Submitting ({})...",
                     event.label()
                 )));
                 self.needs_submit = Some(event);
                 self.mode = AppMode::Normal;
+            }
+            KeyCode::Backspace => {
+                self.review_body_input.pop();
+            }
+            KeyCode::Char(c) => {
+                self.review_body_input.push(c);
             }
             _ => {}
         }
@@ -2644,6 +2730,7 @@ impl App {
                 &self.pending_comments,
                 &self.files_map,
                 event.as_api_str(),
+                &self.review_body_input,
             ))
         });
 
@@ -2661,6 +2748,7 @@ impl App {
                 };
                 self.status_message = Some(StatusMessage::info(msg));
                 self.pending_comments.clear();
+                self.review_body_input.clear();
             }
             Err(e) => {
                 self.status_message = Some(StatusMessage::error(format!("✗ Failed: {}", e)));
@@ -4099,15 +4187,16 @@ mod tests {
     }
 
     #[test]
-    fn test_review_submit_approve_without_comments() {
+    fn test_review_submit_approve_transitions_to_body_input() {
         let mut app = create_app_with_patch();
         app.mode = AppMode::ReviewSubmit;
         app.review_event_cursor = 1; // Approve
 
-        // pending_comments が空でも Approve は送信可能
+        // pending_comments が空でも Approve → ReviewBodyInput に遷移
         app.handle_review_submit_mode(KeyCode::Enter);
-        assert_eq!(app.mode, AppMode::Normal);
-        assert_eq!(app.needs_submit, Some(ReviewEvent::Approve));
+        assert_eq!(app.mode, AppMode::ReviewBodyInput);
+        assert!(app.review_body_input.is_empty());
+        assert!(app.needs_submit.is_none());
     }
 
     #[test]
@@ -5897,5 +5986,72 @@ mod tests {
         let body = "Just plain text\nwith no images";
         let urls = collect_image_urls(body);
         assert!(urls.is_empty());
+    }
+
+    #[test]
+    fn test_review_body_input_typing() {
+        let mut app = create_app_with_patch();
+        app.mode = AppMode::ReviewBodyInput;
+        app.review_event_cursor = 1; // Approve
+
+        // 文字入力
+        app.handle_review_body_input_mode(KeyCode::Char('L'));
+        app.handle_review_body_input_mode(KeyCode::Char('G'));
+        app.handle_review_body_input_mode(KeyCode::Char('T'));
+        app.handle_review_body_input_mode(KeyCode::Char('M'));
+        assert_eq!(app.review_body_input, "LGTM");
+
+        // Backspace
+        app.handle_review_body_input_mode(KeyCode::Backspace);
+        assert_eq!(app.review_body_input, "LGT");
+    }
+
+    #[test]
+    fn test_review_body_input_enter_submits() {
+        let mut app = create_app_with_patch();
+        app.mode = AppMode::ReviewBodyInput;
+        app.review_event_cursor = 1; // Approve
+        app.review_body_input = "LGTM!".to_string();
+
+        app.handle_review_body_input_mode(KeyCode::Enter);
+        assert_eq!(app.mode, AppMode::Normal);
+        assert_eq!(app.needs_submit, Some(ReviewEvent::Approve));
+        assert!(app.status_message.is_some());
+    }
+
+    #[test]
+    fn test_review_body_input_empty_body_submits() {
+        let mut app = create_app_with_patch();
+        app.mode = AppMode::ReviewBodyInput;
+        app.review_event_cursor = 1; // Approve
+
+        // 空bodyでも送信可能
+        app.handle_review_body_input_mode(KeyCode::Enter);
+        assert_eq!(app.mode, AppMode::Normal);
+        assert_eq!(app.needs_submit, Some(ReviewEvent::Approve));
+    }
+
+    #[test]
+    fn test_review_body_input_esc_returns_to_submit() {
+        let mut app = create_app_with_patch();
+        app.mode = AppMode::ReviewBodyInput;
+        app.review_body_input = "some text".to_string();
+
+        app.handle_review_body_input_mode(KeyCode::Esc);
+        assert_eq!(app.mode, AppMode::ReviewSubmit);
+        assert!(app.review_body_input.is_empty());
+        assert!(app.needs_submit.is_none());
+    }
+
+    #[test]
+    fn test_review_body_input_esc_preserves_quit_after_submit() {
+        let mut app = create_app_with_patch();
+        app.mode = AppMode::ReviewBodyInput;
+        app.quit_after_submit = true;
+
+        // Esc で ReviewSubmit に戻る（quit_after_submit はリセットしない）
+        app.handle_review_body_input_mode(KeyCode::Esc);
+        assert_eq!(app.mode, AppMode::ReviewSubmit);
+        assert!(app.quit_after_submit);
     }
 }
