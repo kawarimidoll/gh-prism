@@ -1059,38 +1059,43 @@ impl App {
 
         let zoom_indicator = if self.zoomed { " [ZOOM]" } else { "" };
 
-        let author_part = if self.pr_author.is_empty() {
-            String::new()
-        } else {
-            format!(" by @{}", self.pr_author)
-        };
-
-        let header_base = format!(
-            " prism - {}#{}: {}{}{}{}{} | ?: help",
-            self.repo,
-            self.pr_number,
-            self.pr_title,
-            author_part,
-            mode_indicator,
-            zoom_indicator,
-            comments_badge
-        );
-
-        let header_line = if let Some(ref msg) = self.status_message {
+        // 右セクション: モード / ステータス / ズーム / コメントバッジ（固定幅、右端に配置）
+        let mut right_spans: Vec<Span> = Vec::new();
+        if !mode_indicator.is_empty() {
+            right_spans.push(Span::styled(mode_indicator, header_style));
+        }
+        if !zoom_indicator.is_empty() {
+            right_spans.push(Span::styled(zoom_indicator, header_style));
+        }
+        if !comments_badge.is_empty() {
+            right_spans.push(Span::styled(&comments_badge, header_style));
+        }
+        if let Some(ref msg) = self.status_message {
             let status_style = match msg.level {
                 StatusLevel::Info => Style::default().bg(Color::Green).fg(Color::Black),
                 StatusLevel::Error => Style::default().bg(Color::Red).fg(Color::White),
             };
-            Line::from(vec![
-                Span::styled(header_base, header_style),
-                Span::styled(format!(" {} ", msg.body), status_style),
-            ])
-        } else {
-            Line::from(Span::styled(header_base, header_style))
-        };
+            right_spans.push(Span::styled(format!(" {} ", msg.body), status_style));
+        }
+        let right_width: usize = right_spans.iter().map(|s| s.width()).sum();
+
+        // 左セクション: PR 情報（残り幅で truncate）
+        let total_width = main_layout[0].width as usize;
+        let left_full = format!(" prism - {}#{} | ?: help", self.repo, self.pr_number,);
+        let left_max = total_width.saturating_sub(right_width);
+        let left_text = truncate_str(&left_full, left_max);
+
+        let left_used = left_text.width();
+        let mut spans = vec![Span::styled(left_text, header_style)];
+        // 左と右の間の余白を埋める
+        if left_used + right_width < total_width {
+            let pad = total_width - left_used - right_width;
+            spans.push(Span::styled(" ".repeat(pad), header_style));
+        }
+        spans.extend(right_spans);
 
         frame.render_widget(
-            Paragraph::new(header_line).style(header_style),
+            Paragraph::new(Line::from(spans)).style(header_style),
             main_layout[0],
         );
 
@@ -1179,28 +1184,44 @@ impl App {
         let (processed_body, media_refs) = preprocess_pr_body(&self.pr_body);
         self.media_refs = media_refs;
 
+        // PR タイトルと作者をヘッダー行として先頭に挿入
+        let author_part = if self.pr_author.is_empty() {
+            String::new()
+        } else {
+            format!(" by @{}", self.pr_author)
+        };
+        let title_line = Line::styled(
+            format!("{}{}", self.pr_title, author_part),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
+        let separator = Line::from("──────────────");
+
         let text: Text<'static> = if processed_body.is_empty() {
-            Text::from("(No description)")
+            Text::from(vec![
+                title_line,
+                separator,
+                Line::raw(""),
+                Line::raw("(No description)"),
+            ])
         } else {
             let options = tui_markdown::Options::new(PrDescStyleSheet { theme: self.theme });
             let rendered = tui_markdown::from_str_with_options(&processed_body, &options);
             // 借用ライフタイムを 'static に変換（各 Span の content を所有文字列化）
             // Line::style（heading/blockquote の色）も保持する
-            let lines: Vec<Line<'static>> = rendered
-                .lines
-                .into_iter()
-                .map(|line| {
-                    let mut new_line = Line::from(
-                        line.spans
-                            .into_iter()
-                            .map(|span| Span::styled(span.content.into_owned(), span.style))
-                            .collect::<Vec<_>>(),
-                    );
-                    new_line.style = line.style;
-                    new_line.alignment = line.alignment;
-                    new_line
-                })
-                .collect();
+            let mut lines: Vec<Line<'static>> = vec![title_line, separator, Line::raw("")];
+            lines.extend(rendered.lines.into_iter().map(|line| {
+                let mut new_line = Line::from(
+                    line.spans
+                        .into_iter()
+                        .map(|span| Span::styled(span.content.into_owned(), span.style))
+                        .collect::<Vec<_>>(),
+                );
+                new_line.style = line.style;
+                new_line.alignment = line.alignment;
+                new_line
+            }));
 
             Text::from(lines)
         };
@@ -3346,6 +3367,31 @@ fn open_url_in_browser(url: &str) {
     let cmd = "xdg-open";
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let _ = std::process::Command::new(cmd).arg(url).spawn();
+}
+
+/// 文字列を最大表示幅に収まるように末尾を省略する（unicode-width 対応）
+/// 例: "prism - repo#1: Long PR title" → "prism - repo#1: Lo…"
+fn truncate_str(s: &str, max_width: usize) -> String {
+    if UnicodeWidthStr::width(s) <= max_width {
+        return s.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    let mut width = 0;
+    let mut result = String::new();
+    let ellipsis_width = 1; // "…" is 1 column wide
+    let target = max_width.saturating_sub(ellipsis_width);
+    for ch in s.chars() {
+        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + cw > target {
+            break;
+        }
+        width += cw;
+        result.push(ch);
+    }
+    result.push('…');
+    result
 }
 
 /// パスを最大幅に収まるように先頭を省略する（ASCII パスを前提）
@@ -5562,6 +5608,32 @@ mod tests {
         assert_eq!(truncate_path("src/main.rs", 2), "sr");
         assert_eq!(truncate_path("src/main.rs", 1), "s");
         assert_eq!(truncate_path("src/main.rs", 0), "");
+    }
+
+    #[test]
+    fn test_truncate_str_no_truncation() {
+        assert_eq!(truncate_str("hello", 10), "hello");
+        assert_eq!(truncate_str("hello", 5), "hello");
+    }
+
+    #[test]
+    fn test_truncate_str_truncated() {
+        assert_eq!(truncate_str("hello world", 6), "hello…");
+        assert_eq!(truncate_str("hello world", 2), "h…");
+    }
+
+    #[test]
+    fn test_truncate_str_zero_and_one() {
+        assert_eq!(truncate_str("hello", 0), "");
+        assert_eq!(truncate_str("hello", 1), "…");
+    }
+
+    #[test]
+    fn test_truncate_str_cjk() {
+        // CJK文字は幅2。"日本語" = 幅6
+        assert_eq!(truncate_str("日本語", 6), "日本語");
+        assert_eq!(truncate_str("日本語", 5), "日本…");
+        assert_eq!(truncate_str("日本語", 3), "日…");
     }
 
     #[test]
