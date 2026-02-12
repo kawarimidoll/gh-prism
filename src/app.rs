@@ -625,6 +625,8 @@ pub struct App {
     media_viewer_protocol: Option<StatefulProtocol>,
     /// (commit_sha, filename) → 可視レビューコメント数のキャッシュ（起動時に計算）
     visible_review_comment_cache: HashMap<(String, String), usize>,
+    /// 自分のPRかどうか（Approve/Request Changesを非表示にする）
+    is_own_pr: bool,
 }
 
 impl App {
@@ -640,6 +642,7 @@ impl App {
         review_comments: Vec<ReviewComment>,
         client: Option<Octocrab>,
         theme: ThemeMode,
+        is_own_pr: bool,
     ) -> Self {
         let mut commit_list_state = ListState::default();
         if !commits.is_empty() {
@@ -712,6 +715,16 @@ impl App {
             media_viewer_index: 0,
             media_viewer_protocol: None,
             visible_review_comment_cache,
+            is_own_pr,
+        }
+    }
+
+    /// 選択可能なレビューイベントを返す（自分のPRではCommentのみ）
+    fn available_events(&self) -> &[ReviewEvent] {
+        if self.is_own_pr {
+            &ReviewEvent::ALL[..1]
+        } else {
+            &ReviewEvent::ALL
         }
     }
 
@@ -1948,7 +1961,7 @@ impl App {
 
         let mut lines = vec![Line::raw("")];
 
-        for (i, event) in ReviewEvent::ALL.iter().enumerate() {
+        for (i, event) in self.available_events().iter().enumerate() {
             let marker = if i == self.review_event_cursor {
                 "▶ "
             } else {
@@ -1990,7 +2003,7 @@ impl App {
         let dialog = Self::centered_rect(50, 8, area);
         frame.render_widget(ratatui::widgets::Clear, dialog);
 
-        let event = ReviewEvent::ALL[self.review_event_cursor];
+        let event = self.available_events()[self.review_event_cursor];
 
         // ダイアログ内で表示できる入力テキスト幅を計算
         // dialog 内部幅 = dialog.width - 2(border), プレフィックス "  > " = 4文字
@@ -2673,17 +2686,18 @@ impl App {
                 self.mode = AppMode::Normal;
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                self.review_event_cursor = (self.review_event_cursor + 1) % ReviewEvent::ALL.len();
+                self.review_event_cursor =
+                    (self.review_event_cursor + 1) % self.available_events().len();
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.review_event_cursor = if self.review_event_cursor == 0 {
-                    ReviewEvent::ALL.len() - 1
+                    self.available_events().len() - 1
                 } else {
                     self.review_event_cursor - 1
                 };
             }
             KeyCode::Enter => {
-                let event = ReviewEvent::ALL[self.review_event_cursor];
+                let event = self.available_events()[self.review_event_cursor];
                 // COMMENT は pending_comments が必要
                 if event == ReviewEvent::Comment && self.pending_comments.is_empty() {
                     self.status_message =
@@ -2706,7 +2720,7 @@ impl App {
                 self.mode = AppMode::ReviewSubmit;
             }
             KeyCode::Enter => {
-                let event = ReviewEvent::ALL[self.review_event_cursor];
+                let event = self.available_events()[self.review_event_cursor];
                 self.status_message = Some(StatusMessage::info(format!(
                     "Submitting ({})...",
                     event.label()
@@ -3606,6 +3620,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         assert!(!app.should_quit);
         assert_eq!(app.focused_panel, Panel::PrDescription);
@@ -3632,6 +3647,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         assert_eq!(app.commits.len(), 2);
         assert_eq!(app.commit_list_state.selected(), Some(0));
@@ -3652,6 +3668,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         assert_eq!(app.files_map.len(), 2);
         assert_eq!(app.file_list_state.selected(), Some(0));
@@ -3670,6 +3687,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         assert_eq!(app.focused_panel, Panel::PrDescription);
         app.next_panel();
@@ -3693,6 +3711,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         assert_eq!(app.focused_panel, Panel::PrDescription);
         app.prev_panel();
@@ -3717,6 +3736,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         app.focused_panel = Panel::CommitList;
         assert_eq!(app.commit_list_state.selected(), Some(0));
@@ -3740,6 +3760,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         app.focused_panel = Panel::CommitList;
         assert_eq!(app.commit_list_state.selected(), Some(0));
@@ -3764,6 +3785,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         app.focused_panel = Panel::FileTree;
         assert_eq!(app.file_list_state.selected(), Some(0));
@@ -3788,6 +3810,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         app.focused_panel = Panel::FileTree;
         assert_eq!(app.file_list_state.selected(), Some(0));
@@ -3812,6 +3835,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         app.focused_panel = Panel::CommitList;
         // Initial state: CommitList panel
@@ -3842,6 +3866,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
 
         // Verify the commit list state is properly initialized
@@ -3887,6 +3912,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
 
         // 最初のコミットのファイルが返される
@@ -3940,6 +3966,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
 
         // ファイル一覧に移動して2番目のファイルを選択
@@ -3975,6 +4002,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         assert_eq!(app.diff_scroll, 0);
     }
@@ -4064,6 +4092,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         app.focused_panel = Panel::DiffView;
 
@@ -4086,6 +4115,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         app.diff_scroll = 50;
 
@@ -4126,6 +4156,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         )
     }
 
@@ -4246,6 +4277,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         let (owner, repo) = app.parse_repo().unwrap();
         assert_eq!(owner, "owner");
@@ -4265,6 +4297,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         assert!(app.parse_repo().is_none());
     }
@@ -4282,6 +4315,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         // pending_comments が空なら何もしない（status_message も None のまま）
         app.submit_review_with_event(ReviewEvent::Comment);
@@ -4412,6 +4446,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         app.handle_normal_mode(KeyCode::Char('2'), KeyModifiers::NONE);
         assert_eq!(app.focused_panel, Panel::CommitList);
@@ -4436,6 +4471,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         app.focused_panel = Panel::FileTree;
         app.handle_normal_mode(KeyCode::Enter, KeyModifiers::NONE);
@@ -4455,6 +4491,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         app.focused_panel = Panel::DiffView;
         app.handle_normal_mode(KeyCode::Esc, KeyModifiers::NONE);
@@ -4474,6 +4511,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         // PrDescription → CommitList → FileTree → PrDescription (DiffView をスキップ)
         app.next_panel();
@@ -4497,6 +4535,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         app.focused_panel = Panel::DiffView;
         app.next_panel();
@@ -4594,6 +4633,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         assert_eq!(app.current_diff_line_count(), 0);
     }
@@ -4787,6 +4827,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         app.focused_panel = Panel::CommitList;
 
@@ -4812,6 +4853,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         assert_eq!(app.focused_panel, Panel::PrDescription);
 
@@ -4895,6 +4937,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         // CommitList: y=11 はボーダー、y=12 が最初のアイテム
         app.commit_list_rect = Rect::new(0, 11, 30, 10);
@@ -4959,6 +5002,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         app.pr_desc_rect = Rect::new(0, 1, 30, 5);
         app.pr_desc_view_height = 3;
@@ -4993,6 +5037,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         app.commit_list_rect = Rect::new(0, 11, 30, 10);
 
@@ -5018,6 +5063,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         app.focused_panel = Panel::FileTree;
         assert!(app.viewed_files.is_empty());
@@ -5046,6 +5092,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         app.focused_panel = Panel::FileTree;
 
@@ -5075,6 +5122,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
 
         // ファイル未選択時は何もしない（パニックしない）
@@ -5097,6 +5145,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         app.focused_panel = Panel::FileTree;
 
@@ -5174,6 +5223,7 @@ mod tests {
             comments,
             None,
             ThemeMode::Dark,
+            false,
         )
     }
 
@@ -5221,6 +5271,7 @@ mod tests {
             comments,
             None,
             ThemeMode::Dark,
+            false,
         );
         let counts = app.existing_comment_counts();
         assert!(counts.is_empty());
@@ -5258,6 +5309,7 @@ mod tests {
             comments,
             None,
             ThemeMode::Dark,
+            false,
         );
         let counts = app.existing_comment_counts();
         assert!(counts.is_empty());
@@ -5330,6 +5382,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         )
     }
 
@@ -5596,6 +5649,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
 
         assert!(!app.zoomed);
@@ -5624,6 +5678,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
 
         // 各ペインで zoom できる
@@ -5655,6 +5710,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
 
         app.zoomed = true;
@@ -5804,6 +5860,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         app.diff_wrap = true;
         // line 0 → row 0, line 1 → row 1, line 2 → row 3, line 3 → row 4, total → 7
@@ -5830,6 +5887,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         app.diff_wrap = true;
         // line 0 → row 0, line 1 → rows 1-2, line 2 → row 3, line 3 → rows 4-6, total → 7
@@ -5858,6 +5916,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         // diff_wrap はデフォルトで false
 
@@ -5894,6 +5953,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         app.diff_view_width = 80;
         app.diff_wrap = true;
@@ -5943,6 +6003,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         app.diff_view_width = 80;
         app.diff_view_height = 10;
@@ -6000,6 +6061,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         app.show_line_numbers = true;
         assert_eq!(app.line_number_prefix_width(), 11);
@@ -6027,6 +6089,7 @@ mod tests {
             vec![],
             None,
             ThemeMode::Dark,
+            false,
         );
         app.show_line_numbers = true;
         assert_eq!(app.line_number_prefix_width(), 6);
@@ -6257,5 +6320,69 @@ mod tests {
         app.handle_review_body_input_mode(KeyCode::Esc);
         assert_eq!(app.mode, AppMode::ReviewSubmit);
         assert!(app.quit_after_submit);
+    }
+
+    // --- is_own_pr テスト ---
+
+    fn create_own_pr_app() -> App {
+        let commits = create_test_commits();
+        let mut files_map = HashMap::new();
+        files_map.insert(
+            "abc1234567890".to_string(),
+            vec![DiffFile {
+                filename: "src/main.rs".to_string(),
+                status: "added".to_string(),
+                additions: 1,
+                deletions: 0,
+                patch: Some("+line1".to_string()),
+            }],
+        );
+        App::new(
+            1,
+            "owner/repo".to_string(),
+            "Test PR".to_string(),
+            String::new(),
+            String::new(),
+            commits,
+            files_map,
+            vec![],
+            None,
+            ThemeMode::Dark,
+            true,
+        )
+    }
+
+    #[test]
+    fn test_own_pr_available_events_comment_only() {
+        let app = create_own_pr_app();
+        let events = app.available_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0], ReviewEvent::Comment);
+    }
+
+    #[test]
+    fn test_not_own_pr_available_events_all() {
+        let app = create_app_with_patch();
+        let events = app.available_events();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0], ReviewEvent::Comment);
+        assert_eq!(events[1], ReviewEvent::Approve);
+        assert_eq!(events[2], ReviewEvent::RequestChanges);
+    }
+
+    #[test]
+    fn test_own_pr_review_submit_cursor_stays_zero() {
+        let mut app = create_own_pr_app();
+        app.mode = AppMode::ReviewSubmit;
+
+        // j/k で循環しても要素1つなのでカーソルは0のまま
+        app.handle_review_submit_mode(KeyCode::Char('j'));
+        assert_eq!(app.review_event_cursor, 0);
+        app.handle_review_submit_mode(KeyCode::Char('k'));
+        assert_eq!(app.review_event_cursor, 0);
+        app.handle_review_submit_mode(KeyCode::Down);
+        assert_eq!(app.review_event_cursor, 0);
+        app.handle_review_submit_mode(KeyCode::Up);
+        assert_eq!(app.review_event_cursor, 0);
     }
 }

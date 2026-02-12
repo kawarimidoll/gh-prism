@@ -84,6 +84,17 @@ fn resolve_repo(repo_arg: &Option<String>) -> Result<(String, String)> {
     }
 }
 
+/// 現在の認証ユーザーのログイン名を取得
+fn fetch_current_user() -> String {
+    std::process::Command::new("gh")
+        .args(["api", "user", "-q", ".login"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
 /// PR情報とコミットごとのファイルをAPI経由で全取得する
 async fn fetch_all(
     client: &Octocrab,
@@ -156,6 +167,8 @@ async fn main() -> Result<()> {
     // リポジトリ情報を解決
     let (owner, repo) = resolve_repo(&cli.repo)?;
 
+    let current_user = fetch_current_user();
+
     // GitHub APIクライアントを作成
     let client = github::client::create_client()?;
     eprintln!("Fetching PR #{}...", cli.pr_number);
@@ -215,6 +228,8 @@ async fn main() -> Result<()> {
     let ((pr_title, pr_body, pr_author, files_map), review_comments) =
         tokio::try_join!(data_future, comments_future)?;
 
+    let is_own_pr = !current_user.is_empty() && current_user == pr_author;
+
     // PR body から画像 URL を収集してダウンロード
     let image_urls = app::collect_image_urls(&pr_body);
     let media_cache = if image_urls.is_empty() {
@@ -250,6 +265,7 @@ async fn main() -> Result<()> {
         review_comments,
         Some(client),
         theme,
+        is_own_pr,
     );
     app.set_media(picker, media_cache);
     let result = app.run(terminal);
