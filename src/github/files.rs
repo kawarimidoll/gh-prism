@@ -22,11 +22,6 @@ impl DiffFile {
             _ => '?',
         }
     }
-
-    /// 追加/削除行数の表示文字列を返す（例: "+10 -5"）
-    pub fn changes_display(&self) -> String {
-        format!("+{} -{}", self.additions, self.deletions)
-    }
 }
 
 /// 特定のコミットの変更ファイル一覧を取得

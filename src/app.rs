@@ -1343,10 +1343,7 @@ impl App {
                 let line = Line::from(vec![
                     Span::styled(marker, text_style),
                     Span::styled(format!("{}", status), Style::default().fg(status_color)),
-                    Span::styled(
-                        format!(" {} {}", f.filename, f.changes_display()),
-                        text_style,
-                    ),
+                    Span::styled(format!(" {}", f.filename), text_style),
                 ]);
                 ListItem::new(line)
             })
