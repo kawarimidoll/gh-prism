@@ -1648,6 +1648,10 @@ impl App {
             ThemeMode::Dark => Color::DarkGray,
             ThemeMode::Light => Color::Indexed(254),
         };
+        let pending_bg = match self.theme {
+            ThemeMode::Dark => Color::Indexed(22),
+            ThemeMode::Light => Color::Indexed(151),
+        };
 
         // 背景色が必要な論理行を収集（render 後に Buffer で適用）
         let mut bg_lines: Vec<(usize, Color)> = Vec::new();
@@ -1668,7 +1672,7 @@ impl App {
             if is_selected || is_cursor {
                 bg_lines.push((idx, cursor_bg));
             } else if is_pending {
-                bg_lines.push((idx, Color::Indexed(17)));
+                bg_lines.push((idx, pending_bg));
             }
 
             // 既存コメント行は下線で表示（背景色だとテーマ依存で文字が見えなくなるため）
@@ -1687,6 +1691,12 @@ impl App {
                 };
                 line.spans
                     .push(Span::styled(marker, Style::default().fg(Color::Yellow)));
+            }
+
+            // 💭 マーカー（pending コメント行の末尾に付与）
+            if is_pending {
+                line.spans
+                    .push(Span::styled(" 💭", Style::default().fg(Color::Green)));
             }
         }
 
