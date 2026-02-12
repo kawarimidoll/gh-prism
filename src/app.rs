@@ -20,7 +20,7 @@ use color_eyre::Result;
 use octocrab::Octocrab;
 use ratatui::{
     DefaultTerminal,
-    layout::{Position, Rect},
+    layout::Position,
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::ListState,
@@ -70,11 +70,8 @@ pub struct App {
     pr_desc_rendered: Option<Text<'static>>,
     /// カラーテーマ（ライト/ダーク）
     theme: ThemeMode,
-    /// 各ペインの描画領域（マウスヒットテスト用、render 時に更新）
-    pr_desc_rect: Rect,
-    commit_list_rect: Rect,
-    file_tree_rect: Rect,
-    diff_view_rect: Rect,
+    /// 各ペインの描画領域キャッシュ（マウスヒットテスト用、render 時に更新）
+    pub layout: LayoutCache,
     /// PR body 中のメディア参照
     media_refs: Vec<MediaRef>,
     /// 画像プロトコル検出結果（None = 画像表示不可）
@@ -154,10 +151,7 @@ impl App {
             viewed_files: HashSet::new(),
             pr_desc_rendered: None,
             theme,
-            pr_desc_rect: Rect::default(),
-            commit_list_rect: Rect::default(),
-            file_tree_rect: Rect::default(),
-            diff_view_rect: Rect::default(),
+            layout: LayoutCache::default(),
             media_refs: Vec::new(),
             picker: None,
             media_cache: MediaCache::new(),
@@ -576,13 +570,13 @@ impl App {
     /// 座標からペインを特定
     fn panel_at(&self, x: u16, y: u16) -> Option<Panel> {
         let pos = Position::new(x, y);
-        if self.pr_desc_rect.contains(pos) {
+        if self.layout.pr_desc_rect.contains(pos) {
             Some(Panel::PrDescription)
-        } else if self.commit_list_rect.contains(pos) {
+        } else if self.layout.commit_list_rect.contains(pos) {
             Some(Panel::CommitList)
-        } else if self.file_tree_rect.contains(pos) {
+        } else if self.layout.file_tree_rect.contains(pos) {
             Some(Panel::FileTree)
-        } else if self.diff_view_rect.contains(pos) {
+        } else if self.layout.diff_view_rect.contains(pos) {
             Some(Panel::DiffView)
         } else {
             None
@@ -759,6 +753,7 @@ mod tests {
     use super::*;
     use crate::github::commits::{CommitDetail, CommitInfo};
     use crossterm::event::{KeyCode, KeyModifiers};
+    use ratatui::layout::Rect;
     use std::time::{Duration, Instant};
 
     fn create_test_commits() -> Vec<CommitInfo> {
@@ -2097,10 +2092,10 @@ mod tests {
     fn test_panel_at_returns_correct_panel() {
         let mut app = create_app_with_patch();
         // Rect を手動設定（render を経由しないテスト用）
-        app.pr_desc_rect = Rect::new(0, 1, 30, 10);
-        app.commit_list_rect = Rect::new(0, 11, 30, 10);
-        app.file_tree_rect = Rect::new(0, 21, 30, 10);
-        app.diff_view_rect = Rect::new(30, 1, 50, 30);
+        app.layout.pr_desc_rect = Rect::new(0, 1, 30, 10);
+        app.layout.commit_list_rect = Rect::new(0, 11, 30, 10);
+        app.layout.file_tree_rect = Rect::new(0, 21, 30, 10);
+        app.layout.diff_view_rect = Rect::new(30, 1, 50, 30);
 
         assert_eq!(app.panel_at(5, 5), Some(Panel::PrDescription));
         assert_eq!(app.panel_at(5, 15), Some(Panel::CommitList));
@@ -2112,10 +2107,10 @@ mod tests {
     #[test]
     fn test_mouse_click_changes_focus() {
         let mut app = create_app_with_patch();
-        app.pr_desc_rect = Rect::new(0, 1, 30, 10);
-        app.commit_list_rect = Rect::new(0, 11, 30, 10);
-        app.file_tree_rect = Rect::new(0, 21, 30, 10);
-        app.diff_view_rect = Rect::new(30, 1, 50, 30);
+        app.layout.pr_desc_rect = Rect::new(0, 1, 30, 10);
+        app.layout.commit_list_rect = Rect::new(0, 11, 30, 10);
+        app.layout.file_tree_rect = Rect::new(0, 21, 30, 10);
+        app.layout.diff_view_rect = Rect::new(30, 1, 50, 30);
 
         assert_eq!(app.focused_panel, Panel::PrDescription);
 
@@ -2144,7 +2139,7 @@ mod tests {
             false,
         );
         // CommitList: y=11 はボーダー、y=12 が最初のアイテム
-        app.commit_list_rect = Rect::new(0, 11, 30, 10);
+        app.layout.commit_list_rect = Rect::new(0, 11, 30, 10);
 
         // 2番目のアイテム（y=13, offset 0, relative_y=1 → idx=1）をクリック
         app.handle_mouse_click(5, 13);
@@ -2156,7 +2151,7 @@ mod tests {
     fn test_mouse_scroll_on_diff() {
         // 10行パッチ、表示5行 → max_scroll = 5
         let mut app = create_app_with_patch();
-        app.diff_view_rect = Rect::new(30, 1, 50, 30);
+        app.layout.diff_view_rect = Rect::new(30, 1, 50, 30);
         app.diff.view_height = 5;
         app.focused_panel = Panel::FileTree; // フォーカスは別のペイン
 
@@ -2208,7 +2203,7 @@ mod tests {
             ThemeMode::Dark,
             false,
         );
-        app.pr_desc_rect = Rect::new(0, 1, 30, 5);
+        app.layout.pr_desc_rect = Rect::new(0, 1, 30, 5);
         app.pr_desc_view_height = 3;
         // ensure_pr_desc_rendered でキャッシュを生成
         app.ensure_pr_desc_rendered();
@@ -2243,7 +2238,7 @@ mod tests {
             ThemeMode::Dark,
             false,
         );
-        app.commit_list_rect = Rect::new(0, 11, 30, 10);
+        app.layout.commit_list_rect = Rect::new(0, 11, 30, 10);
 
         // CommitList 上でスクロールしても選択は変わらない
         app.handle_mouse_scroll(5, 15, true);

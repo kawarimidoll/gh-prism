@@ -17,7 +17,7 @@ impl App {
         // リスト内アイテムのクリック選択
         match panel {
             Panel::CommitList => {
-                let relative_y = y.saturating_sub(self.commit_list_rect.y + 1);
+                let relative_y = y.saturating_sub(self.layout.commit_list_rect.y + 1);
                 let idx = self.commit_list_state.offset() + relative_y as usize;
                 if idx < self.commits.len() {
                     let old = self.commit_list_state.selected();
@@ -28,7 +28,7 @@ impl App {
                 }
             }
             Panel::FileTree => {
-                let relative_y = y.saturating_sub(self.file_tree_rect.y + 1);
+                let relative_y = y.saturating_sub(self.layout.file_tree_rect.y + 1);
                 let idx = self.file_list_state.offset() + relative_y as usize;
                 if idx < self.current_files().len() {
                     self.file_list_state.select(Some(idx));

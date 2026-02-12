@@ -119,26 +119,23 @@ impl App {
             let full_area = main_layout[1];
 
             // 非表示ペインの Rect をリセット（マウスヒットテスト対策）
-            self.pr_desc_rect = Rect::default();
-            self.commit_list_rect = Rect::default();
-            self.file_tree_rect = Rect::default();
-            self.diff_view_rect = Rect::default();
+            self.layout = LayoutCache::default();
 
             match self.focused_panel {
                 Panel::PrDescription => {
-                    self.pr_desc_rect = full_area;
+                    self.layout.pr_desc_rect = full_area;
                     self.render_pr_description(frame, full_area);
                 }
                 Panel::CommitList => {
-                    self.commit_list_rect = full_area;
+                    self.layout.commit_list_rect = full_area;
                     self.render_commit_list_stateful(frame, full_area);
                 }
                 Panel::FileTree => {
-                    self.file_tree_rect = full_area;
+                    self.layout.file_tree_rect = full_area;
                     self.render_file_tree(frame, full_area);
                 }
                 Panel::DiffView => {
-                    self.diff_view_rect = full_area;
+                    self.layout.diff_view_rect = full_area;
                     self.render_diff_view_widget(frame, full_area);
                 }
             }
@@ -161,10 +158,10 @@ impl App {
             let diff_area = body_layout[1];
 
             // マウスヒットテスト用に各ペインの Rect を記録
-            self.pr_desc_rect = sidebar_layout[0];
-            self.commit_list_rect = sidebar_layout[1];
-            self.file_tree_rect = sidebar_layout[2];
-            self.diff_view_rect = diff_area;
+            self.layout.pr_desc_rect = sidebar_layout[0];
+            self.layout.commit_list_rect = sidebar_layout[1];
+            self.layout.file_tree_rect = sidebar_layout[2];
+            self.layout.diff_view_rect = diff_area;
 
             // サイドバー3ペイン描画
             self.render_pr_description(frame, sidebar_layout[0]);

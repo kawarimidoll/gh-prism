@@ -1,3 +1,4 @@
+use ratatui::layout::Rect;
 use std::time::{Duration, Instant};
 
 /// ターミナルのカラーテーマ
@@ -163,6 +164,15 @@ pub struct DiffViewState {
     pub show_line_numbers: bool,
     pub visual_offsets: Option<Vec<usize>>,
     pub highlight_cache: Option<(usize, usize, ratatui::text::Text<'static>)>,
+}
+
+/// 各ペインの描画領域キャッシュ（マウスヒットテスト用、render 時に更新）
+#[derive(Debug, Default, Clone)]
+pub struct LayoutCache {
+    pub pr_desc_rect: Rect,
+    pub commit_list_rect: Rect,
+    pub file_tree_rect: Rect,
+    pub diff_view_rect: Rect,
 }
 
 impl Default for DiffViewState {
