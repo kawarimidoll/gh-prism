@@ -9,7 +9,7 @@ use crate::github::comments::ReviewComment;
 use crate::github::commits::CommitInfo;
 use crate::github::files::DiffFile;
 use crate::github::media::MediaCache;
-use crate::github::review;
+use crate::github::review::{self, PendingComment};
 use color_eyre::Result;
 use crossterm::event::{
     self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,

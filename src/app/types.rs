@@ -122,15 +122,6 @@ impl LineSelection {
     }
 }
 
-/// 保留中のレビューコメント
-pub struct PendingComment {
-    pub file_path: String,
-    pub start_line: usize,
-    pub end_line: usize,
-    pub body: String,
-    pub commit_sha: String,
-}
-
 /// メディア種別
 #[derive(Debug, Clone, PartialEq)]
 pub enum MediaType {

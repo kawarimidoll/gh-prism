@@ -1,9 +1,18 @@
-use crate::app::PendingComment;
 use crate::github::files::DiffFile;
 use color_eyre::{Result, eyre::eyre};
 use octocrab::Octocrab;
 use serde::Serialize;
 use std::collections::HashMap;
+
+/// 保留中のレビューコメント
+#[derive(Debug, Clone)]
+pub struct PendingComment {
+    pub file_path: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub body: String,
+    pub commit_sha: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Side {
