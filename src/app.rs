@@ -48,13 +48,8 @@ pub struct App {
     pr_desc_view_height: u16,
     /// PR Description の Wrap 考慮済み視覚行数（render 時に更新）
     pr_desc_visual_total: u16,
-    diff_scroll: u16,
-    /// Diff ビュー内のカーソル行（0-indexed）
-    cursor_line: usize,
-    /// Diff ビューの表示可能行数（render 時に更新）
-    diff_view_height: u16,
-    /// Diff ビューの内部幅（render 時に更新、wrap 計算用）
-    diff_view_width: u16,
+    /// DiffView パネルの表示状態
+    pub diff: DiffViewState,
     /// 行選択モードでの選択状態
     line_selection: Option<LineSelection>,
     /// レビュー・コメント関連の状態
@@ -69,18 +64,8 @@ pub struct App {
     help_scroll: u16,
     /// Zoom モード（フォーカスペインのみ全画面表示）
     zoomed: bool,
-    /// Diff ペインの行折り返し（`w` キーでトグル）
-    diff_wrap: bool,
-    /// Diff ペインの行番号表示（`n` キーでトグル）
-    show_line_numbers: bool,
     /// viewed 済みファイル名のセット（コミット跨ぎで維持）
     viewed_files: HashSet<String>,
-    /// Diff ハイライトキャッシュ（commit_idx, file_idx, highlighted Text）
-    /// ファイル選択が変わらない限り delta を再実行しない
-    diff_highlight_cache: Option<(usize, usize, ratatui::text::Text<'static>)>,
-    /// Wrap 有効時の視覚行オフセットキャッシュ
-    /// offsets[i] = 論理行 i が始まる視覚行番号（render 時に計算）
-    diff_visual_offsets: Option<Vec<usize>>,
     /// PR Description のマークダウンレンダリングキャッシュ
     pr_desc_rendered: Option<Text<'static>>,
     /// カラーテーマ（ライト/ダーク）
@@ -155,10 +140,7 @@ impl App {
             pr_desc_scroll: 0,
             pr_desc_view_height: 10, // 初期値、render で更新される
             pr_desc_visual_total: 0, // 初期値、render で更新される
-            diff_scroll: 0,
-            cursor_line: 0,
-            diff_view_height: 20, // 初期値、render で更新される
-            diff_view_width: 80,  // 初期値、render で更新される
+            diff: DiffViewState::default(),
             line_selection: None,
             review: ReviewState {
                 review_comments,
@@ -169,11 +151,7 @@ impl App {
             pending_key: None,
             help_scroll: 0,
             zoomed: false,
-            diff_wrap: false,
-            show_line_numbers: false,
             viewed_files: HashSet::new(),
-            diff_highlight_cache: None,
-            diff_visual_offsets: None,
             pr_desc_rendered: None,
             theme,
             pr_desc_rect: Rect::default(),
@@ -234,11 +212,11 @@ impl App {
         } else {
             self.file_list_state.select(None);
         }
-        self.cursor_line = 0;
-        self.diff_scroll = 0;
+        self.diff.cursor_line = 0;
+        self.diff.scroll = 0;
         // 先頭の @@ 行をスキップ
         let max = self.current_diff_line_count();
-        self.cursor_line = self.skip_hunk_header_forward(0, max);
+        self.diff.cursor_line = self.skip_hunk_header_forward(0, max);
     }
 
     /// 現在選択中のファイルを取得
@@ -613,12 +591,12 @@ impl App {
 
     /// 行選択モードに入る（hunk header 上では無効）
     fn enter_line_select_mode(&mut self) {
-        if self.is_hunk_header(self.cursor_line) {
+        if self.is_hunk_header(self.diff.cursor_line) {
             return;
         }
         // 現在のカーソル行をアンカーとして選択開始
         self.line_selection = Some(LineSelection {
-            anchor: self.cursor_line,
+            anchor: self.diff.cursor_line,
         });
         self.mode = AppMode::LineSelect;
     }
@@ -650,7 +628,7 @@ impl App {
         }
 
         if let Some(selection) = self.line_selection {
-            let (start, end) = selection.range(self.cursor_line);
+            let (start, end) = selection.range(self.diff.cursor_line);
             let file_path = self
                 .current_file()
                 .map(|f| f.filename.clone())
@@ -753,22 +731,22 @@ impl App {
     /// 選択範囲を下に拡張（カーソルを下に移動）
     fn extend_selection_down(&mut self) {
         let line_count = self.current_diff_line_count();
-        let next = self.cursor_line + 1;
+        let next = self.diff.cursor_line + 1;
         if next < line_count
             && !self.is_hunk_header(next)
-            && self.is_same_hunk(self.cursor_line, next)
+            && self.is_same_hunk(self.diff.cursor_line, next)
         {
-            self.cursor_line = next;
+            self.diff.cursor_line = next;
             self.ensure_cursor_visible();
         }
     }
 
     /// 選択範囲を上に拡張（カーソルを上に移動）
     fn extend_selection_up(&mut self) {
-        if self.cursor_line > 0 {
-            let prev = self.cursor_line - 1;
-            if !self.is_hunk_header(prev) && self.is_same_hunk(self.cursor_line, prev) {
-                self.cursor_line = prev;
+        if self.diff.cursor_line > 0 {
+            let prev = self.diff.cursor_line - 1;
+            if !self.is_hunk_header(prev) && self.is_same_hunk(self.diff.cursor_line, prev) {
+                self.diff.cursor_line = prev;
                 self.ensure_cursor_visible();
             }
         }
@@ -1228,7 +1206,7 @@ mod tests {
             ThemeMode::Dark,
             false,
         );
-        assert_eq!(app.diff_scroll, 0);
+        assert_eq!(app.diff.scroll, 0);
     }
 
     #[test]
@@ -1236,54 +1214,54 @@ mod tests {
         // 10行パッチ、half page = 5
         let mut app = create_app_with_patch();
         app.focused_panel = Panel::DiffView;
-        app.diff_view_height = 10;
-        assert_eq!(app.cursor_line, 0);
+        app.diff.view_height = 10;
+        assert_eq!(app.diff.cursor_line, 0);
 
         app.scroll_diff_down();
-        assert_eq!(app.cursor_line, 5); // 半ページ分
+        assert_eq!(app.diff.cursor_line, 5); // 半ページ分
 
         app.scroll_diff_down();
-        assert_eq!(app.cursor_line, 9); // 末尾でクランプ (10行-1)
+        assert_eq!(app.diff.cursor_line, 9); // 末尾でクランプ (10行-1)
     }
 
     #[test]
     fn test_scroll_diff_up() {
         let mut app = create_app_with_patch();
         app.focused_panel = Panel::DiffView;
-        app.diff_view_height = 10;
-        app.cursor_line = 9;
+        app.diff.view_height = 10;
+        app.diff.cursor_line = 9;
 
         app.scroll_diff_up();
-        assert_eq!(app.cursor_line, 4); // 半ページ分戻る
+        assert_eq!(app.diff.cursor_line, 4); // 半ページ分戻る
 
         app.scroll_diff_up();
-        assert_eq!(app.cursor_line, 0);
+        assert_eq!(app.diff.cursor_line, 0);
 
         // 0 以下にはならない
         app.scroll_diff_up();
-        assert_eq!(app.cursor_line, 0);
+        assert_eq!(app.diff.cursor_line, 0);
     }
 
     #[test]
     fn test_scroll_only_works_in_diff_panel() {
         let mut app = create_app_with_patch();
-        app.diff_view_height = 10;
+        app.diff.view_height = 10;
 
         // PrDescription panel (default)
         app.scroll_diff_down();
-        assert_eq!(app.cursor_line, 0);
+        assert_eq!(app.diff.cursor_line, 0);
 
         app.focused_panel = Panel::CommitList;
         app.scroll_diff_down();
-        assert_eq!(app.cursor_line, 0);
+        assert_eq!(app.diff.cursor_line, 0);
 
         app.focused_panel = Panel::FileTree;
         app.scroll_diff_down();
-        assert_eq!(app.cursor_line, 0);
+        assert_eq!(app.diff.cursor_line, 0);
 
         app.focused_panel = Panel::DiffView;
         app.scroll_diff_down();
-        assert_eq!(app.cursor_line, 5); // 半ページ分
+        assert_eq!(app.diff.cursor_line, 5); // 半ページ分
     }
 
     #[test]
@@ -1321,7 +1299,7 @@ mod tests {
         app.focused_panel = Panel::DiffView;
 
         app.scroll_diff_to_end();
-        assert_eq!(app.cursor_line, 24); // 末尾行 (25-1)
+        assert_eq!(app.diff.cursor_line, 24); // 末尾行 (25-1)
     }
 
     #[test]
@@ -1341,14 +1319,14 @@ mod tests {
             ThemeMode::Dark,
             false,
         );
-        app.diff_scroll = 50;
+        app.diff.scroll = 50;
 
         // Change to FileTree and select next file
         app.focused_panel = Panel::FileTree;
         app.select_next();
 
         // Scroll should be reset
-        assert_eq!(app.diff_scroll, 0);
+        assert_eq!(app.diff.scroll, 0);
     }
 
     /// コメント入力テスト用: patch 付きファイルを含む App を作成
@@ -1882,7 +1860,7 @@ mod tests {
         // DiffView で c キーを押すと単一行コメントモードに入る
         let mut app = create_app_with_patch();
         app.focused_panel = Panel::DiffView;
-        app.cursor_line = 3;
+        app.diff.cursor_line = 3;
 
         // Normal モードで c キー
         app.handle_normal_mode(KeyCode::Char('c'), KeyModifiers::empty());
@@ -1893,7 +1871,7 @@ mod tests {
         let sel = app.line_selection.unwrap();
         assert_eq!(sel.anchor, 3);
         // 単一行なので range は (3, 3)
-        assert_eq!(sel.range(app.cursor_line), (3, 3));
+        assert_eq!(sel.range(app.diff.cursor_line), (3, 3));
     }
 
     #[test]
@@ -2108,11 +2086,11 @@ mod tests {
 
         // Down で選択拡張
         app.handle_line_select_mode(KeyCode::Down);
-        assert_eq!(app.cursor_line, 1);
+        assert_eq!(app.diff.cursor_line, 1);
 
         // Up で選択縮小
         app.handle_line_select_mode(KeyCode::Up);
-        assert_eq!(app.cursor_line, 0);
+        assert_eq!(app.diff.cursor_line, 0);
     }
 
     #[test]
@@ -2179,37 +2157,37 @@ mod tests {
         // 10行パッチ、表示5行 → max_scroll = 5
         let mut app = create_app_with_patch();
         app.diff_view_rect = Rect::new(30, 1, 50, 30);
-        app.diff_view_height = 5;
+        app.diff.view_height = 5;
         app.focused_panel = Panel::FileTree; // フォーカスは別のペイン
 
         // 下スクロール → ビューポート+カーソル同時移動（見た目位置固定）
-        assert_eq!(app.cursor_line, 0);
-        assert_eq!(app.diff_scroll, 0);
+        assert_eq!(app.diff.cursor_line, 0);
+        assert_eq!(app.diff.scroll, 0);
         app.handle_mouse_scroll(40, 10, true);
-        assert_eq!(app.cursor_line, 1);
-        assert_eq!(app.diff_scroll, 1);
+        assert_eq!(app.diff.cursor_line, 1);
+        assert_eq!(app.diff.scroll, 1);
 
         // 上スクロール → 元に戻る
         app.handle_mouse_scroll(40, 10, false);
-        assert_eq!(app.cursor_line, 0);
-        assert_eq!(app.diff_scroll, 0);
+        assert_eq!(app.diff.cursor_line, 0);
+        assert_eq!(app.diff.scroll, 0);
 
         // ページ先頭で上スクロール → カーソルのみ（既に0なので動かない）
         app.handle_mouse_scroll(40, 10, false);
-        assert_eq!(app.cursor_line, 0);
-        assert_eq!(app.diff_scroll, 0);
+        assert_eq!(app.diff.cursor_line, 0);
+        assert_eq!(app.diff.scroll, 0);
 
         // ページ末尾まで下スクロール（max_scroll=5）
         for _ in 0..5 {
             app.handle_mouse_scroll(40, 10, true);
         }
-        assert_eq!(app.diff_scroll, 5);
-        assert_eq!(app.cursor_line, 5);
+        assert_eq!(app.diff.scroll, 5);
+        assert_eq!(app.diff.cursor_line, 5);
 
         // ページ末尾到達後 → カーソルのみ移動
         app.handle_mouse_scroll(40, 10, true);
-        assert_eq!(app.diff_scroll, 5); // ページは動かない
-        assert_eq!(app.cursor_line, 6); // カーソルだけ進む
+        assert_eq!(app.diff.scroll, 5); // ページは動かない
+        assert_eq!(app.diff.cursor_line, 6); // カーソルだけ進む
 
         assert_eq!(app.focused_panel, Panel::FileTree); // フォーカスは変わらない
     }
@@ -2545,7 +2523,7 @@ mod tests {
     fn test_enter_opens_comment_view_on_comment_line() {
         let mut app = create_app_with_comments();
         app.focused_panel = Panel::DiffView;
-        app.cursor_line = 2; // +line2 (コメントがある行)
+        app.diff.cursor_line = 2; // +line2 (コメントがある行)
 
         app.handle_normal_mode(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(app.mode, AppMode::CommentView);
@@ -2557,7 +2535,7 @@ mod tests {
     fn test_enter_does_not_open_comment_view_on_empty_line() {
         let mut app = create_app_with_comments();
         app.focused_panel = Panel::DiffView;
-        app.cursor_line = 1; // +line1 (コメントがない行)
+        app.diff.cursor_line = 1; // +line1 (コメントがない行)
 
         app.handle_normal_mode(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(app.mode, AppMode::Normal);
@@ -2568,7 +2546,7 @@ mod tests {
     fn test_comment_view_esc_closes() {
         let mut app = create_app_with_comments();
         app.focused_panel = Panel::DiffView;
-        app.cursor_line = 2;
+        app.diff.cursor_line = 2;
 
         // CommentView を開く
         app.handle_normal_mode(KeyCode::Enter, KeyModifiers::NONE);
@@ -2617,12 +2595,12 @@ mod tests {
         let mut app = create_app_with_multi_hunk_patch();
         app.focused_panel = Panel::DiffView;
         // カーソルを hunk1 の最後の行 (行3: "+new line") に移動
-        app.cursor_line = 3;
+        app.diff.cursor_line = 3;
         app.enter_line_select_mode();
 
         // 行4 は @@ (hunk2 ヘッダー) → 別 hunk なので移動不可
         app.extend_selection_down();
-        assert_eq!(app.cursor_line, 3); // 移動しない
+        assert_eq!(app.diff.cursor_line, 3); // 移動しない
     }
 
     #[test]
@@ -2630,12 +2608,12 @@ mod tests {
         let mut app = create_app_with_multi_hunk_patch();
         app.focused_panel = Panel::DiffView;
         // カーソルを hunk2 の最初のコンテンツ行 (行5) に配置
-        app.cursor_line = 5;
+        app.diff.cursor_line = 5;
         app.enter_line_select_mode();
 
         // 行4 は @@ ヘッダー → カーソル不可なので移動しない
         app.extend_selection_up();
-        assert_eq!(app.cursor_line, 5); // @@ 行にはカーソルを置けない
+        assert_eq!(app.diff.cursor_line, 5); // @@ 行にはカーソルを置けない
     }
 
     #[test]
@@ -2643,19 +2621,19 @@ mod tests {
         let mut app = create_app_with_multi_hunk_patch();
         app.focused_panel = Panel::DiffView;
         // hunk1 内 (行0) から選択開始
-        app.cursor_line = 0;
+        app.diff.cursor_line = 0;
         app.enter_line_select_mode();
 
         // hunk1 内で自由に移動できる
         app.extend_selection_down(); // 行1
-        assert_eq!(app.cursor_line, 1);
+        assert_eq!(app.diff.cursor_line, 1);
         app.extend_selection_down(); // 行2
-        assert_eq!(app.cursor_line, 2);
+        assert_eq!(app.diff.cursor_line, 2);
         app.extend_selection_down(); // 行3
-        assert_eq!(app.cursor_line, 3);
+        assert_eq!(app.diff.cursor_line, 3);
         // 行4 (@@) は別 hunk → 停止
         app.extend_selection_down();
-        assert_eq!(app.cursor_line, 3);
+        assert_eq!(app.diff.cursor_line, 3);
     }
 
     #[test]
@@ -2683,7 +2661,7 @@ mod tests {
         let mut app = create_app_with_multi_hunk_patch();
         app.focused_panel = Panel::DiffView;
         // カーソルを @@ 行 (行0) に配置
-        app.cursor_line = 0;
+        app.diff.cursor_line = 0;
         app.enter_line_select_mode();
         // @@ 行上では選択モードに入れない
         assert_eq!(app.mode, AppMode::Normal);
@@ -2695,7 +2673,7 @@ mod tests {
         let mut app = create_app_with_multi_hunk_patch();
         app.focused_panel = Panel::DiffView;
         // カーソルを @@ 行 (行4) に配置
-        app.cursor_line = 4;
+        app.diff.cursor_line = 4;
         app.handle_normal_mode(KeyCode::Char('c'), KeyModifiers::NONE);
         // @@ 行上ではコメント入力に入れない
         assert_eq!(app.mode, AppMode::Normal);
@@ -2706,44 +2684,44 @@ mod tests {
     fn test_page_down_moves_cursor_by_view_height() {
         let mut app = create_app_with_patch();
         app.focused_panel = Panel::DiffView;
-        app.diff_view_height = 3;
-        app.cursor_line = 0;
+        app.diff.view_height = 3;
+        app.diff.cursor_line = 0;
 
         app.page_down();
-        assert_eq!(app.cursor_line, 3);
+        assert_eq!(app.diff.cursor_line, 3);
 
         app.page_down();
-        assert_eq!(app.cursor_line, 6);
+        assert_eq!(app.diff.cursor_line, 6);
     }
 
     #[test]
     fn test_page_up_moves_cursor_by_view_height() {
         let mut app = create_app_with_patch();
         app.focused_panel = Panel::DiffView;
-        app.diff_view_height = 3;
-        app.cursor_line = 7;
+        app.diff.view_height = 3;
+        app.diff.cursor_line = 7;
 
         app.page_up();
-        assert_eq!(app.cursor_line, 4);
+        assert_eq!(app.diff.cursor_line, 4);
 
         app.page_up();
-        assert_eq!(app.cursor_line, 1);
+        assert_eq!(app.diff.cursor_line, 1);
 
         app.page_up();
-        assert_eq!(app.cursor_line, 0); // 0 で停止
+        assert_eq!(app.diff.cursor_line, 0); // 0 で停止
     }
 
     #[test]
     fn test_ctrl_f_b_keybinds() {
         let mut app = create_app_with_patch();
         app.focused_panel = Panel::DiffView;
-        app.diff_view_height = 3;
+        app.diff.view_height = 3;
 
         app.handle_normal_mode(KeyCode::Char('f'), KeyModifiers::CONTROL);
-        assert_eq!(app.cursor_line, 3);
+        assert_eq!(app.diff.cursor_line, 3);
 
         app.handle_normal_mode(KeyCode::Char('b'), KeyModifiers::CONTROL);
-        assert_eq!(app.cursor_line, 0);
+        assert_eq!(app.diff.cursor_line, 0);
     }
 
     #[test]
@@ -2751,111 +2729,111 @@ mod tests {
         let mut app = create_app_with_multi_hunk_patch();
         app.focused_panel = Panel::DiffView;
         // 行0: @@, 行1: context, 行2: -old, 行3: +new, 行4: @@, 行5: context2, 行6: -old2, 行7: +new2
-        app.cursor_line = 0;
+        app.diff.cursor_line = 0;
 
         app.jump_to_next_change();
-        assert_eq!(app.cursor_line, 2); // ブロックA先頭 (-old line)
+        assert_eq!(app.diff.cursor_line, 2); // ブロックA先頭 (-old line)
 
         app.jump_to_next_change();
-        assert_eq!(app.cursor_line, 6); // ブロックB先頭 (-old2)、ブロックA全体をスキップ
+        assert_eq!(app.diff.cursor_line, 6); // ブロックB先頭 (-old2)、ブロックA全体をスキップ
 
         // それ以降にブロックがないのでカーソルは動かない
         app.jump_to_next_change();
-        assert_eq!(app.cursor_line, 6);
+        assert_eq!(app.diff.cursor_line, 6);
     }
 
     #[test]
     fn test_jump_to_prev_change() {
         let mut app = create_app_with_multi_hunk_patch();
         app.focused_panel = Panel::DiffView;
-        app.cursor_line = 7; // +new2 (ブロックB末尾)
+        app.diff.cursor_line = 7; // +new2 (ブロックB末尾)
 
         app.jump_to_prev_change();
-        assert_eq!(app.cursor_line, 6); // ブロックB先頭 (-old2)
+        assert_eq!(app.diff.cursor_line, 6); // ブロックB先頭 (-old2)
 
         app.jump_to_prev_change();
-        assert_eq!(app.cursor_line, 2); // ブロックA先頭 (-old line)
+        assert_eq!(app.diff.cursor_line, 2); // ブロックA先頭 (-old line)
 
         // それ以前にブロックがないのでカーソルは動かない
         app.jump_to_prev_change();
-        assert_eq!(app.cursor_line, 2);
+        assert_eq!(app.diff.cursor_line, 2);
     }
 
     #[test]
     fn test_jump_to_next_hunk() {
         let mut app = create_app_with_multi_hunk_patch();
         app.focused_panel = Panel::DiffView;
-        app.cursor_line = 1; // 最初の hunk 内
+        app.diff.cursor_line = 1; // 最初の hunk 内
 
         app.jump_to_next_hunk();
-        assert_eq!(app.cursor_line, 5); // 2番目の @@ の次の実コード行
+        assert_eq!(app.diff.cursor_line, 5); // 2番目の @@ の次の実コード行
 
         // それ以降に @@ がないのでカーソルは動かない
         app.jump_to_next_hunk();
-        assert_eq!(app.cursor_line, 5);
+        assert_eq!(app.diff.cursor_line, 5);
     }
 
     #[test]
     fn test_jump_to_prev_hunk() {
         let mut app = create_app_with_multi_hunk_patch();
         app.focused_panel = Panel::DiffView;
-        app.cursor_line = 7; // 最終行
+        app.diff.cursor_line = 7; // 最終行
 
         app.jump_to_prev_hunk();
-        assert_eq!(app.cursor_line, 5); // 2番目の @@ の次の実コード行
+        assert_eq!(app.diff.cursor_line, 5); // 2番目の @@ の次の実コード行
 
         app.jump_to_prev_hunk();
-        assert_eq!(app.cursor_line, 1); // 最初の @@ の次の実コード行
+        assert_eq!(app.diff.cursor_line, 1); // 最初の @@ の次の実コード行
     }
 
     #[test]
     fn test_two_key_sequence_bracket_c() {
         let mut app = create_app_with_multi_hunk_patch();
         app.focused_panel = Panel::DiffView;
-        app.cursor_line = 0;
+        app.diff.cursor_line = 0;
 
         // ]c → 次の変更行
         app.handle_normal_mode(KeyCode::Char(']'), KeyModifiers::NONE);
         assert!(app.pending_key.is_some());
         app.handle_normal_mode(KeyCode::Char('c'), KeyModifiers::NONE);
         assert!(app.pending_key.is_none());
-        assert_eq!(app.cursor_line, 2); // -old line
+        assert_eq!(app.diff.cursor_line, 2); // -old line
 
         // [c → 前の変更行
-        app.cursor_line = 7;
+        app.diff.cursor_line = 7;
         app.handle_normal_mode(KeyCode::Char('['), KeyModifiers::NONE);
         app.handle_normal_mode(KeyCode::Char('c'), KeyModifiers::NONE);
-        assert_eq!(app.cursor_line, 6); // -old2
+        assert_eq!(app.diff.cursor_line, 6); // -old2
     }
 
     #[test]
     fn test_two_key_sequence_bracket_h() {
         let mut app = create_app_with_multi_hunk_patch();
         app.focused_panel = Panel::DiffView;
-        app.cursor_line = 1;
+        app.diff.cursor_line = 1;
 
         // ]h → 次の hunk の実コード行
         app.handle_normal_mode(KeyCode::Char(']'), KeyModifiers::NONE);
         app.handle_normal_mode(KeyCode::Char('h'), KeyModifiers::NONE);
-        assert_eq!(app.cursor_line, 5);
+        assert_eq!(app.diff.cursor_line, 5);
 
         // [h → 前の hunk の実コード行
         app.handle_normal_mode(KeyCode::Char('['), KeyModifiers::NONE);
         app.handle_normal_mode(KeyCode::Char('h'), KeyModifiers::NONE);
-        assert_eq!(app.cursor_line, 1);
+        assert_eq!(app.diff.cursor_line, 1);
     }
 
     #[test]
     fn test_two_key_sequence_invalid_second_key() {
         let mut app = create_app_with_multi_hunk_patch();
         app.focused_panel = Panel::DiffView;
-        app.cursor_line = 0;
+        app.diff.cursor_line = 0;
 
         // ]x → 不明な2文字目は無視、pending_key はクリアされる
         app.handle_normal_mode(KeyCode::Char(']'), KeyModifiers::NONE);
         app.handle_normal_mode(KeyCode::Char('x'), KeyModifiers::NONE);
         assert!(app.pending_key.is_none());
-        assert_eq!(app.cursor_line, 0); // 動かない
+        assert_eq!(app.diff.cursor_line, 0); // 動かない
     }
 
     // === N12: Zoom モードテスト ===
@@ -3088,9 +3066,9 @@ mod tests {
             ThemeMode::Dark,
             false,
         );
-        app.diff_wrap = true;
+        app.diff.wrap = true;
         // line 0 → row 0, line 1 → row 1, line 2 → row 3, line 3 → row 4, total → 7
-        app.diff_visual_offsets = Some(vec![0, 1, 3, 4, 7]);
+        app.diff.visual_offsets = Some(vec![0, 1, 3, 4, 7]);
 
         assert_eq!(app.visual_line_offset(0), 0);
         assert_eq!(app.visual_line_offset(1), 1);
@@ -3115,9 +3093,9 @@ mod tests {
             ThemeMode::Dark,
             false,
         );
-        app.diff_wrap = true;
+        app.diff.wrap = true;
         // line 0 → row 0, line 1 → rows 1-2, line 2 → row 3, line 3 → rows 4-6, total → 7
-        app.diff_visual_offsets = Some(vec![0, 1, 3, 4, 7]);
+        app.diff.visual_offsets = Some(vec![0, 1, 3, 4, 7]);
 
         assert_eq!(app.visual_to_logical_line(0), 0);
         assert_eq!(app.visual_to_logical_line(1), 1);
@@ -3181,9 +3159,9 @@ mod tests {
             ThemeMode::Dark,
             false,
         );
-        app.diff_view_width = 80;
-        app.diff_wrap = true;
-        app.show_line_numbers = true;
+        app.diff.view_width = 80;
+        app.diff.wrap = true;
+        app.diff.show_line_numbers = true;
 
         let with_numbers = app.visual_line_offset(4);
         assert!(
@@ -3191,7 +3169,7 @@ mod tests {
             "行番号ONで長い行は wrap により視覚行数が論理行数より多い"
         );
 
-        app.show_line_numbers = false;
+        app.diff.show_line_numbers = false;
         let without_numbers = app.visual_line_offset(4);
         assert!(
             with_numbers >= without_numbers,
@@ -3231,19 +3209,19 @@ mod tests {
             ThemeMode::Dark,
             false,
         );
-        app.diff_view_width = 80;
-        app.diff_view_height = 10;
-        app.diff_wrap = true;
-        app.show_line_numbers = true;
+        app.diff.view_width = 80;
+        app.diff.view_height = 10;
+        app.diff.wrap = true;
+        app.diff.show_line_numbers = true;
         app.focused_panel = Panel::DiffView;
 
-        app.cursor_line = 20;
+        app.diff.cursor_line = 20;
         app.ensure_cursor_visible();
 
-        let cursor_visual = app.visual_line_offset(app.cursor_line);
-        let cursor_visual_end = app.visual_line_offset(app.cursor_line + 1);
-        let scroll = app.diff_scroll as usize;
-        let visible = app.diff_view_height as usize;
+        let cursor_visual = app.visual_line_offset(app.diff.cursor_line);
+        let cursor_visual_end = app.visual_line_offset(app.diff.cursor_line + 1);
+        let scroll = app.diff.scroll as usize;
+        let visible = app.diff.view_height as usize;
 
         assert!(
             cursor_visual >= scroll,
@@ -3289,7 +3267,7 @@ mod tests {
             ThemeMode::Dark,
             false,
         );
-        app.show_line_numbers = true;
+        app.diff.show_line_numbers = true;
         assert_eq!(app.line_number_prefix_width(), 11);
 
         // added ファイル → 片カラム 6文字
@@ -3317,11 +3295,11 @@ mod tests {
             ThemeMode::Dark,
             false,
         );
-        app.show_line_numbers = true;
+        app.diff.show_line_numbers = true;
         assert_eq!(app.line_number_prefix_width(), 6);
 
         // 行番号OFF → 0文字
-        app.show_line_numbers = false;
+        app.diff.show_line_numbers = false;
         assert_eq!(app.line_number_prefix_width(), 0);
     }
 

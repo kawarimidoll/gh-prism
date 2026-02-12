@@ -56,30 +56,32 @@ impl App {
             Panel::DiffView => {
                 let line_count = self.current_diff_line_count();
                 let total_visual = self.visual_line_offset(line_count);
-                let max_scroll = (total_visual as u16).saturating_sub(self.diff_view_height);
+                let max_scroll = (total_visual as u16).saturating_sub(self.diff.view_height);
                 if down {
-                    if self.diff_scroll < max_scroll {
+                    if self.diff.scroll < max_scroll {
                         // ビューポートをスクロール + カーソル追従（見た目位置固定）
-                        self.diff_scroll += 1;
-                        if self.cursor_line + 1 < line_count {
-                            self.cursor_line += 1;
-                            self.cursor_line =
-                                self.skip_hunk_header_forward(self.cursor_line, line_count);
+                        self.diff.scroll += 1;
+                        if self.diff.cursor_line + 1 < line_count {
+                            self.diff.cursor_line += 1;
+                            self.diff.cursor_line =
+                                self.skip_hunk_header_forward(self.diff.cursor_line, line_count);
                         }
-                    } else if self.cursor_line + 1 < line_count {
+                    } else if self.diff.cursor_line + 1 < line_count {
                         // ページ末尾に到達 → カーソルのみ移動
-                        self.cursor_line += 1;
-                        self.cursor_line =
-                            self.skip_hunk_header_forward(self.cursor_line, line_count);
+                        self.diff.cursor_line += 1;
+                        self.diff.cursor_line =
+                            self.skip_hunk_header_forward(self.diff.cursor_line, line_count);
                     }
-                } else if self.diff_scroll > 0 {
-                    self.diff_scroll -= 1;
-                    self.cursor_line = self.cursor_line.saturating_sub(1);
-                    self.cursor_line = self.skip_hunk_header_backward(self.cursor_line, line_count);
-                } else if self.cursor_line > 0 {
+                } else if self.diff.scroll > 0 {
+                    self.diff.scroll -= 1;
+                    self.diff.cursor_line = self.diff.cursor_line.saturating_sub(1);
+                    self.diff.cursor_line =
+                        self.skip_hunk_header_backward(self.diff.cursor_line, line_count);
+                } else if self.diff.cursor_line > 0 {
                     // ページ先頭に到達 → カーソルのみ移動
-                    self.cursor_line -= 1;
-                    self.cursor_line = self.skip_hunk_header_backward(self.cursor_line, line_count);
+                    self.diff.cursor_line -= 1;
+                    self.diff.cursor_line =
+                        self.skip_hunk_header_backward(self.diff.cursor_line, line_count);
                 }
             }
             _ => {}
@@ -161,7 +163,7 @@ impl App {
                     self.focused_panel = Panel::DiffView;
                 } else if self.focused_panel == Panel::DiffView {
                     // DiffView で Enter → カーソル行にコメントがあれば CommentView
-                    let comments = self.comments_at_diff_line(self.cursor_line);
+                    let comments = self.comments_at_diff_line(self.diff.cursor_line);
                     if !comments.is_empty() {
                         self.review.viewing_comments = comments;
                         self.mode = AppMode::CommentView;
@@ -219,10 +221,10 @@ impl App {
                     self.pr_desc_scroll = 0;
                 }
                 Panel::DiffView => {
-                    self.cursor_line = 0;
-                    self.diff_scroll = 0;
+                    self.diff.cursor_line = 0;
+                    self.diff.scroll = 0;
                     let max = self.current_diff_line_count();
-                    self.cursor_line = self.skip_hunk_header_forward(0, max);
+                    self.diff.cursor_line = self.skip_hunk_header_forward(0, max);
                 }
                 _ => {}
             },
@@ -243,9 +245,11 @@ impl App {
             }
             KeyCode::Char('c') => {
                 // DiffView で直接 c: カーソル行のみで単一行コメント（hunk header 上は不可）
-                if self.focused_panel == Panel::DiffView && !self.is_hunk_header(self.cursor_line) {
+                if self.focused_panel == Panel::DiffView
+                    && !self.is_hunk_header(self.diff.cursor_line)
+                {
                     self.line_selection = Some(LineSelection {
-                        anchor: self.cursor_line,
+                        anchor: self.diff.cursor_line,
                     });
                     self.review.comment_input.clear();
                     self.mode = AppMode::CommentInput;
@@ -287,24 +291,24 @@ impl App {
                 self.mode = AppMode::ReviewSubmit;
             }
             KeyCode::Char('w') => {
-                if self.diff_wrap {
+                if self.diff.wrap {
                     // ON → OFF: 表示行→論理行に変換
-                    let logical = self.visual_to_logical_line(self.diff_scroll as usize);
-                    self.diff_wrap = false;
-                    self.diff_scroll = logical as u16;
+                    let logical = self.visual_to_logical_line(self.diff.scroll as usize);
+                    self.diff.wrap = false;
+                    self.diff.scroll = logical as u16;
                 } else {
                     // OFF → ON: 論理行→表示行に変換
-                    let visual = self.visual_line_offset(self.diff_scroll as usize);
-                    self.diff_wrap = true;
-                    self.diff_scroll = visual as u16;
+                    let visual = self.visual_line_offset(self.diff.scroll as usize);
+                    self.diff.wrap = true;
+                    self.diff.scroll = visual as u16;
                 }
                 // 次の render で再計算されるまでの1フレームの不整合を防ぐ
-                self.diff_visual_offsets = None;
+                self.diff.visual_offsets = None;
                 self.ensure_cursor_visible();
             }
             KeyCode::Char('n') => {
-                self.show_line_numbers = !self.show_line_numbers;
-                self.diff_visual_offsets = None;
+                self.diff.show_line_numbers = !self.diff.show_line_numbers;
+                self.diff.visual_offsets = None;
                 self.ensure_cursor_visible();
             }
             KeyCode::Char('z') => {

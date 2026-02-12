@@ -151,3 +151,31 @@ pub struct ReviewState {
     pub needs_submit: Option<ReviewEvent>,
     pub quit_after_submit: bool,
 }
+
+/// DiffView パネルの表示状態
+#[derive(Debug)]
+pub struct DiffViewState {
+    pub scroll: u16,
+    pub cursor_line: usize,
+    pub view_height: u16,
+    pub view_width: u16,
+    pub wrap: bool,
+    pub show_line_numbers: bool,
+    pub visual_offsets: Option<Vec<usize>>,
+    pub highlight_cache: Option<(usize, usize, ratatui::text::Text<'static>)>,
+}
+
+impl Default for DiffViewState {
+    fn default() -> Self {
+        Self {
+            scroll: 0,
+            cursor_line: 0,
+            view_height: 20,
+            view_width: 80,
+            wrap: false,
+            show_line_numbers: false,
+            visual_offsets: None,
+            highlight_cache: None,
+        }
+    }
+}

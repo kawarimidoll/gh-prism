@@ -417,8 +417,8 @@ impl App {
         };
 
         // DiffView の表示可能サイズを更新（ボーダー分を引く）
-        self.diff_view_height = diff_area.height.saturating_sub(2);
-        self.diff_view_width = diff_area.width.saturating_sub(2);
+        self.diff.view_height = diff_area.height.saturating_sub(2);
+        self.diff.view_width = diff_area.width.saturating_sub(2);
 
         // コミットメッセージ描画
         if let Some(msg_area) = msg_area {
@@ -468,7 +468,7 @@ impl App {
         let left_title = {
             let selection_suffix = match (&self.mode, &self.line_selection) {
                 (AppMode::LineSelect | AppMode::CommentInput, Some(sel)) => {
-                    let count = sel.count(self.cursor_line);
+                    let count = sel.count(self.diff.cursor_line);
                     format!(
                         " - {} line{} selected",
                         count,
@@ -479,7 +479,7 @@ impl App {
             };
 
             let file_path_part = if has_file && !filename.is_empty() {
-                let wrap_width = if self.diff_wrap { 7 } else { 0 }; // " [WRAP]"
+                let wrap_width = if self.diff.wrap { 7 } else { 0 }; // " [WRAP]"
                 let max_path_width = (area.width as usize)
                     .saturating_sub(2) // borders
                     .saturating_sub(7) // " Diff " + trailing " "
@@ -491,7 +491,7 @@ impl App {
                 String::new()
             };
 
-            let wrap_suffix = if self.diff_wrap { " [WRAP]" } else { "" };
+            let wrap_suffix = if self.diff.wrap { " [WRAP]" } else { "" };
 
             if file_path_part.is_empty() {
                 if selection_suffix.is_empty() {
@@ -534,7 +534,7 @@ impl App {
         let inner_width = diff_area.width.saturating_sub(2);
 
         let cache_hit = matches!(
-            &self.diff_highlight_cache,
+            &self.diff.highlight_cache,
             Some((ci, fi, _)) if *ci == commit_idx && *fi == file_idx
         );
 
@@ -573,11 +573,11 @@ impl App {
                         .collect();
                     Text::from(lines)
                 };
-            self.diff_highlight_cache = Some((commit_idx, file_idx, base_text));
+            self.diff.highlight_cache = Some((commit_idx, file_idx, base_text));
         }
 
         // キャッシュからクローンしてオーバーレイ適用用の可変テキストを作成
-        let mut text = self.diff_highlight_cache.as_ref().unwrap().2.clone();
+        let mut text = self.diff.highlight_cache.as_ref().unwrap().2.clone();
 
         // Hunk ヘッダーを整形表示に置換
         let patch_lines: Vec<&str> = patch.lines().collect();
@@ -595,7 +595,7 @@ impl App {
         // Wrap モードで空白のみの行が余分に折り返されるのを防ぐ。
         // ratatui の Paragraph + Wrap { trim: false } は " " を 2 visual rows に展開するため、
         // 空白のみの spans をクリアして空 Line にする（1 visual row でレンダリングされる）。
-        if self.diff_wrap {
+        if self.diff.wrap {
             for line in &mut text.lines {
                 if line.spans.iter().all(|s| s.content.trim().is_empty()) {
                     line.spans.clear();
@@ -604,7 +604,7 @@ impl App {
         }
 
         // 行番号プレフィックスを各行の先頭に挿入
-        if self.show_line_numbers {
+        if self.diff.show_line_numbers {
             use crate::github::review::parse_hunk_header;
 
             let line_num_style = Style::default().fg(Color::DarkGray);
@@ -676,10 +676,10 @@ impl App {
         for (idx, line) in text.lines.iter_mut().enumerate() {
             let is_selected = has_selection
                 && self.line_selection.is_some_and(|sel| {
-                    let (start, end) = sel.range(self.cursor_line);
+                    let (start, end) = sel.range(self.diff.cursor_line);
                     idx >= start && idx <= end
                 });
-            let is_cursor = show_cursor && !has_selection && idx == self.cursor_line;
+            let is_cursor = show_cursor && !has_selection && idx == self.diff.cursor_line;
             let is_pending = self
                 .review
                 .pending_comments
@@ -720,7 +720,7 @@ impl App {
 
         // Wrap 有効時、レンダリングに使う実テキストから視覚行オフセットを計算してキャッシュ。
         // visual_line_offset / visual_to_logical_line はこのキャッシュを参照する。
-        if self.diff_wrap {
+        if self.diff.wrap {
             let mut offsets = Vec::with_capacity(text.lines.len() + 1);
             let mut visual = 0usize;
             offsets.push(0);
@@ -732,15 +732,15 @@ impl App {
                 visual += count;
                 offsets.push(visual);
             }
-            self.diff_visual_offsets = Some(offsets);
+            self.diff.visual_offsets = Some(offsets);
         } else {
-            self.diff_visual_offsets = None;
+            self.diff.visual_offsets = None;
         }
 
         let paragraph = Paragraph::new(text)
             .block(block)
-            .scroll((self.diff_scroll, 0));
-        let paragraph = if self.diff_wrap {
+            .scroll((self.diff.scroll, 0));
+        let paragraph = if self.diff.wrap {
             paragraph.wrap(Wrap { trim: false })
         } else {
             paragraph
@@ -756,7 +756,7 @@ impl App {
                 width: inner_width,
                 height: diff_area.height.saturating_sub(2),
             };
-            let scroll = self.diff_scroll as usize;
+            let scroll = self.diff.scroll as usize;
             let buf = frame.buffer_mut();
             for &(logical_line, bg_color) in &bg_lines {
                 let vis_start = self.visual_line_offset(logical_line);
@@ -783,7 +783,7 @@ impl App {
 
     fn render_comment_input(&self, frame: &mut Frame, area: Rect) {
         let selection_info = if let Some(selection) = self.line_selection {
-            let (start, end) = selection.range(self.cursor_line);
+            let (start, end) = selection.range(self.diff.cursor_line);
             format!(" L{}–L{} ", start + 1, end + 1)
         } else {
             String::new()

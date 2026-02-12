@@ -120,35 +120,36 @@ impl App {
 
     /// カーソルをリセット（先頭の @@ 行をスキップ）
     pub(super) fn reset_cursor(&mut self) {
-        self.cursor_line = 0;
-        self.diff_scroll = 0;
+        self.diff.cursor_line = 0;
+        self.diff.scroll = 0;
         let max = self.current_diff_line_count();
-        self.cursor_line = self.skip_hunk_header_forward(0, max);
+        self.diff.cursor_line = self.skip_hunk_header_forward(0, max);
     }
 
     /// カーソルを下に移動（@@ 行をスキップ）
     fn move_cursor_down(&mut self) {
         let line_count = self.current_diff_line_count();
-        if self.cursor_line + 1 < line_count {
-            self.cursor_line += 1;
-            self.cursor_line = self.skip_hunk_header_forward(self.cursor_line, line_count);
+        if self.diff.cursor_line + 1 < line_count {
+            self.diff.cursor_line += 1;
+            self.diff.cursor_line =
+                self.skip_hunk_header_forward(self.diff.cursor_line, line_count);
             self.ensure_cursor_visible();
         }
     }
 
     /// カーソルを上に移動（@@ 行をスキップ）
     fn move_cursor_up(&mut self) {
-        if self.cursor_line > 0 {
-            self.cursor_line -= 1;
+        if self.diff.cursor_line > 0 {
+            self.diff.cursor_line -= 1;
             let max = self.current_diff_line_count();
-            self.cursor_line = self.skip_hunk_header_backward(self.cursor_line, max);
+            self.diff.cursor_line = self.skip_hunk_header_backward(self.diff.cursor_line, max);
             self.ensure_cursor_visible();
         }
     }
 
     /// 行番号プレフィックスの表示幅を返す
     pub(super) fn line_number_prefix_width(&self) -> u16 {
-        if !self.show_line_numbers {
+        if !self.diff.show_line_numbers {
             return 0;
         }
         let file_status = self.current_file().map(|f| f.status.as_str()).unwrap_or("");
@@ -165,18 +166,18 @@ impl App {
     /// `logical_line == line_count` のとき、合計表示行数を返す。
     /// render 時に計算したキャッシュを優先し、未計算時は patch テキストからフォールバック。
     pub(super) fn visual_line_offset(&self, logical_line: usize) -> usize {
-        if !self.diff_wrap {
+        if !self.diff.wrap {
             return logical_line;
         }
         // キャッシュがあればそれを使う（レンダリングと同じデータソース）
-        if let Some(offsets) = &self.diff_visual_offsets {
+        if let Some(offsets) = &self.diff.visual_offsets {
             return offsets
                 .get(logical_line)
                 .copied()
                 .unwrap_or_else(|| offsets.last().copied().unwrap_or(logical_line));
         }
         // フォールバック: patch テキストから計算（初回 render 前・テスト用）
-        let width = self.diff_view_width;
+        let width = self.diff.view_width;
         if width == 0 {
             return logical_line;
         }
@@ -210,11 +211,11 @@ impl App {
 
     /// wrap 有効時に表示行位置から論理行を逆引きする
     pub(super) fn visual_to_logical_line(&self, visual_target: usize) -> usize {
-        if !self.diff_wrap {
+        if !self.diff.wrap {
             return visual_target;
         }
         // キャッシュがあればそれを使う
-        if let Some(offsets) = &self.diff_visual_offsets {
+        if let Some(offsets) = &self.diff.visual_offsets {
             // offsets[i] = 論理行 i の開始表示行。visual_target 以下で最大の i を探す。
             return match offsets.binary_search(&visual_target) {
                 Ok(i) => i,
@@ -222,7 +223,7 @@ impl App {
             };
         }
         // フォールバック: patch テキストから計算
-        let width = self.diff_view_width;
+        let width = self.diff.view_width;
         if width == 0 {
             return visual_target;
         }
@@ -255,26 +256,26 @@ impl App {
 
     /// カーソルが画面内に収まるようスクロールを調整
     pub(super) fn ensure_cursor_visible(&mut self) {
-        let visible_lines = self.diff_view_height as usize;
+        let visible_lines = self.diff.view_height as usize;
         if visible_lines == 0 {
             return;
         }
 
-        if self.diff_wrap {
-            let cursor_visual = self.visual_line_offset(self.cursor_line);
-            let cursor_visual_end = self.visual_line_offset(self.cursor_line + 1);
-            let scroll = self.diff_scroll as usize;
+        if self.diff.wrap {
+            let cursor_visual = self.visual_line_offset(self.diff.cursor_line);
+            let cursor_visual_end = self.visual_line_offset(self.diff.cursor_line + 1);
+            let scroll = self.diff.scroll as usize;
             if cursor_visual < scroll {
-                self.diff_scroll = cursor_visual as u16;
+                self.diff.scroll = cursor_visual as u16;
             } else if cursor_visual_end > scroll + visible_lines {
-                self.diff_scroll = cursor_visual_end.saturating_sub(visible_lines) as u16;
+                self.diff.scroll = cursor_visual_end.saturating_sub(visible_lines) as u16;
             }
         } else {
-            let scroll = self.diff_scroll as usize;
-            if self.cursor_line < scroll {
-                self.diff_scroll = self.cursor_line as u16;
-            } else if self.cursor_line >= scroll + visible_lines {
-                self.diff_scroll = (self.cursor_line - visible_lines + 1) as u16;
+            let scroll = self.diff.scroll as usize;
+            if self.diff.cursor_line < scroll {
+                self.diff.scroll = self.diff.cursor_line as u16;
+            } else if self.diff.cursor_line >= scroll + visible_lines {
+                self.diff.scroll = (self.diff.cursor_line - visible_lines + 1) as u16;
             }
         }
     }
@@ -292,17 +293,18 @@ impl App {
         if self.focused_panel != Panel::DiffView {
             return;
         }
-        let half = (self.diff_view_height as usize) / 2;
+        let half = (self.diff.view_height as usize) / 2;
         let line_count = self.current_diff_line_count();
-        if self.diff_wrap {
-            let target_visual = self.visual_line_offset(self.cursor_line) + half;
-            self.cursor_line = self
+        if self.diff.wrap {
+            let target_visual = self.visual_line_offset(self.diff.cursor_line) + half;
+            self.diff.cursor_line = self
                 .visual_to_logical_line(target_visual)
                 .min(line_count.saturating_sub(1));
         } else {
-            self.cursor_line = (self.cursor_line + half).min(line_count.saturating_sub(1));
+            self.diff.cursor_line =
+                (self.diff.cursor_line + half).min(line_count.saturating_sub(1));
         }
-        self.cursor_line = self.skip_hunk_header_forward(self.cursor_line, line_count);
+        self.diff.cursor_line = self.skip_hunk_header_forward(self.diff.cursor_line, line_count);
         self.ensure_cursor_visible();
     }
 
@@ -311,16 +313,16 @@ impl App {
         if self.focused_panel != Panel::DiffView {
             return;
         }
-        let half = (self.diff_view_height as usize) / 2;
+        let half = (self.diff.view_height as usize) / 2;
         let line_count = self.current_diff_line_count();
-        if self.diff_wrap {
-            let cur_visual = self.visual_line_offset(self.cursor_line);
+        if self.diff.wrap {
+            let cur_visual = self.visual_line_offset(self.diff.cursor_line);
             let target_visual = cur_visual.saturating_sub(half);
-            self.cursor_line = self.visual_to_logical_line(target_visual);
+            self.diff.cursor_line = self.visual_to_logical_line(target_visual);
         } else {
-            self.cursor_line = self.cursor_line.saturating_sub(half);
+            self.diff.cursor_line = self.diff.cursor_line.saturating_sub(half);
         }
-        self.cursor_line = self.skip_hunk_header_backward(self.cursor_line, line_count);
+        self.diff.cursor_line = self.skip_hunk_header_backward(self.diff.cursor_line, line_count);
         self.ensure_cursor_visible();
     }
 
@@ -328,8 +330,9 @@ impl App {
     pub(super) fn scroll_diff_to_end(&mut self) {
         let line_count = self.current_diff_line_count();
         if line_count > 0 {
-            self.cursor_line = line_count - 1;
-            self.cursor_line = self.skip_hunk_header_backward(self.cursor_line, line_count);
+            self.diff.cursor_line = line_count - 1;
+            self.diff.cursor_line =
+                self.skip_hunk_header_backward(self.diff.cursor_line, line_count);
             self.ensure_cursor_visible();
         }
     }
@@ -339,17 +342,18 @@ impl App {
         if self.focused_panel != Panel::DiffView {
             return;
         }
-        let page = self.diff_view_height as usize;
+        let page = self.diff.view_height as usize;
         let line_count = self.current_diff_line_count();
-        if self.diff_wrap {
-            let target_visual = self.visual_line_offset(self.cursor_line) + page;
-            self.cursor_line = self
+        if self.diff.wrap {
+            let target_visual = self.visual_line_offset(self.diff.cursor_line) + page;
+            self.diff.cursor_line = self
                 .visual_to_logical_line(target_visual)
                 .min(line_count.saturating_sub(1));
         } else {
-            self.cursor_line = (self.cursor_line + page).min(line_count.saturating_sub(1));
+            self.diff.cursor_line =
+                (self.diff.cursor_line + page).min(line_count.saturating_sub(1));
         }
-        self.cursor_line = self.skip_hunk_header_forward(self.cursor_line, line_count);
+        self.diff.cursor_line = self.skip_hunk_header_forward(self.diff.cursor_line, line_count);
         self.ensure_cursor_visible();
     }
 
@@ -358,16 +362,16 @@ impl App {
         if self.focused_panel != Panel::DiffView {
             return;
         }
-        let page = self.diff_view_height as usize;
+        let page = self.diff.view_height as usize;
         let line_count = self.current_diff_line_count();
-        if self.diff_wrap {
-            let cur_visual = self.visual_line_offset(self.cursor_line);
+        if self.diff.wrap {
+            let cur_visual = self.visual_line_offset(self.diff.cursor_line);
             let target_visual = cur_visual.saturating_sub(page);
-            self.cursor_line = self.visual_to_logical_line(target_visual);
+            self.diff.cursor_line = self.visual_to_logical_line(target_visual);
         } else {
-            self.cursor_line = self.cursor_line.saturating_sub(page);
+            self.diff.cursor_line = self.diff.cursor_line.saturating_sub(page);
         }
-        self.cursor_line = self.skip_hunk_header_backward(self.cursor_line, line_count);
+        self.diff.cursor_line = self.skip_hunk_header_backward(self.diff.cursor_line, line_count);
         self.ensure_cursor_visible();
     }
 
@@ -379,7 +383,7 @@ impl App {
         };
         let lines: Vec<&str> = patch.lines().collect();
         let len = lines.len();
-        let mut i = self.cursor_line;
+        let mut i = self.diff.cursor_line;
 
         // 現在の変更ブロック内なら末尾まで飛ばす
         while i < len && Self::is_change_line(lines[i]) {
@@ -391,7 +395,7 @@ impl App {
         }
         // 次の変更ブロックの先頭に到達
         if i < len {
-            self.cursor_line = i;
+            self.diff.cursor_line = i;
             self.ensure_cursor_visible();
         }
     }
@@ -403,10 +407,10 @@ impl App {
             None => return,
         };
         let lines: Vec<&str> = patch.lines().collect();
-        if self.cursor_line == 0 {
+        if self.diff.cursor_line == 0 {
             return;
         }
-        let mut i = self.cursor_line - 1;
+        let mut i = self.diff.cursor_line - 1;
 
         // 非変更行を逆方向に飛ばす
         while i > 0 && !Self::is_change_line(lines[i]) {
@@ -419,7 +423,7 @@ impl App {
         while i > 0 && Self::is_change_line(lines[i - 1]) {
             i -= 1;
         }
-        self.cursor_line = i;
+        self.diff.cursor_line = i;
         self.ensure_cursor_visible();
     }
 
@@ -434,10 +438,10 @@ impl App {
             None => return,
         };
         let line_count = patch.lines().count();
-        for (i, line) in patch.lines().enumerate().skip(self.cursor_line + 1) {
+        for (i, line) in patch.lines().enumerate().skip(self.diff.cursor_line + 1) {
             if line.starts_with("@@") {
                 // @@ の次の実コード行にカーソルを置く
-                self.cursor_line = self.skip_hunk_header_forward(i, line_count);
+                self.diff.cursor_line = self.skip_hunk_header_forward(i, line_count);
                 self.ensure_cursor_visible();
                 return;
             }
@@ -452,14 +456,14 @@ impl App {
         };
         let lines: Vec<&str> = patch.lines().collect();
         let line_count = lines.len();
-        for i in (0..self.cursor_line).rev() {
+        for i in (0..self.diff.cursor_line).rev() {
             if lines[i].starts_with("@@") {
                 let target = self.skip_hunk_header_forward(i, line_count);
                 // スキップ先が現在位置と同じなら、さらに前の hunk を探す
-                if target >= self.cursor_line {
+                if target >= self.diff.cursor_line {
                     continue;
                 }
-                self.cursor_line = target;
+                self.diff.cursor_line = target;
                 self.ensure_cursor_visible();
                 return;
             }
