@@ -44,10 +44,10 @@ impl App {
             AppMode::MediaViewer => " [MEDIA] ",
         };
 
-        let comments_badge = if self.pending_comments.is_empty() {
+        let comments_badge = if self.review.pending_comments.is_empty() {
             String::new()
         } else {
-            format!(" [{}💬]", self.pending_comments.len())
+            format!(" [{}💬]", self.review.pending_comments.len())
         };
 
         let header_bg = match self.mode {
@@ -252,6 +252,7 @@ impl App {
                         for f in files {
                             count += self.cached_visible_comment_count(&c.sha, &f.filename);
                             count += self
+                                .review
                                 .pending_comments
                                 .iter()
                                 .filter(|pc| pc.commit_sha == c.sha && pc.file_path == f.filename)
@@ -337,6 +338,7 @@ impl App {
                     .map(|sha| self.cached_visible_comment_count(sha, &f.filename))
                     .unwrap_or(0);
                 let visible_pending = self
+                    .review
                     .pending_comments
                     .iter()
                     .filter(|pc| {
@@ -679,6 +681,7 @@ impl App {
                 });
             let is_cursor = show_cursor && !has_selection && idx == self.cursor_line;
             let is_pending = self
+                .review
                 .pending_comments
                 .iter()
                 .any(|c| c.file_path == filename && idx >= c.start_line && idx <= c.end_line);
@@ -791,13 +794,13 @@ impl App {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Green));
 
-        let paragraph = Paragraph::new(self.comment_input.as_str()).block(block);
+        let paragraph = Paragraph::new(self.review.comment_input.as_str()).block(block);
         frame.render_widget(paragraph, area);
 
         // set_cursor_position でリアルカーソルを表示（表示幅で計算）
         frame.set_cursor_position(Position::new(
-            area.x + self.comment_input.width() as u16 + 1, // +1 for border
-            area.y + 1,                                     // +1 for border
+            area.x + self.review.comment_input.width() as u16 + 1, // +1 for border
+            area.y + 1,                                            // +1 for border
         ));
     }
 
@@ -812,21 +815,21 @@ impl App {
         let dialog = Self::centered_rect(36, 10, area);
         frame.render_widget(Clear, dialog);
 
-        let comments_info = if self.pending_comments.is_empty() {
+        let comments_info = if self.review.pending_comments.is_empty() {
             "No pending comments".to_string()
         } else {
-            format!("{} pending comment(s)", self.pending_comments.len())
+            format!("{} pending comment(s)", self.review.pending_comments.len())
         };
 
         let mut lines = vec![Line::raw("")];
 
         for (i, event) in self.available_events().iter().enumerate() {
-            let marker = if i == self.review_event_cursor {
+            let marker = if i == self.review.review_event_cursor {
                 "▶ "
             } else {
                 "  "
             };
-            let style = if i == self.review_event_cursor {
+            let style = if i == self.review.review_event_cursor {
                 Style::default().fg(Color::Yellow)
             } else {
                 Style::default()
@@ -862,20 +865,20 @@ impl App {
         let dialog = Self::centered_rect(50, 8, area);
         frame.render_widget(Clear, dialog);
 
-        let event = self.available_events()[self.review_event_cursor];
+        let event = self.available_events()[self.review.review_event_cursor];
 
         // ダイアログ内で表示できる入力テキスト幅を計算
         // dialog 内部幅 = dialog.width - 2(border), プレフィックス "  > " = 4文字
         let max_visible = dialog.width.saturating_sub(2 + 4) as usize;
-        let input_width = self.review_body_input.width();
+        let input_width = self.review.review_body_input.width();
         let visible_text = if input_width <= max_visible {
-            self.review_body_input.as_str()
+            self.review.review_body_input.as_str()
         } else {
             // 末尾を表示: バイト境界を正しく扱うため文字単位でスキップ
             let skip_width = input_width - max_visible;
             let mut w = 0;
             let mut byte_offset = 0;
-            for (i, ch) in self.review_body_input.char_indices() {
+            for (i, ch) in self.review.review_body_input.char_indices() {
                 if w >= skip_width {
                     byte_offset = i;
                     break;
@@ -883,7 +886,7 @@ impl App {
                 w += ch.width().unwrap_or(0);
                 byte_offset = i + ch.len_utf8();
             }
-            &self.review_body_input[byte_offset..]
+            &self.review.review_body_input[byte_offset..]
         };
 
         let lines = vec![
@@ -921,7 +924,10 @@ impl App {
         let lines = vec![
             Line::raw(""),
             Line::styled(
-                format!("  {} unsent comment(s).", self.pending_comments.len()),
+                format!(
+                    "  {} unsent comment(s).",
+                    self.review.pending_comments.len()
+                ),
                 Style::default().fg(Color::Yellow),
             ),
             Line::styled("  Submit before quitting?", Style::default()),
@@ -943,6 +949,7 @@ impl App {
     fn render_comment_view_dialog(&mut self, frame: &mut Frame, area: Rect) {
         // ダイアログサイズ: 幅60, 高さはコメント数に応じて動的（最大 area の 2/3）
         let content_height: u16 = self
+            .review
             .viewing_comments
             .iter()
             .map(|c| {
@@ -957,7 +964,7 @@ impl App {
         frame.render_widget(Clear, dialog);
 
         let mut lines = vec![Line::raw("")];
-        for comment in &self.viewing_comments {
+        for comment in &self.review.viewing_comments {
             lines.push(Line::styled(
                 format!(
                     "  @{} ({})",
@@ -988,9 +995,9 @@ impl App {
         // Paragraph::line_count() で wrap 考慮の正確な視覚行数を取得
         let visual_total = paragraph.line_count(dialog_width) as u16;
         let visible_height = dialog_height.saturating_sub(2);
-        self.comment_view_max_scroll = visual_total.saturating_sub(visible_height);
+        self.review.comment_view_max_scroll = visual_total.saturating_sub(visible_height);
 
-        let paragraph = paragraph.scroll((self.viewing_comment_scroll, 0));
+        let paragraph = paragraph.scroll((self.review.viewing_comment_scroll, 0));
         frame.render_widget(paragraph, dialog);
     }
 

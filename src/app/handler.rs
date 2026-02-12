@@ -140,7 +140,7 @@ impl App {
 
         match code {
             KeyCode::Char('q') => {
-                if self.pending_comments.is_empty() {
+                if self.review.pending_comments.is_empty() {
                     self.should_quit = true;
                 } else {
                     self.mode = AppMode::QuitConfirm;
@@ -163,7 +163,7 @@ impl App {
                     // DiffView で Enter → カーソル行にコメントがあれば CommentView
                     let comments = self.comments_at_diff_line(self.cursor_line);
                     if !comments.is_empty() {
-                        self.viewing_comments = comments;
+                        self.review.viewing_comments = comments;
                         self.mode = AppMode::CommentView;
                     }
                 }
@@ -247,7 +247,7 @@ impl App {
                     self.line_selection = Some(LineSelection {
                         anchor: self.cursor_line,
                     });
-                    self.comment_input.clear();
+                    self.review.comment_input.clear();
                     self.mode = AppMode::CommentInput;
                 }
             }
@@ -283,7 +283,7 @@ impl App {
                 }
             }
             KeyCode::Char('S') => {
-                self.review_event_cursor = 0;
+                self.review.review_event_cursor = 0;
                 self.mode = AppMode::ReviewSubmit;
             }
             KeyCode::Char('w') => {
@@ -342,10 +342,10 @@ impl App {
             KeyCode::Esc => self.cancel_comment_input(),
             KeyCode::Enter => self.confirm_comment(),
             KeyCode::Backspace => {
-                self.comment_input.pop();
+                self.review.comment_input.pop();
             }
             KeyCode::Char(c) => {
-                self.comment_input.push(c);
+                self.review.comment_input.push(c);
             }
             _ => {}
         }
@@ -355,17 +355,18 @@ impl App {
     pub(super) fn handle_comment_view_mode(&mut self, code: KeyCode) {
         match code {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
-                self.viewing_comments.clear();
-                self.viewing_comment_scroll = 0;
+                self.review.viewing_comments.clear();
+                self.review.viewing_comment_scroll = 0;
                 self.mode = AppMode::Normal;
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.viewing_comment_scroll < self.comment_view_max_scroll {
-                    self.viewing_comment_scroll += 1;
+                if self.review.viewing_comment_scroll < self.review.comment_view_max_scroll {
+                    self.review.viewing_comment_scroll += 1;
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.viewing_comment_scroll = self.viewing_comment_scroll.saturating_sub(1);
+                self.review.viewing_comment_scroll =
+                    self.review.viewing_comment_scroll.saturating_sub(1);
             }
             _ => {}
         }
@@ -375,30 +376,30 @@ impl App {
     pub(super) fn handle_review_submit_mode(&mut self, code: KeyCode) {
         match code {
             KeyCode::Esc => {
-                self.quit_after_submit = false;
+                self.review.quit_after_submit = false;
                 self.mode = AppMode::Normal;
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                self.review_event_cursor =
-                    (self.review_event_cursor + 1) % self.available_events().len();
+                self.review.review_event_cursor =
+                    (self.review.review_event_cursor + 1) % self.available_events().len();
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.review_event_cursor = if self.review_event_cursor == 0 {
+                self.review.review_event_cursor = if self.review.review_event_cursor == 0 {
                     self.available_events().len() - 1
                 } else {
-                    self.review_event_cursor - 1
+                    self.review.review_event_cursor - 1
                 };
             }
             KeyCode::Enter => {
-                let event = self.available_events()[self.review_event_cursor];
+                let event = self.available_events()[self.review.review_event_cursor];
                 // COMMENT は pending_comments が必要
-                if event == ReviewEvent::Comment && self.pending_comments.is_empty() {
+                if event == ReviewEvent::Comment && self.review.pending_comments.is_empty() {
                     self.status_message =
                         Some(StatusMessage::error("No pending comments to submit"));
                     self.mode = AppMode::Normal;
                     return;
                 }
-                self.review_body_input.clear();
+                self.review.review_body_input.clear();
                 self.mode = AppMode::ReviewBodyInput;
             }
             _ => {}
@@ -409,23 +410,23 @@ impl App {
     pub(super) fn handle_review_body_input_mode(&mut self, code: KeyCode) {
         match code {
             KeyCode::Esc => {
-                self.review_body_input.clear();
+                self.review.review_body_input.clear();
                 self.mode = AppMode::ReviewSubmit;
             }
             KeyCode::Enter => {
-                let event = self.available_events()[self.review_event_cursor];
+                let event = self.available_events()[self.review.review_event_cursor];
                 self.status_message = Some(StatusMessage::info(format!(
                     "Submitting ({})...",
                     event.label()
                 )));
-                self.needs_submit = Some(event);
+                self.review.needs_submit = Some(event);
                 self.mode = AppMode::Normal;
             }
             KeyCode::Backspace => {
-                self.review_body_input.pop();
+                self.review.review_body_input.pop();
             }
             KeyCode::Char(c) => {
-                self.review_body_input.push(c);
+                self.review.review_body_input.push(c);
             }
             _ => {}
         }
@@ -436,13 +437,13 @@ impl App {
         match code {
             KeyCode::Char('y') => {
                 // レビュー送信ダイアログへ遷移（送信後に終了）
-                self.review_event_cursor = 0;
-                self.quit_after_submit = true;
+                self.review.review_event_cursor = 0;
+                self.review.quit_after_submit = true;
                 self.mode = AppMode::ReviewSubmit;
             }
             KeyCode::Char('n') => {
                 // 破棄して終了
-                self.pending_comments.clear();
+                self.review.pending_comments.clear();
                 self.should_quit = true;
             }
             KeyCode::Char('c') | KeyCode::Esc => {

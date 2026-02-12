@@ -136,3 +136,18 @@ pub struct MediaRef {
     pub url: String,
     pub alt: String,
 }
+
+/// レビュー・コメント関連の状態
+#[derive(Debug, Default)]
+pub struct ReviewState {
+    pub comment_input: String,
+    pub pending_comments: Vec<crate::github::review::PendingComment>,
+    pub review_comments: Vec<crate::github::comments::ReviewComment>,
+    pub viewing_comments: Vec<crate::github::comments::ReviewComment>,
+    pub viewing_comment_scroll: u16,
+    pub comment_view_max_scroll: u16,
+    pub review_event_cursor: usize,
+    pub review_body_input: String,
+    pub needs_submit: Option<ReviewEvent>,
+    pub quit_after_submit: bool,
+}

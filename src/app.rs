@@ -57,30 +57,12 @@ pub struct App {
     diff_view_width: u16,
     /// 行選択モードでの選択状態
     line_selection: Option<LineSelection>,
-    /// コメント入力バッファ
-    comment_input: String,
-    /// 保留中のコメント一覧
-    pending_comments: Vec<PendingComment>,
-    /// 既存のレビューコメント（GitHub から取得済み）
-    review_comments: Vec<ReviewComment>,
-    /// 現在表示中のコメント（CommentView モード用）
-    viewing_comments: Vec<ReviewComment>,
-    /// CommentView ダイアログのスクロール位置
-    viewing_comment_scroll: u16,
-    /// CommentView ダイアログのスクロール上限（render 時に更新）
-    comment_view_max_scroll: u16,
+    /// レビュー・コメント関連の状態
+    pub review: ReviewState,
     /// GitHub API クライアント（テスト時は None）
     client: Option<Octocrab>,
     /// ステータスメッセージ（ヘッダーバーに表示、3秒後に自動クリア）
     status_message: Option<StatusMessage>,
-    /// レビュー送信フラグ（draw 後に実行するため）
-    needs_submit: Option<ReviewEvent>,
-    /// レビュー送信ダイアログのカーソル位置（0=Comment, 1=Approve, 2=RequestChanges）
-    review_event_cursor: usize,
-    /// レビュー本文入力（ReviewBodyInput モード用）
-    review_body_input: String,
-    /// 送信後に終了するかどうか
-    quit_after_submit: bool,
     /// 2キーシーケンスの1文字目（`]` or `[`）を保持
     pending_key: Option<char>,
     /// ヘルプ画面のスクロール位置
@@ -178,18 +160,12 @@ impl App {
             diff_view_height: 20, // 初期値、render で更新される
             diff_view_width: 80,  // 初期値、render で更新される
             line_selection: None,
-            comment_input: String::new(),
-            pending_comments: Vec::new(),
-            review_comments,
-            viewing_comments: Vec::new(),
-            viewing_comment_scroll: 0,
-            comment_view_max_scroll: 0,
+            review: ReviewState {
+                review_comments,
+                ..Default::default()
+            },
             client,
             status_message: None,
-            needs_submit: None,
-            review_event_cursor: 0,
-            review_body_input: String::new(),
-            quit_after_submit: false,
             pending_key: None,
             help_scroll: 0,
             zoomed: false,
@@ -451,6 +427,7 @@ impl App {
 
         // ファイルに該当するコメントを絞り込み（outdated な line=None は除外）
         let file_comments: Vec<&ReviewComment> = self
+            .review
             .review_comments
             .iter()
             .filter(|c| c.path == file.filename && c.line.is_some())
@@ -503,7 +480,8 @@ impl App {
             review::Side::Right => "RIGHT",
         };
 
-        self.review_comments
+        self.review
+            .review_comments
             .iter()
             .filter(|c| {
                 c.path == file.filename
@@ -524,10 +502,10 @@ impl App {
             terminal.draw(|frame| self.render(frame))?;
 
             // draw 後に submit を実行（ローディング表示を先にユーザーへ見せる）
-            if let Some(event) = self.needs_submit.take() {
+            if let Some(event) = self.review.needs_submit.take() {
                 self.submit_review_with_event(event);
-                if self.quit_after_submit {
-                    self.quit_after_submit = false;
+                if self.review.quit_after_submit {
+                    self.review.quit_after_submit = false;
                     self.should_quit = true;
                 }
             }
@@ -654,20 +632,20 @@ impl App {
     /// コメント入力モードに入る（行選択がある場合のみ）
     fn enter_comment_input_mode(&mut self) {
         if self.line_selection.is_some() {
-            self.comment_input.clear();
+            self.review.comment_input.clear();
             self.mode = AppMode::CommentInput;
         }
     }
 
     /// コメント入力をキャンセルして LineSelect に戻る（選択範囲維持）
     fn cancel_comment_input(&mut self) {
-        self.comment_input.clear();
+        self.review.comment_input.clear();
         self.mode = AppMode::LineSelect;
     }
 
     /// コメントを確定して pending_comments に追加
     fn confirm_comment(&mut self) {
-        if self.comment_input.is_empty() {
+        if self.review.comment_input.is_empty() {
             return;
         }
 
@@ -684,16 +662,16 @@ impl App {
                 .map(|c| c.sha.clone())
                 .unwrap_or_default();
 
-            self.pending_comments.push(PendingComment {
+            self.review.pending_comments.push(PendingComment {
                 file_path,
                 start_line: start,
                 end_line: end,
-                body: self.comment_input.clone(),
+                body: self.review.comment_input.clone(),
                 commit_sha,
             });
         }
 
-        self.comment_input.clear();
+        self.review.comment_input.clear();
         self.line_selection = None;
         self.mode = AppMode::Normal;
     }
@@ -710,7 +688,7 @@ impl App {
     /// レビューを GitHub PR Review API に送信
     fn submit_review_with_event(&mut self, event: ReviewEvent) {
         // COMMENT はコメントが必要
-        if event == ReviewEvent::Comment && self.pending_comments.is_empty() {
+        if event == ReviewEvent::Comment && self.review.pending_comments.is_empty() {
             return;
         }
 
@@ -730,7 +708,7 @@ impl App {
             return;
         };
 
-        let count = self.pending_comments.len();
+        let count = self.review.pending_comments.len();
         let ctx = review::ReviewContext {
             client,
             owner,
@@ -743,10 +721,10 @@ impl App {
             Handle::current().block_on(review::submit_review(
                 &ctx,
                 head_sha,
-                &self.pending_comments,
+                &self.review.pending_comments,
                 &self.files_map,
                 event.as_api_str(),
-                &self.review_body_input,
+                &self.review.review_body_input,
             ))
         });
 
@@ -763,8 +741,8 @@ impl App {
                     format!("✓ {}", event.label())
                 };
                 self.status_message = Some(StatusMessage::info(msg));
-                self.pending_comments.clear();
-                self.review_body_input.clear();
+                self.review.pending_comments.clear();
+                self.review.review_body_input.clear();
             }
             Err(e) => {
                 self.status_message = Some(StatusMessage::error(format!("✗ Failed: {}", e)));
@@ -1419,7 +1397,7 @@ mod tests {
         // 'c' でコメント入力モードに遷移
         app.enter_comment_input_mode();
         assert_eq!(app.mode, AppMode::CommentInput);
-        assert!(app.comment_input.is_empty());
+        assert!(app.review.comment_input.is_empty());
     }
 
     #[test]
@@ -1449,19 +1427,19 @@ mod tests {
         // 文字入力
         app.handle_comment_input_mode(KeyCode::Char('H'));
         app.handle_comment_input_mode(KeyCode::Char('i'));
-        assert_eq!(app.comment_input, "Hi");
+        assert_eq!(app.review.comment_input, "Hi");
 
         // Backspace
         app.handle_comment_input_mode(KeyCode::Backspace);
-        assert_eq!(app.comment_input, "H");
+        assert_eq!(app.review.comment_input, "H");
 
         // 全文字削除
         app.handle_comment_input_mode(KeyCode::Backspace);
-        assert!(app.comment_input.is_empty());
+        assert!(app.review.comment_input.is_empty());
 
         // 空の状態でさらに Backspace しても panic しない
         app.handle_comment_input_mode(KeyCode::Backspace);
-        assert!(app.comment_input.is_empty());
+        assert!(app.review.comment_input.is_empty());
     }
 
     #[test]
@@ -1480,9 +1458,9 @@ mod tests {
         // Enter で確定
         app.confirm_comment();
         assert_eq!(app.mode, AppMode::Normal);
-        assert_eq!(app.pending_comments.len(), 1);
-        assert_eq!(app.pending_comments[0].body, "LGTM");
-        assert_eq!(app.pending_comments[0].file_path, "src/main.rs");
+        assert_eq!(app.review.pending_comments.len(), 1);
+        assert_eq!(app.review.pending_comments[0].body, "LGTM");
+        assert_eq!(app.review.pending_comments[0].file_path, "src/main.rs");
         assert!(app.line_selection.is_none());
     }
 
@@ -1496,7 +1474,7 @@ mod tests {
         // 空のまま Enter
         app.confirm_comment();
         assert_eq!(app.mode, AppMode::CommentInput);
-        assert!(app.pending_comments.is_empty());
+        assert!(app.review.pending_comments.is_empty());
     }
 
     #[test]
@@ -1604,39 +1582,39 @@ mod tests {
         // S キーで ReviewSubmit モードに遷移
         app.handle_normal_mode(KeyCode::Char('S'), KeyModifiers::SHIFT);
         assert_eq!(app.mode, AppMode::ReviewSubmit);
-        assert_eq!(app.review_event_cursor, 0);
+        assert_eq!(app.review.review_event_cursor, 0);
     }
 
     #[test]
     fn test_review_submit_dialog_navigation() {
         let mut app = create_app_with_patch();
         app.mode = AppMode::ReviewSubmit;
-        app.review_event_cursor = 0;
+        app.review.review_event_cursor = 0;
 
         // j で下に移動
         app.handle_review_submit_mode(KeyCode::Char('j'));
-        assert_eq!(app.review_event_cursor, 1);
+        assert_eq!(app.review.review_event_cursor, 1);
         app.handle_review_submit_mode(KeyCode::Char('j'));
-        assert_eq!(app.review_event_cursor, 2);
+        assert_eq!(app.review.review_event_cursor, 2);
         // 循環
         app.handle_review_submit_mode(KeyCode::Char('j'));
-        assert_eq!(app.review_event_cursor, 0);
+        assert_eq!(app.review.review_event_cursor, 0);
 
         // k で上に移動（循環）
         app.handle_review_submit_mode(KeyCode::Char('k'));
-        assert_eq!(app.review_event_cursor, 2);
+        assert_eq!(app.review.review_event_cursor, 2);
     }
 
     #[test]
     fn test_review_submit_comment_requires_pending() {
         let mut app = create_app_with_patch();
         app.mode = AppMode::ReviewSubmit;
-        app.review_event_cursor = 0; // Comment
+        app.review.review_event_cursor = 0; // Comment
 
         // pending_comments が空で Comment を選択するとエラー
         app.handle_review_submit_mode(KeyCode::Enter);
         assert_eq!(app.mode, AppMode::Normal);
-        assert!(app.needs_submit.is_none());
+        assert!(app.review.needs_submit.is_none());
         assert!(app.status_message.is_some());
         assert_eq!(
             app.status_message.as_ref().unwrap().level,
@@ -1648,13 +1626,13 @@ mod tests {
     fn test_review_submit_approve_transitions_to_body_input() {
         let mut app = create_app_with_patch();
         app.mode = AppMode::ReviewSubmit;
-        app.review_event_cursor = 1; // Approve
+        app.review.review_event_cursor = 1; // Approve
 
         // pending_comments が空でも Approve → ReviewBodyInput に遷移
         app.handle_review_submit_mode(KeyCode::Enter);
         assert_eq!(app.mode, AppMode::ReviewBodyInput);
-        assert!(app.review_body_input.is_empty());
-        assert!(app.needs_submit.is_none());
+        assert!(app.review.review_body_input.is_empty());
+        assert!(app.review.needs_submit.is_none());
     }
 
     #[test]
@@ -1664,19 +1642,19 @@ mod tests {
 
         app.handle_review_submit_mode(KeyCode::Esc);
         assert_eq!(app.mode, AppMode::Normal);
-        assert!(app.needs_submit.is_none());
-        assert!(!app.quit_after_submit);
+        assert!(app.review.needs_submit.is_none());
+        assert!(!app.review.quit_after_submit);
     }
 
     #[test]
     fn test_review_submit_escape_resets_quit_after_submit() {
         let mut app = create_app_with_patch();
         app.mode = AppMode::ReviewSubmit;
-        app.quit_after_submit = true; // QuitConfirm → y → ReviewSubmit の流れ
+        app.review.quit_after_submit = true; // QuitConfirm → y → ReviewSubmit の流れ
 
         app.handle_review_submit_mode(KeyCode::Esc);
         assert_eq!(app.mode, AppMode::Normal);
-        assert!(!app.quit_after_submit);
+        assert!(!app.review.quit_after_submit);
     }
 
     #[test]
@@ -1795,7 +1773,7 @@ mod tests {
         let mut app = create_app_with_patch();
 
         // コメントを追加（client は None）
-        app.pending_comments.push(PendingComment {
+        app.review.pending_comments.push(PendingComment {
             file_path: "test.rs".to_string(),
             start_line: 0,
             end_line: 0,
@@ -1933,7 +1911,7 @@ mod tests {
     fn test_pending_comment_marks_file() {
         // ペンディングコメントがあるファイルを識別できる
         let mut app = create_app_with_patch();
-        app.pending_comments.push(PendingComment {
+        app.review.pending_comments.push(PendingComment {
             file_path: "src/main.rs".to_string(),
             start_line: 2,
             end_line: 4,
@@ -1943,13 +1921,15 @@ mod tests {
 
         // 該当ファイルにペンディングコメントがある
         assert!(
-            app.pending_comments
+            app.review
+                .pending_comments
                 .iter()
                 .any(|c| c.file_path == "src/main.rs")
         );
         // 別のファイルにはない
         assert!(
-            !app.pending_comments
+            !app.review
+                .pending_comments
                 .iter()
                 .any(|c| c.file_path == "other.rs")
         );
@@ -1963,7 +1943,7 @@ mod tests {
         app.focused_panel = Panel::DiffView;
 
         // コメントを追加
-        app.pending_comments.push(PendingComment {
+        app.review.pending_comments.push(PendingComment {
             file_path: "src/main.rs".to_string(),
             start_line: 0,
             end_line: 0,
@@ -1990,7 +1970,7 @@ mod tests {
     fn test_quit_confirm_y_opens_review_submit() {
         let mut app = create_app_with_patch();
         app.mode = AppMode::QuitConfirm;
-        app.pending_comments.push(PendingComment {
+        app.review.pending_comments.push(PendingComment {
             file_path: "test.rs".to_string(),
             start_line: 0,
             end_line: 0,
@@ -2001,15 +1981,15 @@ mod tests {
         // y → ReviewSubmit ダイアログに遷移（quit_after_submit フラグ付き）
         app.handle_quit_confirm_mode(KeyCode::Char('y'));
         assert_eq!(app.mode, AppMode::ReviewSubmit);
-        assert!(app.quit_after_submit);
-        assert_eq!(app.review_event_cursor, 0);
+        assert!(app.review.quit_after_submit);
+        assert_eq!(app.review.review_event_cursor, 0);
     }
 
     #[test]
     fn test_quit_confirm_n_discards_and_quits() {
         let mut app = create_app_with_patch();
         app.mode = AppMode::QuitConfirm;
-        app.pending_comments.push(PendingComment {
+        app.review.pending_comments.push(PendingComment {
             file_path: "test.rs".to_string(),
             start_line: 0,
             end_line: 0,
@@ -2019,7 +1999,7 @@ mod tests {
 
         app.handle_quit_confirm_mode(KeyCode::Char('n'));
         assert!(app.should_quit);
-        assert!(app.pending_comments.is_empty());
+        assert!(app.review.pending_comments.is_empty());
     }
 
     #[test]
@@ -2569,8 +2549,8 @@ mod tests {
 
         app.handle_normal_mode(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(app.mode, AppMode::CommentView);
-        assert_eq!(app.viewing_comments.len(), 1);
-        assert_eq!(app.viewing_comments[0].body, "Nice line!");
+        assert_eq!(app.review.viewing_comments.len(), 1);
+        assert_eq!(app.review.viewing_comments[0].body, "Nice line!");
     }
 
     #[test]
@@ -2581,7 +2561,7 @@ mod tests {
 
         app.handle_normal_mode(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(app.mode, AppMode::Normal);
-        assert!(app.viewing_comments.is_empty());
+        assert!(app.review.viewing_comments.is_empty());
     }
 
     #[test]
@@ -2597,7 +2577,7 @@ mod tests {
         // Esc で閉じる
         app.handle_comment_view_mode(KeyCode::Esc);
         assert_eq!(app.mode, AppMode::Normal);
-        assert!(app.viewing_comments.is_empty());
+        assert!(app.review.viewing_comments.is_empty());
     }
 
     /// 複数 hunk のパッチを持つ App を作成するヘルパー
@@ -3505,30 +3485,30 @@ mod tests {
     fn test_review_body_input_typing() {
         let mut app = create_app_with_patch();
         app.mode = AppMode::ReviewBodyInput;
-        app.review_event_cursor = 1; // Approve
+        app.review.review_event_cursor = 1; // Approve
 
         // 文字入力
         app.handle_review_body_input_mode(KeyCode::Char('L'));
         app.handle_review_body_input_mode(KeyCode::Char('G'));
         app.handle_review_body_input_mode(KeyCode::Char('T'));
         app.handle_review_body_input_mode(KeyCode::Char('M'));
-        assert_eq!(app.review_body_input, "LGTM");
+        assert_eq!(app.review.review_body_input, "LGTM");
 
         // Backspace
         app.handle_review_body_input_mode(KeyCode::Backspace);
-        assert_eq!(app.review_body_input, "LGT");
+        assert_eq!(app.review.review_body_input, "LGT");
     }
 
     #[test]
     fn test_review_body_input_enter_submits() {
         let mut app = create_app_with_patch();
         app.mode = AppMode::ReviewBodyInput;
-        app.review_event_cursor = 1; // Approve
-        app.review_body_input = "LGTM!".to_string();
+        app.review.review_event_cursor = 1; // Approve
+        app.review.review_body_input = "LGTM!".to_string();
 
         app.handle_review_body_input_mode(KeyCode::Enter);
         assert_eq!(app.mode, AppMode::Normal);
-        assert_eq!(app.needs_submit, Some(ReviewEvent::Approve));
+        assert_eq!(app.review.needs_submit, Some(ReviewEvent::Approve));
         assert!(app.status_message.is_some());
     }
 
@@ -3536,36 +3516,36 @@ mod tests {
     fn test_review_body_input_empty_body_submits() {
         let mut app = create_app_with_patch();
         app.mode = AppMode::ReviewBodyInput;
-        app.review_event_cursor = 1; // Approve
+        app.review.review_event_cursor = 1; // Approve
 
         // 空bodyでも送信可能
         app.handle_review_body_input_mode(KeyCode::Enter);
         assert_eq!(app.mode, AppMode::Normal);
-        assert_eq!(app.needs_submit, Some(ReviewEvent::Approve));
+        assert_eq!(app.review.needs_submit, Some(ReviewEvent::Approve));
     }
 
     #[test]
     fn test_review_body_input_esc_returns_to_submit() {
         let mut app = create_app_with_patch();
         app.mode = AppMode::ReviewBodyInput;
-        app.review_body_input = "some text".to_string();
+        app.review.review_body_input = "some text".to_string();
 
         app.handle_review_body_input_mode(KeyCode::Esc);
         assert_eq!(app.mode, AppMode::ReviewSubmit);
-        assert!(app.review_body_input.is_empty());
-        assert!(app.needs_submit.is_none());
+        assert!(app.review.review_body_input.is_empty());
+        assert!(app.review.needs_submit.is_none());
     }
 
     #[test]
     fn test_review_body_input_esc_preserves_quit_after_submit() {
         let mut app = create_app_with_patch();
         app.mode = AppMode::ReviewBodyInput;
-        app.quit_after_submit = true;
+        app.review.quit_after_submit = true;
 
         // Esc で ReviewSubmit に戻る（quit_after_submit はリセットしない）
         app.handle_review_body_input_mode(KeyCode::Esc);
         assert_eq!(app.mode, AppMode::ReviewSubmit);
-        assert!(app.quit_after_submit);
+        assert!(app.review.quit_after_submit);
     }
 
     // --- is_own_pr テスト ---
@@ -3623,12 +3603,12 @@ mod tests {
 
         // j/k で循環しても要素1つなのでカーソルは0のまま
         app.handle_review_submit_mode(KeyCode::Char('j'));
-        assert_eq!(app.review_event_cursor, 0);
+        assert_eq!(app.review.review_event_cursor, 0);
         app.handle_review_submit_mode(KeyCode::Char('k'));
-        assert_eq!(app.review_event_cursor, 0);
+        assert_eq!(app.review.review_event_cursor, 0);
         app.handle_review_submit_mode(KeyCode::Down);
-        assert_eq!(app.review_event_cursor, 0);
+        assert_eq!(app.review.review_event_cursor, 0);
         app.handle_review_submit_mode(KeyCode::Up);
-        assert_eq!(app.review_event_cursor, 0);
+        assert_eq!(app.review.review_event_cursor, 0);
     }
 }
