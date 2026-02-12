@@ -215,6 +215,15 @@ async fn main() -> Result<()> {
     let ((pr_title, pr_body, pr_author, files_map), review_comments) =
         tokio::try_join!(data_future, comments_future)?;
 
+    // PR body から画像 URL を収集してダウンロード
+    let image_urls = app::collect_image_urls(&pr_body);
+    let media_cache = if image_urls.is_empty() {
+        github::media::MediaCache::new()
+    } else {
+        eprintln!("Downloading {} image(s)...", image_urls.len());
+        github::media::download_media(image_urls).await
+    };
+
     // テーマ検出（ratatui::init() の前に実行 — raw mode では OSC クエリが動かない）
     let theme = if cli.light {
         ThemeMode::Light
@@ -223,6 +232,9 @@ async fn main() -> Result<()> {
     } else {
         detect_theme()
     };
+
+    // 画像プロトコル検出（ratatui::init() の前に実行 — raw mode では OSC クエリが動かない）
+    let picker = ratatui_image::picker::Picker::from_query_stdio().ok();
 
     let terminal = ratatui::init();
     crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
@@ -239,6 +251,7 @@ async fn main() -> Result<()> {
         Some(client),
         theme,
     );
+    app.set_media(picker, media_cache);
     let result = app.run(terminal);
 
     crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture)?;
