@@ -32,11 +32,18 @@ pub fn highlight_with_delta(diff: &str) -> Result<String> {
         .stderr(Stdio::null())
         .spawn()?;
 
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin.write_all(diff.as_bytes())?;
-    }
+    // stdin への書き込みを別スレッドで行い、パイプデッドロックを回避する。
+    // 大きな diff では stdin パイプバッファが満杯になり write_all がブロックするが、
+    // wait_with_output が stdout を並行して読み取ることでデッドロックを防ぐ。
+    let mut stdin = child.stdin.take().expect("stdin was configured");
+    let diff_bytes = diff.as_bytes().to_vec();
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&diff_bytes);
+        // stdin はここで drop → delta に EOF が送られる
+    });
 
     let output = child.wait_with_output()?;
+    let _ = writer.join();
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
