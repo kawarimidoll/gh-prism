@@ -525,10 +525,48 @@ impl App {
             return;
         }
 
-        // delta 出力をキャッシュ（ファイル選択が変わったときだけ再実行）
+        let inner_width = diff_area.width.saturating_sub(2);
+
+        self.update_diff_highlight_cache(&patch, &filename, &file_status);
+        let mut text = self.prepare_diff_text(&patch, &file_status, inner_width);
+        let bg_lines = self.collect_diff_bg_lines(&mut text, &filename);
+
+        // Wrap 有効時、レンダリングに使う実テキストから視覚行オフセットを計算してキャッシュ。
+        // visual_line_offset / visual_to_logical_line はこのキャッシュを参照する。
+        if self.diff.wrap {
+            let mut offsets = Vec::with_capacity(text.lines.len() + 1);
+            let mut visual = 0usize;
+            offsets.push(0);
+            for line in &text.lines {
+                let count = Paragraph::new(line.clone())
+                    .wrap(Wrap { trim: false })
+                    .line_count(inner_width)
+                    .max(1);
+                visual += count;
+                offsets.push(visual);
+            }
+            self.diff.visual_offsets = Some(offsets);
+        } else {
+            self.diff.visual_offsets = None;
+        }
+
+        let paragraph = Paragraph::new(text)
+            .block(block)
+            .scroll((self.diff.scroll, 0));
+        let paragraph = if self.diff.wrap {
+            paragraph.wrap(Wrap { trim: false })
+        } else {
+            paragraph
+        };
+        frame.render_widget(paragraph, diff_area);
+
+        self.apply_diff_bg_highlights(frame, &bg_lines, diff_area, inner_width);
+    }
+
+    /// delta 出力をキャッシュ（ファイル選択が変わったときだけ再実行）
+    fn update_diff_highlight_cache(&mut self, patch: &str, filename: &str, file_status: &str) {
         let commit_idx = self.commit_list_state.selected().unwrap_or(usize::MAX);
         let file_idx = self.file_list_state.selected().unwrap_or(usize::MAX);
-        let inner_width = diff_area.width.saturating_sub(2);
 
         let cache_hit = matches!(
             &self.diff.highlight_cache,
@@ -536,44 +574,47 @@ impl App {
         );
 
         if !cache_hit {
-            let is_whole_file = matches!(file_status.as_str(), "added" | "removed" | "deleted");
-            let base_text =
-                if let Some(highlighted) = highlight_diff(&patch, &filename, &file_status) {
-                    highlighted
-                } else {
-                    // delta 未使用: 手動色分け
-                    let lines: Vec<Line> = patch
-                        .lines()
-                        .map(|line| {
-                            if is_whole_file {
-                                // 全行追加/削除: +/- を除去してデフォルトスタイルで表示
-                                let content = if (line.starts_with('+') || line.starts_with('-'))
-                                    && line.len() > 1
-                                {
-                                    &line[1..]
-                                } else if line.starts_with('+') || line.starts_with('-') {
-                                    ""
-                                } else {
-                                    line
-                                };
-                                Line::styled(content.to_string(), Style::default())
+            let is_whole_file = matches!(file_status, "added" | "removed" | "deleted");
+            let base_text = if let Some(highlighted) = highlight_diff(patch, filename, file_status)
+            {
+                highlighted
+            } else {
+                // delta 未使用: 手動色分け
+                let lines: Vec<Line> = patch
+                    .lines()
+                    .map(|line| {
+                        if is_whole_file {
+                            // 全行追加/削除: +/- を除去してデフォルトスタイルで表示
+                            let content = if (line.starts_with('+') || line.starts_with('-'))
+                                && line.len() > 1
+                            {
+                                &line[1..]
+                            } else if line.starts_with('+') || line.starts_with('-') {
+                                ""
                             } else {
-                                let style = match line.chars().next() {
-                                    Some('+') => Style::default().fg(Color::Green),
-                                    Some('-') => Style::default().fg(Color::Red),
-                                    Some('@') => Style::default().fg(Color::Cyan),
-                                    _ => Style::default(),
-                                };
-                                Line::styled(line.to_string(), style)
-                            }
-                        })
-                        .collect();
-                    Text::from(lines)
-                };
+                                line
+                            };
+                            Line::styled(content.to_string(), Style::default())
+                        } else {
+                            let style = match line.chars().next() {
+                                Some('+') => Style::default().fg(Color::Green),
+                                Some('-') => Style::default().fg(Color::Red),
+                                Some('@') => Style::default().fg(Color::Cyan),
+                                _ => Style::default(),
+                            };
+                            Line::styled(line.to_string(), style)
+                        }
+                    })
+                    .collect();
+                Text::from(lines)
+            };
             self.diff.highlight_cache = Some((commit_idx, file_idx, base_text));
         }
+    }
 
-        // キャッシュからクローンしてオーバーレイ適用用の可変テキストを作成
+    /// キャッシュからクローンして Hunk ヘッダー整形・Wrap 空行修正・行番号プレフィックスを適用。
+    /// `update_diff_highlight_cache` が事前に呼ばれている必要がある。
+    fn prepare_diff_text(&self, patch: &str, file_status: &str, inner_width: u16) -> Text<'static> {
         let mut text = self.diff.highlight_cache.as_ref().unwrap().2.clone();
 
         // Hunk ヘッダーを整形表示に置換
@@ -610,8 +651,8 @@ impl App {
             let mut new_line: usize = 0;
 
             // 追加/削除ファイルは片側の行番号のみ表示
-            let show_old = !matches!(file_status.as_str(), "added");
-            let show_new = !matches!(file_status.as_str(), "removed" | "deleted");
+            let show_old = !matches!(file_status, "added");
+            let show_new = !matches!(file_status, "removed" | "deleted");
 
             for (idx, text_line) in text.lines.iter_mut().enumerate() {
                 if let Some(raw) = patch_lines.get(idx) {
@@ -653,8 +694,12 @@ impl App {
             }
         }
 
-        // 既存コメントの下線 / 💬 マーカーをテキスト側に適用
-        // 背景色オーバーレイ（カーソル/選択/pending）は render 後に Buffer で全幅適用する
+        text
+    }
+
+    /// 既存コメントの下線 / 💬💭 マーカーをテキスト側に適用し、背景色が必要な行を収集。
+    /// `filename` は pending コメントのファイルパス照合に使用。
+    fn collect_diff_bg_lines(&self, text: &mut Text<'_>, filename: &str) -> Vec<(usize, Color)> {
         let show_cursor = self.focused_panel == Panel::DiffView;
         let has_selection = self.mode == AppMode::LineSelect || self.mode == AppMode::CommentInput;
         let existing_counts = self.existing_comment_counts();
@@ -715,65 +760,46 @@ impl App {
             }
         }
 
-        // Wrap 有効時、レンダリングに使う実テキストから視覚行オフセットを計算してキャッシュ。
-        // visual_line_offset / visual_to_logical_line はこのキャッシュを参照する。
-        if self.diff.wrap {
-            let mut offsets = Vec::with_capacity(text.lines.len() + 1);
-            let mut visual = 0usize;
-            offsets.push(0);
-            for line in &text.lines {
-                let count = Paragraph::new(line.clone())
-                    .wrap(Wrap { trim: false })
-                    .line_count(inner_width)
-                    .max(1);
-                visual += count;
-                offsets.push(visual);
-            }
-            self.diff.visual_offsets = Some(offsets);
-        } else {
-            self.diff.visual_offsets = None;
+        bg_lines
+    }
+
+    /// Buffer に直接背景色を適用（全幅ハイライト）
+    fn apply_diff_bg_highlights(
+        &self,
+        frame: &mut Frame,
+        bg_lines: &[(usize, Color)],
+        diff_area: Rect,
+        inner_width: u16,
+    ) {
+        if bg_lines.is_empty() {
+            return;
         }
-
-        let paragraph = Paragraph::new(text)
-            .block(block)
-            .scroll((self.diff.scroll, 0));
-        let paragraph = if self.diff.wrap {
-            paragraph.wrap(Wrap { trim: false })
-        } else {
-            paragraph
+        let inner = Rect {
+            x: diff_area.x + 1,
+            y: diff_area.y + 1,
+            width: inner_width,
+            height: diff_area.height.saturating_sub(2),
         };
-        frame.render_widget(paragraph, diff_area);
-
-        // Buffer に直接背景色を適用（全幅ハイライト）
-        // Paragraph render 後に適用することで空行や行末の余白もカバーする
-        if !bg_lines.is_empty() {
-            let inner = Rect {
-                x: diff_area.x + 1,
-                y: diff_area.y + 1,
-                width: inner_width,
-                height: diff_area.height.saturating_sub(2),
-            };
-            let scroll = self.diff.scroll as usize;
-            let buf = frame.buffer_mut();
-            for &(logical_line, bg_color) in &bg_lines {
-                let vis_start = self.visual_line_offset(logical_line);
-                let vis_end = self.visual_line_offset(logical_line + 1);
-                for vis_row in vis_start..vis_end {
-                    if vis_row < scroll {
-                        continue;
-                    }
-                    let screen_row = (vis_row - scroll) as u16;
-                    if screen_row >= inner.height {
-                        continue;
-                    }
-                    let row_rect = Rect {
-                        x: inner.x,
-                        y: inner.y + screen_row,
-                        width: inner.width,
-                        height: 1,
-                    };
-                    buf.set_style(row_rect, Style::default().bg(bg_color));
+        let scroll = self.diff.scroll as usize;
+        let buf = frame.buffer_mut();
+        for &(logical_line, bg_color) in bg_lines {
+            let vis_start = self.visual_line_offset(logical_line);
+            let vis_end = self.visual_line_offset(logical_line + 1);
+            for vis_row in vis_start..vis_end {
+                if vis_row < scroll {
+                    continue;
                 }
+                let screen_row = (vis_row - scroll) as u16;
+                if screen_row >= inner.height {
+                    continue;
+                }
+                let row_rect = Rect {
+                    x: inner.x,
+                    y: inner.y + screen_row,
+                    width: inner.width,
+                    height: 1,
+                };
+                buf.set_style(row_rect, Style::default().bg(bg_color));
             }
         }
     }
