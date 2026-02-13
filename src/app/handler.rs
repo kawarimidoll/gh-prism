@@ -140,6 +140,20 @@ impl App {
             return;
         }
 
+        if self.handle_global_keys(code, modifiers) {
+            return;
+        }
+
+        match self.focused_panel {
+            Panel::PrDescription => self.handle_pr_desc_keys(code),
+            Panel::CommitList => self.handle_commit_list_keys(code),
+            Panel::FileTree => self.handle_file_tree_keys(code),
+            Panel::DiffView => self.handle_diff_view_keys(code),
+        }
+    }
+
+    /// パネル共通のキー処理（処理した場合 true を返す）
+    fn handle_global_keys(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
         match code {
             KeyCode::Char('q') => {
                 if self.review.pending_comments.is_empty() {
@@ -154,28 +168,6 @@ impl App {
             KeyCode::Char('1') => self.focused_panel = Panel::PrDescription,
             KeyCode::Char('2') => self.focused_panel = Panel::CommitList,
             KeyCode::Char('3') => self.focused_panel = Panel::FileTree,
-            KeyCode::Enter => {
-                if self.focused_panel == Panel::PrDescription {
-                    // PR Description で Enter → 画像があれば ImageViewer
-                    self.enter_media_viewer();
-                } else if self.focused_panel == Panel::FileTree {
-                    // Files ペインで Enter → DiffView に移動
-                    self.focused_panel = Panel::DiffView;
-                } else if self.focused_panel == Panel::DiffView {
-                    // DiffView で Enter → カーソル行にコメントがあれば CommentView
-                    let comments = self.comments_at_diff_line(self.diff.cursor_line);
-                    if !comments.is_empty() {
-                        self.review.viewing_comments = comments;
-                        self.mode = AppMode::CommentView;
-                    }
-                }
-            }
-            KeyCode::Esc => {
-                // DiffView で Esc → Files に戻る
-                if self.focused_panel == Panel::DiffView {
-                    self.focused_panel = Panel::FileTree;
-                }
-            }
             KeyCode::Char('j') | KeyCode::Down => self.select_next(),
             KeyCode::Char('k') | KeyCode::Up => self.select_prev(),
             KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
@@ -237,55 +229,6 @@ impl App {
                 }
                 _ => {}
             },
-            KeyCode::Char('v') => {
-                // DiffView パネルでのみ行選択モードに入る
-                if self.focused_panel == Panel::DiffView {
-                    self.enter_line_select_mode();
-                }
-            }
-            KeyCode::Char('c') => {
-                // DiffView で直接 c: カーソル行のみで単一行コメント（hunk header 上は不可）
-                if self.focused_panel == Panel::DiffView
-                    && !self.is_hunk_header(self.diff.cursor_line)
-                {
-                    self.line_selection = Some(LineSelection {
-                        anchor: self.diff.cursor_line,
-                    });
-                    self.review.comment_input.clear();
-                    self.mode = AppMode::CommentInput;
-                }
-            }
-            KeyCode::Char('x') => match self.focused_panel {
-                Panel::FileTree => self.toggle_viewed(),
-                Panel::CommitList => self.toggle_commit_viewed(),
-                _ => {}
-            },
-            KeyCode::Char('y') => match self.focused_panel {
-                Panel::CommitList => {
-                    if let Some(idx) = self.commit_list_state.selected()
-                        && let Some(commit) = self.commits.get(idx)
-                    {
-                        let sha = commit.short_sha().to_string();
-                        self.copy_to_clipboard(&sha, "SHA");
-                    }
-                }
-                Panel::FileTree => {
-                    if let Some(file) = self.current_file() {
-                        let path = file.filename.clone();
-                        self.copy_to_clipboard(&path, "path");
-                    }
-                }
-                _ => {}
-            },
-            KeyCode::Char('Y') => {
-                if self.focused_panel == Panel::CommitList
-                    && let Some(idx) = self.commit_list_state.selected()
-                    && let Some(commit) = self.commits.get(idx)
-                {
-                    let msg = commit.message_summary().to_string();
-                    self.copy_to_clipboard(&msg, "message");
-                }
-            }
             KeyCode::Char('S') => {
                 self.review.review_event_cursor = 0;
                 self.mode = AppMode::ReviewSubmit;
@@ -320,9 +263,88 @@ impl App {
                 self.help_scroll = 0;
                 self.mode = AppMode::Help;
             }
-            KeyCode::Char(']') | KeyCode::Char('[') => {
-                if let KeyCode::Char(ch) = code {
-                    self.pending_key = Some(ch);
+            KeyCode::Char(ch @ (']' | '[')) => {
+                self.pending_key = Some(ch);
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// PR Description パネルのキー処理
+    fn handle_pr_desc_keys(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Enter => self.enter_media_viewer(),
+            _ => {}
+        }
+    }
+
+    /// Commit List パネルのキー処理
+    fn handle_commit_list_keys(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('x') => self.toggle_commit_viewed(),
+            KeyCode::Char('y') => {
+                if let Some(idx) = self.commit_list_state.selected()
+                    && let Some(commit) = self.commits.get(idx)
+                {
+                    let sha = commit.short_sha().to_string();
+                    self.copy_to_clipboard(&sha, "SHA");
+                }
+            }
+            KeyCode::Char('Y') => {
+                if let Some(idx) = self.commit_list_state.selected()
+                    && let Some(commit) = self.commits.get(idx)
+                {
+                    let msg = commit.message_summary().to_string();
+                    self.copy_to_clipboard(&msg, "message");
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// File Tree パネルのキー処理
+    fn handle_file_tree_keys(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Enter => self.focused_panel = Panel::DiffView,
+            KeyCode::Char('x') => self.toggle_viewed(),
+            KeyCode::Char('y') => {
+                if let Some(file) = self.current_file() {
+                    let path = file.filename.clone();
+                    self.copy_to_clipboard(&path, "path");
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// DiffView パネルのキー処理
+    fn handle_diff_view_keys(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Enter => {
+                // DiffView で Enter → カーソル行にコメントがあれば CommentView
+                let comments = self.comments_at_diff_line(self.diff.cursor_line);
+                if !comments.is_empty() {
+                    self.review.viewing_comments = comments;
+                    self.mode = AppMode::CommentView;
+                }
+            }
+            KeyCode::Esc => {
+                // DiffView で Esc → Files に戻る
+                self.focused_panel = Panel::FileTree;
+            }
+            KeyCode::Char('v') => {
+                // DiffView パネルでのみ行選択モードに入る
+                self.enter_line_select_mode();
+            }
+            KeyCode::Char('c') => {
+                // DiffView で直接 c: カーソル行のみで単一行コメント（hunk header 上は不可）
+                if !self.is_hunk_header(self.diff.cursor_line) {
+                    self.line_selection = Some(LineSelection {
+                        anchor: self.diff.cursor_line,
+                    });
+                    self.review.comment_input.clear();
+                    self.mode = AppMode::CommentInput;
                 }
             }
             _ => {}
