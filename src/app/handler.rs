@@ -374,7 +374,7 @@ impl App {
                 self.insert_suggestion();
             }
             _ => {
-                self.review.comment_editor.handle_key(code);
+                self.review.comment_editor.handle_key(code, modifiers);
             }
         }
         self.review
@@ -454,7 +454,7 @@ impl App {
                 self.mode = AppMode::Normal;
             }
             _ => {
-                self.review.review_body_editor.handle_key(code);
+                self.review.review_body_editor.handle_key(code, modifiers);
             }
         }
         self.review

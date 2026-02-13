@@ -1,4 +1,4 @@
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyModifiers};
 use unicode_width::UnicodeWidthChar;
 
 /// エディタの表示可能行数（CommentInput / ReviewBodyInput 共通）
@@ -176,6 +176,31 @@ impl TextEditor {
         self.cursor_col = self.lines[self.cursor_row].len();
     }
 
+    /// カーソルから行末まで削除（行末なら次行を結合）
+    pub fn kill_line(&mut self) {
+        let line_len = self.lines[self.cursor_row].len();
+        if self.cursor_col < line_len {
+            self.lines[self.cursor_row].truncate(self.cursor_col);
+        } else if self.cursor_row + 1 < self.lines.len() {
+            let next = self.lines.remove(self.cursor_row + 1);
+            self.lines[self.cursor_row].push_str(&next);
+        }
+    }
+
+    /// 行頭からカーソルまで削除
+    pub fn kill_to_start(&mut self) {
+        if self.cursor_col > 0 {
+            self.lines[self.cursor_row] =
+                self.lines[self.cursor_row][self.cursor_col..].to_string();
+            self.cursor_col = 0;
+        } else if self.cursor_row > 0 {
+            let current = self.lines.remove(self.cursor_row);
+            self.cursor_row -= 1;
+            self.cursor_col = self.lines[self.cursor_row].len();
+            self.lines[self.cursor_row].push_str(&current);
+        }
+    }
+
     /// scroll_offset を自動調整してカーソルが表示範囲内に収まるようにする（wrap 考慮）
     pub fn ensure_visible(&mut self, visible_height: usize) {
         if visible_height == 0 {
@@ -209,7 +234,24 @@ impl TextEditor {
 
     /// 一般的なエディタキー操作を処理。処理した場合 true を返す。
     /// モード固有のキー（Esc, Ctrl+S 等）は呼び出し側で先に処理すること。
-    pub fn handle_key(&mut self, code: KeyCode) -> bool {
+    pub fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        // Emacs keybindings (Ctrl+*)
+        if modifiers.contains(KeyModifiers::CONTROL) {
+            match code {
+                KeyCode::Char('f') => self.move_right(),
+                KeyCode::Char('b') => self.move_left(),
+                KeyCode::Char('p') => self.move_up(),
+                KeyCode::Char('n') => self.move_down(),
+                KeyCode::Char('a') => self.move_home(),
+                KeyCode::Char('e') => self.move_end(),
+                KeyCode::Char('d') => self.delete(),
+                KeyCode::Char('h') => self.backspace(),
+                KeyCode::Char('k') => self.kill_line(),
+                KeyCode::Char('u') => self.kill_to_start(),
+                _ => return false,
+            }
+            return true;
+        }
         match code {
             KeyCode::Enter => self.insert_newline(),
             KeyCode::Backspace => self.backspace(),
@@ -793,5 +835,98 @@ mod tests {
         assert_eq!(editor.text(), "aX\nYb");
         assert_eq!(editor.cursor_row(), 1);
         assert_eq!(editor.cursor_col(), 1); // 'Y' の後
+    }
+
+    #[test]
+    fn test_kill_line_middle() {
+        let mut editor = TextEditor::new();
+        editor.insert_text("hello world");
+        // カーソルを "hello " の後に移動（5文字戻る）
+        for _ in 0..5 {
+            editor.move_left();
+        }
+        editor.kill_line();
+        assert_eq!(editor.text(), "hello ");
+    }
+
+    #[test]
+    fn test_kill_line_at_end_joins_next() {
+        let mut editor = TextEditor::new();
+        editor.insert_text("aaa\nbbb");
+        editor.move_up();
+        editor.move_end();
+        // 行末で kill_line → 次行と結合
+        editor.kill_line();
+        assert_eq!(editor.text(), "aaabbb");
+        assert_eq!(editor.line_count(), 1);
+    }
+
+    #[test]
+    fn test_kill_to_start_middle() {
+        let mut editor = TextEditor::new();
+        editor.insert_text("hello world");
+        // カーソルを "hello " の後に移動
+        for _ in 0..5 {
+            editor.move_left();
+        }
+        editor.kill_to_start();
+        assert_eq!(editor.text(), "world");
+        assert_eq!(editor.cursor_col(), 0);
+    }
+
+    #[test]
+    fn test_kill_to_start_at_beginning_joins_prev() {
+        let mut editor = TextEditor::new();
+        editor.insert_text("aaa\nbbb");
+        // カーソルは2行目末尾、行頭に移動
+        editor.move_home();
+        // 行頭で kill_to_start → 前行と結合
+        editor.kill_to_start();
+        assert_eq!(editor.text(), "aaabbb");
+        assert_eq!(editor.cursor_row(), 0);
+        assert_eq!(editor.cursor_col(), 3); // "aaa" の後
+    }
+
+    #[test]
+    fn test_emacs_keybindings() {
+        let mut editor = TextEditor::new();
+        editor.insert_text("abc\ndef");
+
+        let ctrl = KeyModifiers::CONTROL;
+
+        // Ctrl+A: 行頭
+        editor.handle_key(KeyCode::Char('a'), ctrl);
+        assert_eq!(editor.cursor_col(), 0);
+
+        // Ctrl+E: 行末
+        editor.handle_key(KeyCode::Char('e'), ctrl);
+        assert_eq!(editor.cursor_col(), 3); // "def".len()
+
+        // Ctrl+P: 上移動
+        editor.handle_key(KeyCode::Char('p'), ctrl);
+        assert_eq!(editor.cursor_row(), 0);
+
+        // Ctrl+N: 下移動
+        editor.handle_key(KeyCode::Char('n'), ctrl);
+        assert_eq!(editor.cursor_row(), 1);
+
+        // Ctrl+F: 右移動
+        editor.move_home();
+        editor.handle_key(KeyCode::Char('f'), ctrl);
+        assert_eq!(editor.cursor_col(), 1);
+
+        // Ctrl+B: 左移動
+        editor.handle_key(KeyCode::Char('b'), ctrl);
+        assert_eq!(editor.cursor_col(), 0);
+
+        // Ctrl+D: delete
+        editor.handle_key(KeyCode::Char('d'), ctrl);
+        assert_eq!(editor.text(), "abc\nef");
+
+        // Ctrl+H: backspace (行頭 → 前行と結合)
+        editor.move_home();
+        editor.handle_key(KeyCode::Char('h'), ctrl);
+        assert_eq!(editor.text(), "abcef");
+        assert_eq!(editor.line_count(), 1);
     }
 }
