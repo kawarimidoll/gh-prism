@@ -14,27 +14,29 @@ use ratatui::{
 use ratatui_image::StatefulImage;
 use unicode_width::UnicodeWidthStr;
 
+/// コメントペインの高さ（ボーダー上下 2 + 内容 4 行）
+const COMMENT_PANE_HEIGHT: u16 = 6;
+
 impl App {
     pub(super) fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
 
-        // テキスト入力モードでは入力欄を下部に表示
-        let main_layout =
-            if self.mode == AppMode::CommentInput || self.mode == AppMode::ReviewBodyInput {
-                Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(1),
-                        Constraint::Min(0),
-                        Constraint::Length(7),
-                    ])
-                    .split(area)
-            } else {
-                Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(1), Constraint::Min(0)])
-                    .split(area)
-            };
+        // ReviewBodyInput のみ全幅エディタパネルを下部に表示
+        let main_layout = if self.mode == AppMode::ReviewBodyInput {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1),
+                    Constraint::Min(0),
+                    Constraint::Length(COMMENT_PANE_HEIGHT),
+                ])
+                .split(area)
+        } else {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Min(0)])
+                .split(area)
+        };
 
         let mode_indicator = match self.mode {
             AppMode::Normal => "",
@@ -139,8 +141,22 @@ impl App {
                     self.render_file_tree(frame, full_area);
                 }
                 Panel::DiffView => {
-                    self.layout.diff_view_rect = full_area;
-                    self.render_diff_view_widget(frame, full_area);
+                    // ReviewBodyInput 時は全幅パネルで描画するため Zoom は DiffView のみ
+                    if self.mode == AppMode::ReviewBodyInput {
+                        self.layout.diff_view_rect = full_area;
+                        self.render_diff_view_widget(frame, full_area);
+                    } else {
+                        let zoom_layout = Layout::default()
+                            .direction(Direction::Vertical)
+                            .constraints([
+                                Constraint::Min(0),
+                                Constraint::Length(COMMENT_PANE_HEIGHT),
+                            ])
+                            .split(full_area);
+                        self.layout.diff_view_rect = zoom_layout[0];
+                        self.render_diff_view_widget(frame, zoom_layout[0]);
+                        self.render_editor_panel(frame, zoom_layout[1]);
+                    }
                 }
             }
         } else {
@@ -159,7 +175,14 @@ impl App {
                 ])
                 .split(body_layout[0]);
 
-            let diff_area = body_layout[1];
+            // body_layout[1] を DiffView + CommentPane に縦分割
+            let right_layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(0), Constraint::Length(COMMENT_PANE_HEIGHT)])
+                .split(body_layout[1]);
+
+            let diff_area = right_layout[0];
+            let comment_area = right_layout[1];
 
             // マウスヒットテスト用に各ペインの Rect を記録
             self.layout.pr_desc_rect = sidebar_layout[0];
@@ -173,13 +196,15 @@ impl App {
             self.render_file_tree(frame, sidebar_layout[2]);
             // diff_view_height は render_diff_view_widget 内で正確に更新
             self.render_diff_view_widget(frame, diff_area);
+            // コメントペインを常時描画（ReviewBodyInput 時は全幅パネルで描画するためスキップ）
+            if self.mode != AppMode::ReviewBodyInput {
+                self.render_editor_panel(frame, comment_area);
+            }
         }
 
-        // テキスト入力モードでは入力欄を描画
-        match self.mode {
-            AppMode::CommentInput => self.render_editor_panel(frame, main_layout[2]),
-            AppMode::ReviewBodyInput => self.render_editor_panel(frame, main_layout[2]),
-            _ => {}
+        // ReviewBodyInput のみ全幅エディタパネルを描画
+        if self.mode == AppMode::ReviewBodyInput {
+            self.render_editor_panel(frame, main_layout[2]);
         }
 
         // ダイアログ描画（画面中央にオーバーレイ）
@@ -830,9 +855,12 @@ impl App {
         }
     }
 
-    /// CommentInput / ReviewBodyInput 共通のエディタパネル描画
+    /// コメント / レビュー本文エディタパネル描画
+    /// CommentInput 時は編集可能（緑ボーダー、カーソル表示）、
+    /// それ以外は薄いグレーのボーダーで空のコメント欄を表示。
+    /// ReviewBodyInput は呼び出し側で全幅パネルとして別途呼び出す。
     fn render_editor_panel(&mut self, frame: &mut Frame, area: Rect) {
-        let (title, help_text, editor) = match self.mode {
+        let (title, help_text, editor, show_cursor) = match self.mode {
             AppMode::CommentInput => {
                 let title = if let Some(selection) = self.line_selection {
                     let (start, end) = selection.range(self.diff.cursor_line);
@@ -844,6 +872,7 @@ impl App {
                     title,
                     " Ctrl+G: suggestion | Ctrl+S: submit | Esc: cancel ",
                     &mut self.review.comment_editor,
+                    true,
                 )
             }
             AppMode::ReviewBodyInput => {
@@ -852,9 +881,15 @@ impl App {
                     format!(" Review Body ({}) ", event.label()),
                     " Ctrl+S: submit | Esc: back ",
                     &mut self.review.review_body_editor,
+                    true,
                 )
             }
-            _ => return,
+            _ => (
+                " Comment ".to_string(),
+                "",
+                &mut self.review.comment_editor,
+                false,
+            ),
         };
 
         let inner_width = area.width.saturating_sub(2) as usize; // ボーダー左右分
@@ -865,11 +900,19 @@ impl App {
 
         let scrollbar_state = editor.scrollbar_state(visible_height);
 
-        let block = Block::default()
+        let border_style = if show_cursor {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+
+        let mut block = Block::default()
             .title(title)
-            .title_bottom(Line::from(help_text).alignment(HorizontalAlignment::Right))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Green));
+            .border_style(border_style);
+        if !help_text.is_empty() {
+            block = block.title_bottom(Line::from(help_text).alignment(HorizontalAlignment::Right));
+        }
 
         let lines: Vec<Line> = editor
             .lines_from_scroll()
@@ -889,11 +932,13 @@ impl App {
             frame.render_stateful_widget(scrollbar, area, &mut sb_state);
         }
 
-        // カーソル位置計算（wrap 考慮）
-        let (vcol, vrow) = editor.cursor_visual_position();
-        let cursor_x = area.x + 1 + vcol as u16;
-        let cursor_y = area.y + 1 + vrow as u16;
-        frame.set_cursor_position(Position::new(cursor_x, cursor_y));
+        // カーソル位置計算（編集中のみ）
+        if show_cursor {
+            let (vcol, vrow) = editor.cursor_visual_position();
+            let cursor_x = area.x + 1 + vcol as u16;
+            let cursor_y = area.y + 1 + vrow as u16;
+            frame.set_cursor_position(Position::new(cursor_x, cursor_y));
+        }
     }
 
     /// 中央に固定サイズの矩形を配置
