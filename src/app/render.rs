@@ -351,18 +351,28 @@ impl App {
                     })
                     .count();
                 let comment_count = visible_existing + visible_pending;
-                let left_part = format!("{}{} {}", marker, status, f.filename);
+                // ボーダー左右 (2) を除いた内部幅
+                let inner = area.width.saturating_sub(2) as usize;
+                let status_str = String::from(status);
+                let prefix_width = UnicodeWidthStr::width(marker)
+                    + UnicodeWidthStr::width(status_str.as_str())
+                    + 1; // space before filename
+                let (badge, badge_width) = if comment_count > 0 {
+                    let b = format!("💬 {} ", comment_count);
+                    let w = UnicodeWidthStr::width(b.as_str());
+                    (Some(b), w)
+                } else {
+                    (None, 0)
+                };
+                let filename_max = inner.saturating_sub(prefix_width + badge_width);
+                let truncated = truncate_str(&f.filename, filename_max);
                 let mut spans = vec![
                     Span::styled(marker, text_style),
-                    Span::styled(format!("{}", status), Style::default().fg(status_color)),
-                    Span::styled(format!(" {}", f.filename), text_style),
+                    Span::styled(status_str, Style::default().fg(status_color)),
+                    Span::styled(format!(" {}", truncated), text_style),
                 ];
-                if comment_count > 0 {
-                    let badge = format!("💬 {} ", comment_count);
-                    // ボーダー左右 (2) を除いた内部幅
-                    let inner = area.width.saturating_sub(2) as usize;
-                    let left_width = UnicodeWidthStr::width(left_part.as_str());
-                    let badge_width = UnicodeWidthStr::width(badge.as_str());
+                if let Some(badge) = badge {
+                    let left_width = prefix_width + UnicodeWidthStr::width(truncated.as_str());
                     let pad = inner.saturating_sub(left_width + badge_width);
                     spans.push(Span::styled(" ".repeat(pad), text_style));
                     spans.push(Span::styled(badge, Style::default().fg(Color::Yellow)));
