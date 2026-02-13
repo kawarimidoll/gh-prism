@@ -273,9 +273,8 @@ impl App {
 
     /// PR Description パネルのキー処理
     fn handle_pr_desc_keys(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Enter => self.enter_media_viewer(),
-            _ => {}
+        if code == KeyCode::Enter {
+            self.enter_media_viewer();
         }
     }
 

@@ -800,25 +800,146 @@ mod tests {
         files_map
     }
 
-    fn create_empty_files_map() -> HashMap<String, Vec<DiffFile>> {
-        HashMap::new()
+    struct TestAppBuilder {
+        pr_number: u64,
+        repo: String,
+        pr_title: String,
+        pr_body: String,
+        pr_author: String,
+        commits: Vec<CommitInfo>,
+        files_map: HashMap<String, Vec<DiffFile>>,
+        review_comments: Vec<ReviewComment>,
+        client: Option<Octocrab>,
+        theme: ThemeMode,
+        is_own_pr: bool,
+    }
+
+    impl TestAppBuilder {
+        fn new() -> Self {
+            Self {
+                pr_number: 1,
+                repo: "owner/repo".to_string(),
+                pr_title: "Test PR".to_string(),
+                pr_body: String::new(),
+                pr_author: String::new(),
+                commits: vec![],
+                files_map: HashMap::new(),
+                review_comments: vec![],
+                client: None,
+                theme: ThemeMode::Dark,
+                is_own_pr: false,
+            }
+        }
+
+        /// 標準テストコミット + ファイルマップを設定
+        fn with_test_data(mut self) -> Self {
+            self.commits = create_test_commits();
+            self.files_map = create_test_files_map(&self.commits);
+            self
+        }
+
+        /// 標準テストコミットのみ（ファイルマップなし）
+        fn with_commits(mut self) -> Self {
+            self.commits = create_test_commits();
+            self
+        }
+
+        /// カスタムファイルマップを設定
+        fn files_map(mut self, files_map: HashMap<String, Vec<DiffFile>>) -> Self {
+            self.files_map = files_map;
+            self
+        }
+
+        /// 10行パッチ付きテストデータを設定（コミットも自動設定される）
+        fn with_patch(mut self) -> Self {
+            self.commits = create_test_commits();
+            let patch = (0..10)
+                .map(|i| format!("+line {}", i))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut files_map = HashMap::new();
+            files_map.insert(
+                "abc1234567890".to_string(),
+                vec![DiffFile {
+                    filename: "src/main.rs".to_string(),
+                    status: "added".to_string(),
+                    additions: 10,
+                    deletions: 0,
+                    patch: Some(patch),
+                }],
+            );
+            self.files_map = files_map;
+            self
+        }
+
+        /// カスタムパッチ文字列でテストデータを設定（コミットも自動設定される）
+        fn with_custom_patch(
+            mut self,
+            patch: &str,
+            status: &str,
+            additions: usize,
+            deletions: usize,
+        ) -> Self {
+            self.commits = create_test_commits();
+            let mut files_map = HashMap::new();
+            files_map.insert(
+                "abc1234567890".to_string(),
+                vec![DiffFile {
+                    filename: "src/main.rs".to_string(),
+                    status: status.to_string(),
+                    additions,
+                    deletions,
+                    patch: Some(patch.to_string()),
+                }],
+            );
+            self.files_map = files_map;
+            self
+        }
+
+        /// レビューコメントを設定
+        fn review_comments(mut self, comments: Vec<ReviewComment>) -> Self {
+            self.review_comments = comments;
+            self
+        }
+
+        /// PR本文を設定
+        fn pr_body(mut self, body: &str) -> Self {
+            self.pr_body = body.to_string();
+            self
+        }
+
+        /// リポジトリ名を設定
+        fn repo(mut self, repo: &str) -> Self {
+            self.repo = repo.to_string();
+            self
+        }
+
+        /// 自分のPRとして設定
+        fn own_pr(mut self) -> Self {
+            self.is_own_pr = true;
+            self
+        }
+
+        fn build(self) -> App {
+            App::new(
+                self.pr_number,
+                self.repo,
+                self.pr_title,
+                self.pr_body,
+                self.pr_author,
+                self.commits,
+                self.files_map,
+                self.review_comments,
+                self.client,
+                self.theme,
+                self.is_own_pr,
+            )
+        }
     }
 
     #[test]
     fn test_new_with_empty_commits() {
-        let app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            vec![],
-            create_empty_files_map(),
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let app = TestAppBuilder::new().build();
         assert!(!app.should_quit);
         assert_eq!(app.focused_panel, Panel::PrDescription);
         assert_eq!(app.pr_number, 1);
@@ -832,60 +953,21 @@ mod tests {
 
     #[test]
     fn test_new_with_commits() {
-        let commits = create_test_commits();
-        let app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            create_empty_files_map(),
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let app = TestAppBuilder::new().with_commits().build();
         assert_eq!(app.commits.len(), 2);
         assert_eq!(app.commit_list_state.selected(), Some(0));
     }
 
     #[test]
     fn test_new_with_files() {
-        let commits = create_test_commits();
-        let files_map = create_test_files_map(&commits);
-        let app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let app = TestAppBuilder::new().with_test_data().build();
         assert_eq!(app.files_map.len(), 2);
         assert_eq!(app.file_list_state.selected(), Some(0));
     }
 
     #[test]
     fn test_next_panel() {
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            vec![],
-            create_empty_files_map(),
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().build();
         assert_eq!(app.focused_panel, Panel::PrDescription);
         app.next_panel();
         assert_eq!(app.focused_panel, Panel::CommitList);
@@ -897,19 +979,7 @@ mod tests {
 
     #[test]
     fn test_prev_panel() {
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            vec![],
-            create_empty_files_map(),
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().build();
         assert_eq!(app.focused_panel, Panel::PrDescription);
         app.prev_panel();
         assert_eq!(app.focused_panel, Panel::FileTree);
@@ -921,20 +991,7 @@ mod tests {
 
     #[test]
     fn test_select_next_commits() {
-        let commits = create_test_commits();
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            create_empty_files_map(),
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().with_commits().build();
         app.focused_panel = Panel::CommitList;
         assert_eq!(app.commit_list_state.selected(), Some(0));
         app.select_next();
@@ -945,20 +1002,7 @@ mod tests {
 
     #[test]
     fn test_select_prev_commits() {
-        let commits = create_test_commits();
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            create_empty_files_map(),
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().with_commits().build();
         app.focused_panel = Panel::CommitList;
         assert_eq!(app.commit_list_state.selected(), Some(0));
         app.select_prev();
@@ -969,21 +1013,7 @@ mod tests {
 
     #[test]
     fn test_select_next_files() {
-        let commits = create_test_commits();
-        let files_map = create_test_files_map(&commits);
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().with_test_data().build();
         app.focused_panel = Panel::FileTree;
         assert_eq!(app.file_list_state.selected(), Some(0));
         app.select_next();
@@ -994,21 +1024,7 @@ mod tests {
 
     #[test]
     fn test_select_prev_files() {
-        let commits = create_test_commits();
-        let files_map = create_test_files_map(&commits);
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().with_test_data().build();
         app.focused_panel = Panel::FileTree;
         assert_eq!(app.file_list_state.selected(), Some(0));
         app.select_prev();
@@ -1019,21 +1035,7 @@ mod tests {
 
     #[test]
     fn test_select_only_works_in_current_panel() {
-        let commits = create_test_commits();
-        let files_map = create_test_files_map(&commits);
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().with_test_data().build();
         app.focused_panel = Panel::CommitList;
         // Initial state: CommitList panel
         // コミット選択変更時にファイル選択がリセットされることを確認
@@ -1051,20 +1053,7 @@ mod tests {
 
     #[test]
     fn test_commit_list_state() {
-        let commits = create_test_commits();
-        let app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            create_empty_files_map(),
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let app = TestAppBuilder::new().with_commits().build();
 
         // Verify the commit list state is properly initialized
         assert_eq!(app.commit_list_state.selected(), Some(0));
@@ -1075,7 +1064,6 @@ mod tests {
 
     #[test]
     fn test_current_files_returns_correct_files() {
-        let commits = create_test_commits();
         let mut files_map = HashMap::new();
         files_map.insert(
             "abc1234567890".to_string(),
@@ -1098,19 +1086,10 @@ mod tests {
             }],
         );
 
-        let app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let app = TestAppBuilder::new()
+            .with_commits()
+            .files_map(files_map)
+            .build();
 
         // 最初のコミットのファイルが返される
         let files = app.current_files();
@@ -1120,7 +1099,6 @@ mod tests {
 
     #[test]
     fn test_commit_change_resets_file_selection() {
-        let commits = create_test_commits();
         let mut files_map = HashMap::new();
         files_map.insert(
             "abc1234567890".to_string(),
@@ -1152,19 +1130,10 @@ mod tests {
             }],
         );
 
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new()
+            .with_commits()
+            .files_map(files_map)
+            .build();
 
         // ファイル一覧に移動して2番目のファイルを選択
         app.focused_panel = Panel::FileTree;
@@ -1187,20 +1156,7 @@ mod tests {
 
     #[test]
     fn test_diff_scroll_initial() {
-        let commits = create_test_commits();
-        let app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            create_empty_files_map(),
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let app = TestAppBuilder::new().with_commits().build();
         assert_eq!(app.diff.scroll, 0);
     }
 
@@ -1261,7 +1217,6 @@ mod tests {
 
     #[test]
     fn test_scroll_diff_to_end() {
-        let commits = create_test_commits();
         let mut files_map = HashMap::new();
         // 25行のパッチ
         let patch = (0..25)
@@ -1278,19 +1233,10 @@ mod tests {
                 patch: Some(patch),
             }],
         );
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new()
+            .with_commits()
+            .files_map(files_map)
+            .build();
         app.focused_panel = Panel::DiffView;
 
         app.scroll_diff_to_end();
@@ -1299,21 +1245,7 @@ mod tests {
 
     #[test]
     fn test_file_change_resets_scroll() {
-        let commits = create_test_commits();
-        let files_map = create_test_files_map(&commits);
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().with_test_data().build();
         app.diff.scroll = 50;
 
         // Change to FileTree and select next file
@@ -1326,35 +1258,7 @@ mod tests {
 
     /// コメント入力テスト用: patch 付きファイルを含む App を作成
     fn create_app_with_patch() -> App {
-        let commits = create_test_commits();
-        let mut files_map = HashMap::new();
-        let patch = (0..10)
-            .map(|i| format!("+line {}", i))
-            .collect::<Vec<_>>()
-            .join("\n");
-        files_map.insert(
-            "abc1234567890".to_string(),
-            vec![DiffFile {
-                filename: "src/main.rs".to_string(),
-                status: "added".to_string(),
-                additions: 10,
-                deletions: 0,
-                patch: Some(patch),
-            }],
-        );
-        App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        )
+        TestAppBuilder::new().with_patch().build()
     }
 
     #[test]
@@ -1463,19 +1367,7 @@ mod tests {
 
     #[test]
     fn test_parse_repo_valid() {
-        let app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            vec![],
-            create_empty_files_map(),
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let app = TestAppBuilder::new().build();
         let (owner, repo) = app.parse_repo().unwrap();
         assert_eq!(owner, "owner");
         assert_eq!(repo, "repo");
@@ -1483,37 +1375,13 @@ mod tests {
 
     #[test]
     fn test_parse_repo_invalid() {
-        let app = App::new(
-            1,
-            "invalid".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            vec![],
-            create_empty_files_map(),
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let app = TestAppBuilder::new().repo("invalid").build();
         assert!(app.parse_repo().is_none());
     }
 
     #[test]
     fn test_submit_with_empty_pending_comments_does_nothing() {
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            vec![],
-            create_empty_files_map(),
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().build();
         // pending_comments が空なら何もしない（status_message も None のまま）
         app.submit_review_with_event(ReviewEvent::Comment);
         assert!(app.status_message.is_none());
@@ -1632,19 +1500,7 @@ mod tests {
 
     #[test]
     fn test_number_keys_jump_to_panels() {
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            vec![],
-            create_empty_files_map(),
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().build();
         app.handle_normal_mode(KeyCode::Char('2'), KeyModifiers::NONE);
         assert_eq!(app.focused_panel, Panel::CommitList);
         app.handle_normal_mode(KeyCode::Char('3'), KeyModifiers::NONE);
@@ -1655,21 +1511,7 @@ mod tests {
 
     #[test]
     fn test_enter_in_files_moves_to_diff() {
-        let commits = create_test_commits();
-        let files_map = create_test_files_map(&commits);
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().with_test_data().build();
         app.focused_panel = Panel::FileTree;
         app.handle_normal_mode(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(app.focused_panel, Panel::DiffView);
@@ -1677,19 +1519,7 @@ mod tests {
 
     #[test]
     fn test_esc_in_diff_returns_to_files() {
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            vec![],
-            create_empty_files_map(),
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().build();
         app.focused_panel = Panel::DiffView;
         app.handle_normal_mode(KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.focused_panel, Panel::FileTree);
@@ -1697,19 +1527,7 @@ mod tests {
 
     #[test]
     fn test_tab_skips_diffview() {
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            vec![],
-            create_empty_files_map(),
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().build();
         // PrDescription → CommitList → FileTree → PrDescription (DiffView をスキップ)
         app.next_panel();
         assert_eq!(app.focused_panel, Panel::CommitList);
@@ -1721,19 +1539,7 @@ mod tests {
 
     #[test]
     fn test_diffview_tab_is_noop() {
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            vec![],
-            create_empty_files_map(),
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().build();
         app.focused_panel = Panel::DiffView;
         app.next_panel();
         assert_eq!(app.focused_panel, Panel::DiffView); // Tab は無効
@@ -1807,7 +1613,6 @@ mod tests {
     #[test]
     fn test_binary_file_has_no_patch() {
         // patch が None のファイルに対して current_diff_line_count が 0 を返す
-        let commits = create_test_commits();
         let mut files_map = HashMap::new();
         files_map.insert(
             "abc1234567890".to_string(),
@@ -1819,19 +1624,10 @@ mod tests {
                 patch: None,
             }],
         );
-        let app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let app = TestAppBuilder::new()
+            .with_commits()
+            .files_map(files_map)
+            .build();
         assert_eq!(app.current_diff_line_count(), 0);
     }
 
@@ -2013,21 +1809,7 @@ mod tests {
 
     #[test]
     fn test_arrow_keys_select_next_prev() {
-        let commits = create_test_commits();
-        let files_map = create_test_files_map(&commits);
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().with_test_data().build();
         app.focused_panel = Panel::CommitList;
 
         // Down キーで j と同じ動作
@@ -2041,19 +1823,7 @@ mod tests {
 
     #[test]
     fn test_h_l_panel_navigation() {
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            vec![],
-            create_empty_files_map(),
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().build();
         assert_eq!(app.focused_panel, Panel::PrDescription);
 
         // l → 次のパネル
@@ -2123,21 +1893,7 @@ mod tests {
 
     #[test]
     fn test_mouse_click_selects_list_item() {
-        let commits = create_test_commits();
-        let files_map = create_test_files_map(&commits);
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().with_test_data().build();
         // CommitList: y=11 はボーダー、y=12 が最初のアイテム
         app.layout.commit_list_rect = Rect::new(0, 11, 30, 10);
 
@@ -2190,19 +1946,9 @@ mod tests {
     #[test]
     fn test_mouse_scroll_on_pr_description() {
         // マークダウンではパラグラフ間に空行が必要（連続行は1段落として結合される）
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            "line1\n\nline2\n\nline3\n\nline4\n\nline5".to_string(),
-            String::new(),
-            vec![],
-            create_empty_files_map(),
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new()
+            .pr_body("line1\n\nline2\n\nline3\n\nline4\n\nline5")
+            .build();
         app.layout.pr_desc_rect = Rect::new(0, 1, 30, 5);
         app.pr_desc_view_height = 3;
         // ensure_pr_desc_rendered でキャッシュを生成
@@ -2223,21 +1969,7 @@ mod tests {
 
     #[test]
     fn test_mouse_scroll_on_commit_list_ignored() {
-        let commits = create_test_commits();
-        let files_map = create_test_files_map(&commits);
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().with_test_data().build();
         app.layout.commit_list_rect = Rect::new(0, 11, 30, 10);
 
         // CommitList 上でスクロールしても選択は変わらない
@@ -2249,21 +1981,7 @@ mod tests {
 
     #[test]
     fn test_toggle_viewed() {
-        let commits = create_test_commits();
-        let files_map = create_test_files_map(&commits);
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().with_test_data().build();
         app.focused_panel = Panel::FileTree;
         assert!(app.viewed_files.is_empty());
 
@@ -2278,21 +1996,7 @@ mod tests {
 
     #[test]
     fn test_viewed_persists_across_commits() {
-        let commits = create_test_commits();
-        let files_map = create_test_files_map(&commits);
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().with_test_data().build();
         app.focused_panel = Panel::FileTree;
 
         // ファイルを viewed にする
@@ -2310,19 +2014,7 @@ mod tests {
 
     #[test]
     fn test_toggle_viewed_no_file_selected() {
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            vec![],
-            create_empty_files_map(),
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().build();
 
         // ファイル未選択時は何もしない（パニックしない）
         app.toggle_viewed();
@@ -2331,21 +2023,7 @@ mod tests {
 
     #[test]
     fn test_x_key_toggles_viewed_in_file_tree() {
-        let commits = create_test_commits();
-        let files_map = create_test_files_map(&commits);
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().with_test_data().build();
         app.focused_panel = Panel::FileTree;
 
         // x キーで viewed トグル
@@ -2391,39 +2069,16 @@ mod tests {
     }
 
     fn create_app_with_comments() -> App {
-        let commits = create_test_commits();
-        let mut files_map = HashMap::new();
-        // @@ -0,0 +1,3 @$ +line1 +line2 +line3
-        let patch = "@@ -0,0 +1,3 @@\n+line1\n+line2\n+line3".to_string();
-        files_map.insert(
-            "abc1234567890".to_string(),
-            vec![DiffFile {
-                filename: "src/main.rs".to_string(),
-                status: "added".to_string(),
-                additions: 3,
-                deletions: 0,
-                patch: Some(patch),
-            }],
-        );
         let comments = vec![make_review_comment(
             "src/main.rs",
             Some(2),
             "RIGHT",
             "Nice line!",
         )];
-        App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            comments,
-            None,
-            ThemeMode::Dark,
-            false,
-        )
+        TestAppBuilder::new()
+            .with_custom_patch("@@ -0,0 +1,3 @@\n+line1\n+line2\n+line3", "added", 3, 0)
+            .review_comments(comments)
+            .build()
     }
 
     #[test]
@@ -2440,18 +2095,6 @@ mod tests {
 
     #[test]
     fn test_existing_comment_counts_outdated_skipped() {
-        let commits = create_test_commits();
-        let mut files_map = HashMap::new();
-        files_map.insert(
-            "abc1234567890".to_string(),
-            vec![DiffFile {
-                filename: "src/main.rs".to_string(),
-                status: "added".to_string(),
-                additions: 1,
-                deletions: 0,
-                patch: Some("@@ -0,0 +1 @@\n+line1".to_string()),
-            }],
-        );
         // outdated コメント (line=None) はスキップされる
         let comments = vec![make_review_comment(
             "src/main.rs",
@@ -2459,37 +2102,16 @@ mod tests {
             "RIGHT",
             "Outdated comment",
         )];
-        let app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            comments,
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let app = TestAppBuilder::new()
+            .with_custom_patch("@@ -0,0 +1 @@\n+line1", "added", 1, 0)
+            .review_comments(comments)
+            .build();
         let counts = app.existing_comment_counts();
         assert!(counts.is_empty());
     }
 
     #[test]
     fn test_existing_comment_counts_no_match() {
-        let commits = create_test_commits();
-        let mut files_map = HashMap::new();
-        files_map.insert(
-            "abc1234567890".to_string(),
-            vec![DiffFile {
-                filename: "src/main.rs".to_string(),
-                status: "added".to_string(),
-                additions: 1,
-                deletions: 0,
-                patch: Some("@@ -0,0 +1 @@\n+line1".to_string()),
-            }],
-        );
         // 別ファイルのコメントはマッチしない
         let comments = vec![make_review_comment(
             "other.rs",
@@ -2497,19 +2119,10 @@ mod tests {
             "RIGHT",
             "Wrong file",
         )];
-        let app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            comments,
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let app = TestAppBuilder::new()
+            .with_custom_patch("@@ -0,0 +1 @@\n+line1", "added", 1, 0)
+            .review_comments(comments)
+            .build();
         let counts = app.existing_comment_counts();
         assert!(counts.is_empty());
     }
@@ -2555,34 +2168,14 @@ mod tests {
 
     /// 複数 hunk のパッチを持つ App を作成するヘルパー
     fn create_app_with_multi_hunk_patch() -> App {
-        let commits = create_test_commits();
-        let mut files_map = HashMap::new();
-        // hunk1: 行0-3, hunk2: 行4-7
-        let patch = "@@ -1,3 +1,3 @@\n context\n-old line\n+new line\n@@ -10,3 +10,3 @@\n context2\n-old2\n+new2"
-            .to_string();
-        files_map.insert(
-            "abc1234567890".to_string(),
-            vec![DiffFile {
-                filename: "src/main.rs".to_string(),
-                status: "modified".to_string(),
-                additions: 2,
-                deletions: 2,
-                patch: Some(patch),
-            }],
-        );
-        App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        )
+        TestAppBuilder::new()
+            .with_custom_patch(
+                "@@ -1,3 +1,3 @@\n context\n-old line\n+new line\n@@ -10,3 +10,3 @@\n context2\n-old2\n+new2",
+                "modified",
+                2,
+                2,
+            )
+            .build()
     }
 
     #[test]
@@ -2835,21 +2428,7 @@ mod tests {
 
     #[test]
     fn test_zoom_toggle() {
-        let commits = create_test_commits();
-        let files_map = create_test_files_map(&commits);
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().with_test_data().build();
 
         assert!(!app.zoomed);
 
@@ -2864,21 +2443,7 @@ mod tests {
 
     #[test]
     fn test_zoom_works_in_all_panels() {
-        let commits = create_test_commits();
-        let files_map = create_test_files_map(&commits);
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().with_test_data().build();
 
         // 各ペインで zoom できる
         for panel in [
@@ -2896,21 +2461,7 @@ mod tests {
 
     #[test]
     fn test_zoom_panel_navigation() {
-        let commits = create_test_commits();
-        let files_map = create_test_files_map(&commits);
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().with_test_data().build();
 
         app.zoomed = true;
         app.focused_panel = Panel::PrDescription;
@@ -3048,19 +2599,7 @@ mod tests {
     // キャッシュされた表示行オフセットから論理行の開始位置を正しく返すことを検証
     #[test]
     fn test_visual_line_offset_with_cache() {
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            vec![],
-            create_empty_files_map(),
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().build();
         app.diff.wrap = true;
         // line 0 → row 0, line 1 → row 1, line 2 → row 3, line 3 → row 4, total → 7
         app.diff.visual_offsets = Some(vec![0, 1, 3, 4, 7]);
@@ -3075,19 +2614,7 @@ mod tests {
     // キャッシュから表示行→論理行の逆引きが正しく行われることを検証
     #[test]
     fn test_visual_to_logical_line_with_cache() {
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            vec![],
-            create_empty_files_map(),
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new().build();
         app.diff.wrap = true;
         // line 0 → row 0, line 1 → rows 1-2, line 2 → row 3, line 3 → rows 4-6, total → 7
         app.diff.visual_offsets = Some(vec![0, 1, 3, 4, 7]);
@@ -3104,19 +2631,7 @@ mod tests {
     // wrap 無効時は論理行＝表示行としてそのまま返すことを検証
     #[test]
     fn test_visual_line_offset_no_wrap() {
-        let app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            vec![],
-            create_empty_files_map(),
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let app = TestAppBuilder::new().build();
         // diff_wrap はデフォルトで false
 
         assert_eq!(app.visual_line_offset(0), 0);
@@ -3127,7 +2642,6 @@ mod tests {
     /// 長い行を含むパッチで wrap + 行番号の visual_line_offset を検証
     #[test]
     fn test_visual_line_offset_with_line_numbers() {
-        let commits = create_test_commits();
         let mut files_map = HashMap::new();
         let long_line = format!("+{}", "x".repeat(120));
         let patch = format!("@@ -1,3 +1,3 @@\n context\n-old\n{}", long_line);
@@ -3141,19 +2655,10 @@ mod tests {
                 patch: Some(patch),
             }],
         );
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new()
+            .with_commits()
+            .files_map(files_map)
+            .build();
         app.diff.view_width = 80;
         app.diff.wrap = true;
         app.diff.show_line_numbers = true;
@@ -3175,7 +2680,6 @@ mod tests {
     /// wrap + 行番号で ensure_cursor_visible がカーソルを画面内に収める
     #[test]
     fn test_ensure_cursor_visible_with_wrap_and_line_numbers() {
-        let commits = create_test_commits();
         let mut files_map = HashMap::new();
         let lines: Vec<String> = (0..20)
             .map(|i| format!("+{}", format!("line{} ", i).repeat(20)))
@@ -3191,19 +2695,10 @@ mod tests {
                 patch: Some(patch),
             }],
         );
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new()
+            .with_commits()
+            .files_map(files_map)
+            .build();
         app.diff.view_width = 80;
         app.diff.view_height = 10;
         app.diff.wrap = true;
@@ -3235,33 +2730,10 @@ mod tests {
     /// line_number_prefix_width が file_status に応じた正しい幅を返す
     #[test]
     fn test_line_number_prefix_width() {
-        let commits = create_test_commits();
-
         // modified ファイル → 両カラム 11文字
-        let mut files_map = HashMap::new();
-        files_map.insert(
-            "abc1234567890".to_string(),
-            vec![DiffFile {
-                filename: "src/main.rs".to_string(),
-                status: "modified".to_string(),
-                additions: 1,
-                deletions: 1,
-                patch: Some("@@ -1 +1 @@\n-old\n+new".to_string()),
-            }],
-        );
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits.clone(),
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new()
+            .with_custom_patch("@@ -1 +1 @@\n-old\n+new", "modified", 1, 1)
+            .build();
         app.diff.show_line_numbers = true;
         assert_eq!(app.line_number_prefix_width(), 11);
 
@@ -3277,19 +2749,10 @@ mod tests {
                 patch: Some("@@ -0,0 +1 @@\n+new".to_string()),
             }],
         );
-        let mut app = App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            false,
-        );
+        let mut app = TestAppBuilder::new()
+            .with_commits()
+            .files_map(files_map)
+            .build();
         app.diff.show_line_numbers = true;
         assert_eq!(app.line_number_prefix_width(), 6);
 
@@ -3524,31 +2987,10 @@ mod tests {
     // --- is_own_pr テスト ---
 
     fn create_own_pr_app() -> App {
-        let commits = create_test_commits();
-        let mut files_map = HashMap::new();
-        files_map.insert(
-            "abc1234567890".to_string(),
-            vec![DiffFile {
-                filename: "src/main.rs".to_string(),
-                status: "added".to_string(),
-                additions: 1,
-                deletions: 0,
-                patch: Some("+line1".to_string()),
-            }],
-        );
-        App::new(
-            1,
-            "owner/repo".to_string(),
-            "Test PR".to_string(),
-            String::new(),
-            String::new(),
-            commits,
-            files_map,
-            vec![],
-            None,
-            ThemeMode::Dark,
-            true,
-        )
+        TestAppBuilder::new()
+            .with_custom_patch("+line1", "added", 1, 0)
+            .own_pr()
+            .build()
     }
 
     #[test]
