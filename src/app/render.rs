@@ -286,7 +286,17 @@ impl App {
             .collect();
 
         let viewed_count = self.viewed_commit_count();
-        let title = format!(" Commits ({}/{}) ", viewed_count, self.commits.len());
+        let selected = self
+            .commit_list_state
+            .selected()
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let title = format!(
+            " Commits {}/{} ✓{} ",
+            selected,
+            self.commits.len(),
+            viewed_count
+        );
         let list = List::new(items)
             .block(
                 Block::default()
@@ -381,7 +391,8 @@ impl App {
             })
             .collect();
 
-        let title = format!(" Files ({}/{}) ", viewed_count, files.len());
+        let selected = self.file_list_state.selected().map(|i| i + 1).unwrap_or(0);
+        let title = format!(" Files {}/{} ✓{} ", selected, files.len(), viewed_count);
         let list = List::new(items)
             .block(
                 Block::default()
