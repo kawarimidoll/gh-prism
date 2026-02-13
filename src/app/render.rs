@@ -831,7 +831,7 @@ impl App {
                 };
                 (
                     title,
-                    " Ctrl+S: 送信 | Esc: キャンセル ",
+                    " Ctrl+G: suggestion | Ctrl+S: submit | Esc: cancel ",
                     &mut self.review.comment_editor,
                 )
             }
@@ -839,7 +839,7 @@ impl App {
                 let event = self.available_events()[self.review.review_event_cursor];
                 (
                     format!(" Review Body ({}) ", event.label()),
-                    " Ctrl+S: 送信 | Esc: 戻る ",
+                    " Ctrl+S: submit | Esc: back ",
                     &mut self.review.review_body_editor,
                 )
             }
@@ -1058,6 +1058,7 @@ impl App {
             ("", "Selection & Comment"),
             ("v", "Enter line select mode"),
             ("c", "Comment on current line"),
+            ("Ctrl+G", "Insert suggestion (comment)"),
             ("Ctrl+S", "Submit (in comment/review)"),
             ("S", "Submit review"),
             ("", "Copy"),

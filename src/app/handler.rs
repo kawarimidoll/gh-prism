@@ -370,6 +370,9 @@ impl App {
             KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
                 self.confirm_comment();
             }
+            KeyCode::Char('g') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.insert_suggestion();
+            }
             _ => {
                 self.review.comment_editor.handle_key(code);
             }

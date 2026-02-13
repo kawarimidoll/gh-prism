@@ -63,6 +63,18 @@ impl TextEditor {
         &self.lines[start..]
     }
 
+    /// カーソル位置に複数行テキストを挿入
+    pub fn insert_text(&mut self, text: &str) {
+        for (i, chunk) in text.split('\n').enumerate() {
+            if i > 0 {
+                self.insert_newline();
+            }
+            for ch in chunk.chars() {
+                self.insert_char(ch);
+            }
+        }
+    }
+
     /// カーソル位置に文字を挿入
     pub fn insert_char(&mut self, ch: char) {
         let line = &mut self.lines[self.cursor_row];
@@ -749,5 +761,37 @@ mod tests {
         // 全行が収まる場合 → None
         let small_editor = TextEditor::new();
         assert!(small_editor.scrollbar_state(5).is_none());
+    }
+
+    #[test]
+    fn test_insert_text_single_line() {
+        let mut editor = TextEditor::new();
+        editor.insert_text("hello");
+        assert_eq!(editor.text(), "hello");
+        assert_eq!(editor.line_count(), 1);
+        assert_eq!(editor.cursor_row(), 0);
+        assert_eq!(editor.cursor_col(), 5);
+    }
+
+    #[test]
+    fn test_insert_text_multi_line() {
+        let mut editor = TextEditor::new();
+        editor.insert_text("line1\nline2\nline3");
+        assert_eq!(editor.text(), "line1\nline2\nline3");
+        assert_eq!(editor.line_count(), 3);
+        assert_eq!(editor.cursor_row(), 2);
+        assert_eq!(editor.cursor_col(), 5);
+    }
+
+    #[test]
+    fn test_insert_text_at_cursor() {
+        let mut editor = TextEditor::new();
+        editor.insert_text("ab");
+        editor.move_left();
+        editor.insert_text("X\nY");
+        // "a" + "X\nY" + "b" → "aX\nYb"
+        assert_eq!(editor.text(), "aX\nYb");
+        assert_eq!(editor.cursor_row(), 1);
+        assert_eq!(editor.cursor_col(), 1); // 'Y' の後
     }
 }

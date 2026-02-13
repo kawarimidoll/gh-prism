@@ -649,6 +649,49 @@ impl App {
         self.mode = AppMode::Normal;
     }
 
+    /// 選択範囲の diff 行から「新しい側」のコードを抽出する
+    fn extract_suggestion_lines(&self, start: usize, end: usize) -> Result<Vec<String>, String> {
+        let patch = self
+            .current_file()
+            .and_then(|f| f.patch.as_deref())
+            .ok_or("No patch available")?;
+        let lines: Vec<&str> = patch.lines().collect();
+        let mut code_lines = Vec::new();
+        for i in start..=end {
+            if let Some(line) = lines.get(i) {
+                if let Some(rest) = line.strip_prefix('+') {
+                    code_lines.push(rest.to_string());
+                } else if let Some(rest) = line.strip_prefix(' ') {
+                    code_lines.push(rest.to_string());
+                }
+                // '-' 行と '@@' 行は除外
+            }
+        }
+        if code_lines.is_empty() {
+            Err("No suggestion-eligible lines in selection".to_string())
+        } else {
+            Ok(code_lines)
+        }
+    }
+
+    /// 選択行のコードを suggestion テンプレートとしてエディタに挿入する
+    fn insert_suggestion(&mut self) {
+        let Some(selection) = self.line_selection else {
+            self.status_message = Some(StatusMessage::error("No line selection"));
+            return;
+        };
+        let (start, end) = selection.range(self.diff.cursor_line);
+        match self.extract_suggestion_lines(start, end) {
+            Ok(code_lines) => {
+                let template = format!("```suggestion\n{}\n```", code_lines.join("\n"));
+                self.review.comment_editor.insert_text(&template);
+            }
+            Err(msg) => {
+                self.status_message = Some(StatusMessage::error(msg));
+            }
+        }
+    }
+
     /// owner/repo を分割して (owner, repo) を返す
     fn parse_repo(&self) -> Option<(&str, &str)> {
         let (owner, repo) = self.repo.split_once('/')?;
@@ -1364,6 +1407,80 @@ mod tests {
         assert!(app.line_selection.is_none());
         app.enter_comment_input_mode();
         assert_eq!(app.mode, AppMode::Normal);
+    }
+
+    #[test]
+    fn test_insert_suggestion_basic() {
+        // +行のみのパッチで suggestion テンプレートが挿入される
+        let mut app = create_app_with_patch();
+        app.focused_panel = Panel::DiffView;
+        app.enter_line_select_mode();
+        app.enter_comment_input_mode();
+
+        app.insert_suggestion();
+        let text = app.review.comment_editor.text();
+        assert!(text.starts_with("```suggestion\n"));
+        assert!(text.ends_with("\n```"));
+        assert!(text.contains("line 0"));
+    }
+
+    #[test]
+    fn test_insert_suggestion_mixed_lines() {
+        // +行、-行、コンテキスト行が混在するパッチ
+        let patch = "@@ -1,3 +1,3 @@\n old line\n-removed\n+added";
+        let mut app = TestAppBuilder::new()
+            .with_custom_patch(patch, "modified", 1, 1)
+            .build();
+        app.focused_panel = Panel::DiffView;
+        // hunk header をスキップ: カーソルを1行目に
+        app.diff.cursor_line = 1;
+        app.line_selection = Some(LineSelection { anchor: 1 });
+        // 3行選択（行1〜3）
+        app.diff.cursor_line = 3;
+        app.mode = AppMode::CommentInput;
+
+        app.insert_suggestion();
+        let text = app.review.comment_editor.text();
+        // コンテキスト行 " old line" → "old line" と +行 "+added" → "added" が含まれる
+        assert!(text.contains("old line"));
+        assert!(text.contains("added"));
+        // -行 "-removed" は除外される
+        assert!(!text.contains("removed"));
+    }
+
+    #[test]
+    fn test_insert_suggestion_all_deletions_error() {
+        // 全行が -行のパッチ → エラー
+        let patch = "@@ -1,2 +0,0 @@\n-deleted1\n-deleted2";
+        let mut app = TestAppBuilder::new()
+            .with_custom_patch(patch, "modified", 0, 2)
+            .build();
+        app.focused_panel = Panel::DiffView;
+        app.diff.cursor_line = 1;
+        app.line_selection = Some(LineSelection { anchor: 1 });
+        app.diff.cursor_line = 2;
+        app.mode = AppMode::CommentInput;
+
+        app.insert_suggestion();
+        // エディタは空のまま
+        assert!(app.review.comment_editor.is_empty());
+        // エラーメッセージが設定される
+        assert!(app.status_message.is_some());
+        assert_eq!(app.status_message.unwrap().level, StatusLevel::Error);
+    }
+
+    #[test]
+    fn test_ctrl_g_in_comment_input() {
+        // Ctrl+G で insert_suggestion が呼ばれることを handler 経由で確認
+        let mut app = create_app_with_patch();
+        app.focused_panel = Panel::DiffView;
+        app.enter_line_select_mode();
+        app.enter_comment_input_mode();
+
+        app.handle_comment_input_mode(KeyCode::Char('g'), KeyModifiers::CONTROL);
+        let text = app.review.comment_editor.text();
+        assert!(text.starts_with("```suggestion\n"));
+        assert!(text.ends_with("\n```"));
     }
 
     #[test]
