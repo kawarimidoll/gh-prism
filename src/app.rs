@@ -799,6 +799,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyModifiers};
     use ratatui::layout::Rect;
     use std::time::{Duration, Instant};
+    use unicode_width::UnicodeWidthStr;
 
     fn create_test_commits() -> Vec<CommitInfo> {
         vec![
@@ -2628,6 +2629,21 @@ mod tests {
         let line = App::format_hunk_header("@@ -0,0 +1,5 @@", 30, Style::default());
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("L1-5"));
+    }
+
+    #[test]
+    fn test_format_hunk_header_long_context_truncated() {
+        // 関数名が非常に長い場合、width に収まるようトランケートされる
+        let long_ctx = format!(
+            "@@ -1,3 +1,3 @@ {}",
+            "a_very_long_function_name_that_exceeds_width"
+        );
+        let line = App::format_hunk_header(&long_ctx, 30, Style::default());
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        // 幅30を超えない
+        assert!(UnicodeWidthStr::width(text.as_str()) <= 30);
+        // 末尾は ─ で終わる
+        assert!(text.ends_with('─'));
     }
 
     #[test]

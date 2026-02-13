@@ -56,10 +56,16 @@ impl App {
             content.push(' ');
         }
 
+        // content が width を超える場合はトランケート（wrap で折り返されるのを防止）
         let content_width = UnicodeWidthStr::width(content.as_str());
-        let fill_count = width.saturating_sub(content_width);
-        for _ in 0..fill_count {
+        if content_width >= width {
+            content = truncate_str(&content, width.saturating_sub(1));
             content.push('─');
+        } else {
+            let fill_count = width - content_width;
+            for _ in 0..fill_count {
+                content.push('─');
+            }
         }
 
         Line::styled(content, style)
