@@ -61,18 +61,21 @@ impl App {
             }
             Panel::CommitList if !self.commits.is_empty() => {
                 let current = self.commit_list_state.selected().unwrap_or(0);
-                let next = (current + 1) % self.commits.len();
+                let next = (current + 1).min(self.commits.len() - 1);
                 self.commit_list_state.select(Some(next));
-                // ファイル選択をリセット
-                self.reset_file_selection();
+                if next != current {
+                    self.reset_file_selection();
+                }
             }
             Panel::FileTree => {
                 let files_len = self.current_files().len();
                 if files_len > 0 {
                     let current = self.file_list_state.selected().unwrap_or(0);
-                    let next = (current + 1) % files_len;
+                    let next = (current + 1).min(files_len - 1);
                     self.file_list_state.select(Some(next));
-                    self.reset_cursor();
+                    if next != current {
+                        self.reset_cursor();
+                    }
                 }
             }
             Panel::DiffView => {
@@ -89,26 +92,21 @@ impl App {
             }
             Panel::CommitList if !self.commits.is_empty() => {
                 let current = self.commit_list_state.selected().unwrap_or(0);
-                let prev = if current == 0 {
-                    self.commits.len() - 1
-                } else {
-                    current - 1
-                };
+                let prev = current.saturating_sub(1);
                 self.commit_list_state.select(Some(prev));
-                // ファイル選択をリセット
-                self.reset_file_selection();
+                if prev != current {
+                    self.reset_file_selection();
+                }
             }
             Panel::FileTree => {
                 let files_len = self.current_files().len();
                 if files_len > 0 {
                     let current = self.file_list_state.selected().unwrap_or(0);
-                    let prev = if current == 0 {
-                        files_len - 1
-                    } else {
-                        current - 1
-                    };
+                    let prev = current.saturating_sub(1);
                     self.file_list_state.select(Some(prev));
-                    self.reset_cursor();
+                    if prev != current {
+                        self.reset_cursor();
+                    }
                 }
             }
             Panel::DiffView => {

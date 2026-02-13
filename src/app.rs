@@ -1041,7 +1041,7 @@ mod tests {
         app.select_next();
         assert_eq!(app.commit_list_state.selected(), Some(1));
         app.select_next();
-        assert_eq!(app.commit_list_state.selected(), Some(0)); // wrap around
+        assert_eq!(app.commit_list_state.selected(), Some(1)); // clamped at end
     }
 
     #[test]
@@ -1050,7 +1050,9 @@ mod tests {
         app.focused_panel = Panel::CommitList;
         assert_eq!(app.commit_list_state.selected(), Some(0));
         app.select_prev();
-        assert_eq!(app.commit_list_state.selected(), Some(1)); // wrap around
+        assert_eq!(app.commit_list_state.selected(), Some(0)); // clamped at start
+        app.select_next();
+        assert_eq!(app.commit_list_state.selected(), Some(1));
         app.select_prev();
         assert_eq!(app.commit_list_state.selected(), Some(0));
     }
@@ -1063,7 +1065,7 @@ mod tests {
         app.select_next();
         assert_eq!(app.file_list_state.selected(), Some(1));
         app.select_next();
-        assert_eq!(app.file_list_state.selected(), Some(0)); // wrap around
+        assert_eq!(app.file_list_state.selected(), Some(1)); // clamped at end
     }
 
     #[test]
@@ -1072,7 +1074,9 @@ mod tests {
         app.focused_panel = Panel::FileTree;
         assert_eq!(app.file_list_state.selected(), Some(0));
         app.select_prev();
-        assert_eq!(app.file_list_state.selected(), Some(1)); // wrap around
+        assert_eq!(app.file_list_state.selected(), Some(0)); // clamped at start
+        app.select_next();
+        assert_eq!(app.file_list_state.selected(), Some(1));
         app.select_prev();
         assert_eq!(app.file_list_state.selected(), Some(0));
     }
