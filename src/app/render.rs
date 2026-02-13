@@ -6,31 +6,35 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, HorizontalAlignment, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{
+        Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Wrap,
+    },
 };
 use ratatui_image::StatefulImage;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 impl App {
     pub(super) fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
 
-        // CommentInput モードでは入力欄を下部に表示
-        let main_layout = if self.mode == AppMode::CommentInput {
-            Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1),
-                    Constraint::Min(0),
-                    Constraint::Length(3),
-                ])
-                .split(area)
-        } else {
-            Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(1), Constraint::Min(0)])
-                .split(area)
-        };
+        // テキスト入力モードでは入力欄を下部に表示
+        let main_layout =
+            if self.mode == AppMode::CommentInput || self.mode == AppMode::ReviewBodyInput {
+                Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(1),
+                        Constraint::Min(0),
+                        Constraint::Length(7),
+                    ])
+                    .split(area)
+            } else {
+                Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(1), Constraint::Min(0)])
+                    .split(area)
+            };
 
         let mode_indicator = match self.mode {
             AppMode::Normal => "",
@@ -171,16 +175,17 @@ impl App {
             self.render_diff_view_widget(frame, diff_area);
         }
 
-        // CommentInput モードでは入力欄を描画
-        if self.mode == AppMode::CommentInput {
-            self.render_comment_input(frame, main_layout[2]);
+        // テキスト入力モードでは入力欄を描画
+        match self.mode {
+            AppMode::CommentInput => self.render_editor_panel(frame, main_layout[2]),
+            AppMode::ReviewBodyInput => self.render_editor_panel(frame, main_layout[2]),
+            _ => {}
         }
 
         // ダイアログ描画（画面中央にオーバーレイ）
         match self.mode {
             AppMode::CommentView => self.render_comment_view_dialog(frame, area),
             AppMode::ReviewSubmit => self.render_review_submit_dialog(frame, area),
-            AppMode::ReviewBodyInput => self.render_review_body_input_dialog(frame, area),
             AppMode::QuitConfirm => self.render_quit_confirm_dialog(frame, area),
             AppMode::Help => self.render_help_dialog(frame, area),
             AppMode::MediaViewer => self.render_media_viewer_overlay(frame, area),
@@ -804,27 +809,70 @@ impl App {
         }
     }
 
-    fn render_comment_input(&self, frame: &mut Frame, area: Rect) {
-        let selection_info = if let Some(selection) = self.line_selection {
-            let (start, end) = selection.range(self.diff.cursor_line);
-            format!(" L{}–L{} ", start + 1, end + 1)
-        } else {
-            String::new()
+    /// CommentInput / ReviewBodyInput 共通のエディタパネル描画
+    fn render_editor_panel(&mut self, frame: &mut Frame, area: Rect) {
+        let (title, help_text, editor) = match self.mode {
+            AppMode::CommentInput => {
+                let title = if let Some(selection) = self.line_selection {
+                    let (start, end) = selection.range(self.diff.cursor_line);
+                    format!(" Comment L{}–L{} ", start + 1, end + 1)
+                } else {
+                    " Comment ".to_string()
+                };
+                (
+                    title,
+                    " Ctrl+S: 送信 | Esc: キャンセル ",
+                    &mut self.review.comment_editor,
+                )
+            }
+            AppMode::ReviewBodyInput => {
+                let event = self.available_events()[self.review.review_event_cursor];
+                (
+                    format!(" Review Body ({}) ", event.label()),
+                    " Ctrl+S: 送信 | Esc: 戻る ",
+                    &mut self.review.review_body_editor,
+                )
+            }
+            _ => return,
         };
 
+        let inner_width = area.width.saturating_sub(2) as usize; // ボーダー左右分
+        let visible_height = area.height.saturating_sub(2) as usize; // ボーダー上下分
+
+        editor.set_display_width(inner_width);
+        editor.ensure_visible(visible_height);
+
+        let scrollbar_state = editor.scrollbar_state(visible_height);
+
         let block = Block::default()
-            .title(format!(" Comment{} ", selection_info))
+            .title(title)
+            .title_bottom(Line::from(help_text).alignment(HorizontalAlignment::Right))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Green));
 
-        let paragraph = Paragraph::new(self.review.comment_input.as_str()).block(block);
+        let lines: Vec<Line> = editor
+            .lines_from_scroll()
+            .iter()
+            .map(|l| Line::raw(l.as_str()))
+            .collect();
+
+        let paragraph = Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false });
         frame.render_widget(paragraph, area);
 
-        // set_cursor_position でリアルカーソルを表示（表示幅で計算）
-        frame.set_cursor_position(Position::new(
-            area.x + self.review.comment_input.width() as u16 + 1, // +1 for border
-            area.y + 1,                                            // +1 for border
-        ));
+        // Scrollbar（必要な場合のみ）
+        if let Some((content_length, position)) = scrollbar_state {
+            let mut sb_state = ScrollbarState::new(content_length).position(position);
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+            frame.render_stateful_widget(scrollbar, area, &mut sb_state);
+        }
+
+        // カーソル位置計算（wrap 考慮）
+        let (vcol, vrow) = editor.cursor_visual_position();
+        let cursor_x = area.x + 1 + vcol as u16;
+        let cursor_y = area.y + 1 + vrow as u16;
+        frame.set_cursor_position(Position::new(cursor_x, cursor_y));
     }
 
     /// 中央に固定サイズの矩形を配置
@@ -882,62 +930,6 @@ impl App {
                 .border_style(Style::default().fg(Color::Cyan)),
         );
         frame.render_widget(paragraph, dialog);
-    }
-
-    fn render_review_body_input_dialog(&self, frame: &mut Frame, area: Rect) {
-        let dialog = Self::centered_rect(50, 8, area);
-        frame.render_widget(Clear, dialog);
-
-        let event = self.available_events()[self.review.review_event_cursor];
-
-        // ダイアログ内で表示できる入力テキスト幅を計算
-        // dialog 内部幅 = dialog.width - 2(border), プレフィックス "  > " = 4文字
-        let max_visible = dialog.width.saturating_sub(2 + 4) as usize;
-        let input_width = self.review.review_body_input.width();
-        let visible_text = if input_width <= max_visible {
-            self.review.review_body_input.as_str()
-        } else {
-            // 末尾を表示: バイト境界を正しく扱うため文字単位でスキップ
-            let skip_width = input_width - max_visible;
-            let mut w = 0;
-            let mut byte_offset = 0;
-            for (i, ch) in self.review.review_body_input.char_indices() {
-                if w >= skip_width {
-                    byte_offset = i;
-                    break;
-                }
-                w += ch.width().unwrap_or(0);
-                byte_offset = i + ch.len_utf8();
-            }
-            &self.review.review_body_input[byte_offset..]
-        };
-
-        let lines = vec![
-            Line::raw(""),
-            Line::styled(
-                format!("  Event: {}", event.label()),
-                Style::default().fg(Color::Cyan),
-            ),
-            Line::raw(""),
-            Line::styled(format!("  > {}", visible_text), Style::default()),
-            Line::raw(""),
-            Line::styled(
-                "  Enter: submit  Esc: back",
-                Style::default().fg(Color::DarkGray),
-            ),
-        ];
-
-        let paragraph = Paragraph::new(lines).block(
-            Block::default()
-                .title(" Review Body (optional) ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Green)),
-        );
-        frame.render_widget(paragraph, dialog);
-
-        // カーソル表示（表示テキストの末尾に配置）
-        let cursor_x = dialog.x + 5 + visible_text.width() as u16;
-        frame.set_cursor_position((cursor_x, dialog.y + 4));
     }
 
     fn render_quit_confirm_dialog(&self, frame: &mut Frame, area: Rect) {
@@ -1056,6 +1048,7 @@ impl App {
             ("", "Selection & Comment"),
             ("v", "Enter line select mode"),
             ("c", "Comment on current line"),
+            ("Ctrl+S", "Submit (in comment/review)"),
             ("S", "Submit review"),
             ("", "Copy"),
             ("y", "Copy SHA / file path"),

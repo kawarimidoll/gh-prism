@@ -1,3 +1,4 @@
+use super::editor::TextEditor;
 use ratatui::layout::Rect;
 use std::time::{Duration, Instant};
 
@@ -139,18 +140,35 @@ pub struct MediaRef {
 }
 
 /// レビュー・コメント関連の状態
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ReviewState {
-    pub comment_input: String,
+    pub comment_editor: TextEditor,
     pub pending_comments: Vec<crate::github::review::PendingComment>,
     pub review_comments: Vec<crate::github::comments::ReviewComment>,
     pub viewing_comments: Vec<crate::github::comments::ReviewComment>,
     pub viewing_comment_scroll: u16,
     pub comment_view_max_scroll: u16,
     pub review_event_cursor: usize,
-    pub review_body_input: String,
+    pub review_body_editor: TextEditor,
     pub needs_submit: Option<ReviewEvent>,
     pub quit_after_submit: bool,
+}
+
+impl Default for ReviewState {
+    fn default() -> Self {
+        Self {
+            comment_editor: TextEditor::new(),
+            pending_comments: Vec::new(),
+            review_comments: Vec::new(),
+            viewing_comments: Vec::new(),
+            viewing_comment_scroll: 0,
+            comment_view_max_scroll: 0,
+            review_event_cursor: 0,
+            review_body_editor: TextEditor::new(),
+            needs_submit: None,
+            quit_after_submit: false,
+        }
+    }
 }
 
 /// DiffView パネルの表示状態

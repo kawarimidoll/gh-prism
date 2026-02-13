@@ -1,3 +1,4 @@
+pub mod editor;
 mod handler;
 mod helpers;
 mod media;
@@ -604,20 +605,20 @@ impl App {
     /// コメント入力モードに入る（行選択がある場合のみ）
     fn enter_comment_input_mode(&mut self) {
         if self.line_selection.is_some() {
-            self.review.comment_input.clear();
+            self.review.comment_editor.clear();
             self.mode = AppMode::CommentInput;
         }
     }
 
     /// コメント入力をキャンセルして LineSelect に戻る（選択範囲維持）
     fn cancel_comment_input(&mut self) {
-        self.review.comment_input.clear();
+        self.review.comment_editor.clear();
         self.mode = AppMode::LineSelect;
     }
 
     /// コメントを確定して pending_comments に追加
     fn confirm_comment(&mut self) {
-        if self.review.comment_input.is_empty() {
+        if self.review.comment_editor.is_empty() {
             return;
         }
 
@@ -638,12 +639,12 @@ impl App {
                 file_path,
                 start_line: start,
                 end_line: end,
-                body: self.review.comment_input.clone(),
+                body: self.review.comment_editor.text(),
                 commit_sha,
             });
         }
 
-        self.review.comment_input.clear();
+        self.review.comment_editor.clear();
         self.line_selection = None;
         self.mode = AppMode::Normal;
     }
@@ -696,7 +697,7 @@ impl App {
                 &self.review.pending_comments,
                 &self.files_map,
                 event.as_api_str(),
-                &self.review.review_body_input,
+                &self.review.review_body_editor.text(),
             ))
         });
 
@@ -714,7 +715,7 @@ impl App {
                 };
                 self.status_message = Some(StatusMessage::info(msg));
                 self.review.pending_comments.clear();
-                self.review.review_body_input.clear();
+                self.review.review_body_editor.clear();
             }
             Err(e) => {
                 self.status_message = Some(StatusMessage::error(format!("✗ Failed: {}", e)));
@@ -1274,7 +1275,7 @@ mod tests {
         // 'c' でコメント入力モードに遷移
         app.enter_comment_input_mode();
         assert_eq!(app.mode, AppMode::CommentInput);
-        assert!(app.review.comment_input.is_empty());
+        assert!(app.review.comment_editor.is_empty());
     }
 
     #[test]
@@ -1302,21 +1303,21 @@ mod tests {
         app.enter_comment_input_mode();
 
         // 文字入力
-        app.handle_comment_input_mode(KeyCode::Char('H'));
-        app.handle_comment_input_mode(KeyCode::Char('i'));
-        assert_eq!(app.review.comment_input, "Hi");
+        app.handle_comment_input_mode(KeyCode::Char('H'), KeyModifiers::NONE);
+        app.handle_comment_input_mode(KeyCode::Char('i'), KeyModifiers::NONE);
+        assert_eq!(app.review.comment_editor.text(), "Hi");
 
         // Backspace
-        app.handle_comment_input_mode(KeyCode::Backspace);
-        assert_eq!(app.review.comment_input, "H");
+        app.handle_comment_input_mode(KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(app.review.comment_editor.text(), "H");
 
         // 全文字削除
-        app.handle_comment_input_mode(KeyCode::Backspace);
-        assert!(app.review.comment_input.is_empty());
+        app.handle_comment_input_mode(KeyCode::Backspace, KeyModifiers::NONE);
+        assert!(app.review.comment_editor.is_empty());
 
         // 空の状態でさらに Backspace しても panic しない
-        app.handle_comment_input_mode(KeyCode::Backspace);
-        assert!(app.review.comment_input.is_empty());
+        app.handle_comment_input_mode(KeyCode::Backspace, KeyModifiers::NONE);
+        assert!(app.review.comment_editor.is_empty());
     }
 
     #[test]
@@ -1327,10 +1328,10 @@ mod tests {
         app.enter_comment_input_mode();
 
         // コメント入力
-        app.handle_comment_input_mode(KeyCode::Char('L'));
-        app.handle_comment_input_mode(KeyCode::Char('G'));
-        app.handle_comment_input_mode(KeyCode::Char('T'));
-        app.handle_comment_input_mode(KeyCode::Char('M'));
+        app.handle_comment_input_mode(KeyCode::Char('L'), KeyModifiers::NONE);
+        app.handle_comment_input_mode(KeyCode::Char('G'), KeyModifiers::NONE);
+        app.handle_comment_input_mode(KeyCode::Char('T'), KeyModifiers::NONE);
+        app.handle_comment_input_mode(KeyCode::Char('M'), KeyModifiers::NONE);
 
         // Enter で確定
         app.confirm_comment();
@@ -1472,7 +1473,7 @@ mod tests {
         // pending_comments が空でも Approve → ReviewBodyInput に遷移
         app.handle_review_submit_mode(KeyCode::Enter);
         assert_eq!(app.mode, AppMode::ReviewBodyInput);
-        assert!(app.review.review_body_input.is_empty());
+        assert!(app.review.review_body_editor.is_empty());
         assert!(app.review.needs_submit.is_none());
     }
 
@@ -2924,25 +2925,27 @@ mod tests {
         app.review.review_event_cursor = 1; // Approve
 
         // 文字入力
-        app.handle_review_body_input_mode(KeyCode::Char('L'));
-        app.handle_review_body_input_mode(KeyCode::Char('G'));
-        app.handle_review_body_input_mode(KeyCode::Char('T'));
-        app.handle_review_body_input_mode(KeyCode::Char('M'));
-        assert_eq!(app.review.review_body_input, "LGTM");
+        app.handle_review_body_input_mode(KeyCode::Char('L'), KeyModifiers::NONE);
+        app.handle_review_body_input_mode(KeyCode::Char('G'), KeyModifiers::NONE);
+        app.handle_review_body_input_mode(KeyCode::Char('T'), KeyModifiers::NONE);
+        app.handle_review_body_input_mode(KeyCode::Char('M'), KeyModifiers::NONE);
+        assert_eq!(app.review.review_body_editor.text(), "LGTM");
 
         // Backspace
-        app.handle_review_body_input_mode(KeyCode::Backspace);
-        assert_eq!(app.review.review_body_input, "LGT");
+        app.handle_review_body_input_mode(KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(app.review.review_body_editor.text(), "LGT");
     }
 
     #[test]
-    fn test_review_body_input_enter_submits() {
+    fn test_review_body_input_ctrl_s_submits() {
         let mut app = create_app_with_patch();
         app.mode = AppMode::ReviewBodyInput;
         app.review.review_event_cursor = 1; // Approve
-        app.review.review_body_input = "LGTM!".to_string();
+        for ch in "LGTM!".chars() {
+            app.review.review_body_editor.insert_char(ch);
+        }
 
-        app.handle_review_body_input_mode(KeyCode::Enter);
+        app.handle_review_body_input_mode(KeyCode::Char('s'), KeyModifiers::CONTROL);
         assert_eq!(app.mode, AppMode::Normal);
         assert_eq!(app.review.needs_submit, Some(ReviewEvent::Approve));
         assert!(app.status_message.is_some());
@@ -2954,8 +2957,8 @@ mod tests {
         app.mode = AppMode::ReviewBodyInput;
         app.review.review_event_cursor = 1; // Approve
 
-        // 空bodyでも送信可能
-        app.handle_review_body_input_mode(KeyCode::Enter);
+        // 空bodyでも Ctrl+S で送信可能
+        app.handle_review_body_input_mode(KeyCode::Char('s'), KeyModifiers::CONTROL);
         assert_eq!(app.mode, AppMode::Normal);
         assert_eq!(app.review.needs_submit, Some(ReviewEvent::Approve));
     }
@@ -2964,11 +2967,13 @@ mod tests {
     fn test_review_body_input_esc_returns_to_submit() {
         let mut app = create_app_with_patch();
         app.mode = AppMode::ReviewBodyInput;
-        app.review.review_body_input = "some text".to_string();
+        for ch in "some text".chars() {
+            app.review.review_body_editor.insert_char(ch);
+        }
 
-        app.handle_review_body_input_mode(KeyCode::Esc);
+        app.handle_review_body_input_mode(KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.mode, AppMode::ReviewSubmit);
-        assert!(app.review.review_body_input.is_empty());
+        assert!(app.review.review_body_editor.is_empty());
         assert!(app.review.needs_submit.is_none());
     }
 
@@ -2979,7 +2984,7 @@ mod tests {
         app.review.quit_after_submit = true;
 
         // Esc で ReviewSubmit に戻る（quit_after_submit はリセットしない）
-        app.handle_review_body_input_mode(KeyCode::Esc);
+        app.handle_review_body_input_mode(KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.mode, AppMode::ReviewSubmit);
         assert!(app.review.quit_after_submit);
     }

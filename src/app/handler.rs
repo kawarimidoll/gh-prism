@@ -99,10 +99,12 @@ impl App {
             Event::Key(key) if key.kind == KeyEventKind::Press => match self.mode {
                 AppMode::Normal => self.handle_normal_mode(key.code, key.modifiers),
                 AppMode::LineSelect => self.handle_line_select_mode(key.code),
-                AppMode::CommentInput => self.handle_comment_input_mode(key.code),
+                AppMode::CommentInput => self.handle_comment_input_mode(key.code, key.modifiers),
                 AppMode::CommentView => self.handle_comment_view_mode(key.code),
                 AppMode::ReviewSubmit => self.handle_review_submit_mode(key.code),
-                AppMode::ReviewBodyInput => self.handle_review_body_input_mode(key.code),
+                AppMode::ReviewBodyInput => {
+                    self.handle_review_body_input_mode(key.code, key.modifiers)
+                }
                 AppMode::QuitConfirm => self.handle_quit_confirm_mode(key.code),
                 AppMode::Help => self.handle_help_mode(key.code),
                 AppMode::MediaViewer => self.handle_media_viewer_mode(key.code),
@@ -342,7 +344,7 @@ impl App {
                     self.line_selection = Some(LineSelection {
                         anchor: self.diff.cursor_line,
                     });
-                    self.review.comment_input.clear();
+                    self.review.comment_editor.clear();
                     self.mode = AppMode::CommentInput;
                 }
             }
@@ -362,18 +364,19 @@ impl App {
     }
 
     /// コメント入力モードのキー処理
-    pub(super) fn handle_comment_input_mode(&mut self, code: KeyCode) {
+    pub(super) fn handle_comment_input_mode(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         match code {
             KeyCode::Esc => self.cancel_comment_input(),
-            KeyCode::Enter => self.confirm_comment(),
-            KeyCode::Backspace => {
-                self.review.comment_input.pop();
+            KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.confirm_comment();
             }
-            KeyCode::Char(c) => {
-                self.review.comment_input.push(c);
+            _ => {
+                self.review.comment_editor.handle_key(code);
             }
-            _ => {}
         }
+        self.review
+            .comment_editor
+            .ensure_visible(editor::EDITOR_VISIBLE_HEIGHT);
     }
 
     /// コメント表示ダイアログのキー処理
@@ -424,7 +427,7 @@ impl App {
                     self.mode = AppMode::Normal;
                     return;
                 }
-                self.review.review_body_input.clear();
+                self.review.review_body_editor.clear();
                 self.mode = AppMode::ReviewBodyInput;
             }
             _ => {}
@@ -432,13 +435,13 @@ impl App {
     }
 
     /// レビュー本文入力モードのキー処理
-    pub(super) fn handle_review_body_input_mode(&mut self, code: KeyCode) {
+    pub(super) fn handle_review_body_input_mode(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         match code {
             KeyCode::Esc => {
-                self.review.review_body_input.clear();
+                self.review.review_body_editor.clear();
                 self.mode = AppMode::ReviewSubmit;
             }
-            KeyCode::Enter => {
+            KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
                 let event = self.available_events()[self.review.review_event_cursor];
                 self.status_message = Some(StatusMessage::info(format!(
                     "Submitting ({})...",
@@ -447,14 +450,13 @@ impl App {
                 self.review.needs_submit = Some(event);
                 self.mode = AppMode::Normal;
             }
-            KeyCode::Backspace => {
-                self.review.review_body_input.pop();
+            _ => {
+                self.review.review_body_editor.handle_key(code);
             }
-            KeyCode::Char(c) => {
-                self.review.review_body_input.push(c);
-            }
-            _ => {}
         }
+        self.review
+            .review_body_editor
+            .ensure_visible(editor::EDITOR_VISIBLE_HEIGHT);
     }
 
     /// 終了確認ダイアログのキー処理
