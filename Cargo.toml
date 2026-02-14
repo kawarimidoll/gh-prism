@@ -9,6 +9,7 @@ repository = "https://github.com/kawarimidoll/gh-prism"
 
 [dependencies]
 ansi-to-tui = "8"
+chrono = { version = "0.4.43", default-features = false, features = ["clock"] }
 clap = { version = "4.5.55", features = ["derive"] }
 color-eyre = "0.6.5"
 crossterm = "0.29.0"

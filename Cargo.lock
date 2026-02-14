@@ -1305,6 +1305,7 @@ name = "gh-prism"
 version = "0.0.1"
 dependencies = [
  "ansi-to-tui",
+ "chrono",
  "clap",
  "color-eyre",
  "crossterm 0.29.0",

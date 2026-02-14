@@ -2,11 +2,16 @@ use super::*;
 
 use unicode_width::UnicodeWidthStr;
 
-/// ISO 8601 日時文字列を `YYYY-MM-DD HH:MM` 形式に整形して返す
-/// 入力例: "2024-01-15T09:30:00Z" → "2024-01-15 09:30"
+/// ISO 8601 日時文字列をシステムタイムゾーンのローカル時刻に変換して返す
+/// 入力例: "2024-01-15T09:30:00Z" → "2024-01-15 18:30 +0900"（JST の場合）
 pub(super) fn format_datetime(iso: &str) -> String {
-    let s = &iso[..16.min(iso.len())];
-    s.replace('T', " ")
+    chrono::DateTime::parse_from_rfc3339(iso)
+        .map(|dt| {
+            dt.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M %z")
+                .to_string()
+        })
+        .unwrap_or_else(|_| iso.to_string())
 }
 
 impl App {

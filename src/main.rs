@@ -129,7 +129,11 @@ async fn fetch_all(
     let pr_head = pr.head.ref_field.clone();
     let pr_date = pr
         .created_at
-        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+        .map(|dt| {
+            dt.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M %z")
+                .to_string()
+        })
         .unwrap_or_default();
     let pr_state = if pr.merged_at.is_some() {
         "Merged".to_string()
