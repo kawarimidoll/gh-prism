@@ -2,15 +2,28 @@ mod app;
 mod git;
 mod github;
 
-use app::{App, ThemeMode};
+use app::{App, ConversationEntry, ConversationKind, ThemeMode};
 use clap::Parser;
 use color_eyre::Result;
 use futures::stream::{FuturesUnordered, StreamExt};
 use github::cache::PrCache;
+use github::comments::IssueComment;
 use github::commits::CommitInfo;
 use github::files::DiffFile;
+use github::review::ReviewSummary;
 use octocrab::Octocrab;
 use std::collections::HashMap;
+
+struct FetchedPrData {
+    pr_title: String,
+    pr_body: String,
+    pr_author: String,
+    pr_base_branch: String,
+    pr_head_branch: String,
+    pr_created_at: String,
+    pr_state: String,
+    files_map: HashMap<String, Vec<DiffFile>>,
+}
 
 #[derive(Parser)]
 #[command(name = "prism")]
@@ -102,7 +115,7 @@ async fn fetch_all(
     repo: &str,
     pr_number: u64,
     commits: &[CommitInfo],
-) -> Result<(String, String, String, HashMap<String, Vec<DiffFile>>)> {
+) -> Result<FetchedPrData> {
     // PR情報を取得
     let pr = github::pr::fetch_pr(client, owner, repo, pr_number).await?;
     let pr_title = pr.title.unwrap_or_default();
@@ -112,6 +125,20 @@ async fn fetch_all(
         .as_ref()
         .map(|u| u.login.clone())
         .unwrap_or_default();
+    let pr_base = pr.base.ref_field.clone();
+    let pr_head = pr.head.ref_field.clone();
+    let pr_date = pr
+        .created_at
+        .map(|dt| dt.format("%Y-%m-%d").to_string())
+        .unwrap_or_default();
+    let pr_state = if pr.merged_at.is_some() {
+        "Merged".to_string()
+    } else {
+        match pr.state {
+            Some(octocrab::models::IssueState::Open) => "Open".to_string(),
+            _ => "Closed".to_string(),
+        }
+    };
 
     // 全コミットのファイルを並列取得
     let total = commits.len();
@@ -156,7 +183,55 @@ async fn fetch_all(
         }
     }
 
-    Ok((pr_title, pr_body, pr_author, files_map))
+    Ok(FetchedPrData {
+        pr_title,
+        pr_body,
+        pr_author,
+        pr_base_branch: pr_base,
+        pr_head_branch: pr_head,
+        pr_created_at: pr_date,
+        pr_state,
+        files_map,
+    })
+}
+
+/// IssueComment と ReviewSummary を ConversationEntry にマージして時系列ソート
+fn build_conversation(
+    issue_comments: Vec<IssueComment>,
+    reviews: Vec<ReviewSummary>,
+) -> Vec<ConversationEntry> {
+    let mut entries = Vec::new();
+
+    for c in issue_comments {
+        entries.push(ConversationEntry {
+            author: c.user.login,
+            body: c.body.unwrap_or_default(),
+            created_at: c.created_at,
+            kind: ConversationKind::IssueComment,
+        });
+    }
+
+    for r in reviews {
+        // submitted_at が None のレビューは未送信（下書き）なのでスキップ
+        let Some(submitted_at) = r.submitted_at else {
+            continue;
+        };
+        let body = r.body.as_deref().unwrap_or("");
+        // body 空かつ state が COMMENTED のみの review はスキップ（空コメントノイズ防止）
+        if body.is_empty() && r.state == "COMMENTED" {
+            continue;
+        }
+        entries.push(ConversationEntry {
+            author: r.user.login,
+            body: body.to_string(),
+            created_at: submitted_at,
+            kind: ConversationKind::Review { state: r.state },
+        });
+    }
+
+    // created_at で時系列ソート
+    entries.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    entries
 }
 
 #[tokio::main]
@@ -177,21 +252,25 @@ async fn main() -> Result<()> {
     let commits = github::commits::fetch_commits(&client, &owner, &repo, cli.pr_number).await?;
     let head_sha = commits.last().map(|c| c.sha.as_str()).unwrap_or("");
 
-    // キャッシュ判定 + レビューコメント取得を並列実行
+    // キャッシュ判定 + レビューコメント取得 + Issue コメント + Reviews を並列実行
     let data_future = async {
         if !cli.no_cache {
             if let Some(cached) = github::cache::read_cache(&owner, &repo, cli.pr_number) {
-                if cached.head_sha == head_sha {
+                if cached.head_sha == head_sha && cached.version >= github::cache::CACHE_VERSION {
                     eprintln!(
                         "Using cached data (HEAD: {})",
                         &head_sha[..7.min(head_sha.len())]
                     );
-                    return Ok((
-                        cached.pr_title,
-                        cached.pr_body,
-                        cached.pr_author,
-                        cached.files_map,
-                    ));
+                    return Ok(FetchedPrData {
+                        pr_title: cached.pr_title,
+                        pr_body: cached.pr_body,
+                        pr_author: cached.pr_author,
+                        pr_base_branch: cached.pr_base_branch,
+                        pr_head_branch: cached.pr_head_branch,
+                        pr_created_at: cached.pr_created_at,
+                        pr_state: cached.pr_state,
+                        files_map: cached.files_map,
+                    });
                 }
                 eprintln!(
                     "Cache stale (expected {}, got {})",
@@ -204,34 +283,47 @@ async fn main() -> Result<()> {
         } else {
             eprintln!("Cache disabled, fetching from API...");
         }
-        let (title, body, author, fmap) =
-            fetch_all(&client, &owner, &repo, cli.pr_number, &commits).await?;
+        let data = fetch_all(&client, &owner, &repo, cli.pr_number, &commits).await?;
         github::cache::write_cache(
             &owner,
             &repo,
             cli.pr_number,
             &PrCache {
+                version: github::cache::CACHE_VERSION,
                 head_sha: head_sha.to_string(),
-                pr_title: title.clone(),
-                pr_body: body.clone(),
-                pr_author: author.clone(),
+                pr_title: data.pr_title.clone(),
+                pr_body: data.pr_body.clone(),
+                pr_author: data.pr_author.clone(),
                 commits: commits.clone(),
-                files_map: fmap.clone(),
+                files_map: data.files_map.clone(),
+                pr_base_branch: data.pr_base_branch.clone(),
+                pr_head_branch: data.pr_head_branch.clone(),
+                pr_created_at: data.pr_created_at.clone(),
+                pr_state: data.pr_state.clone(),
             },
         );
-        Ok((title, body, author, fmap))
+        Ok(data)
     };
 
     let comments_future =
         github::comments::fetch_review_comments(&client, &owner, &repo, cli.pr_number);
+    let issue_comments_future =
+        github::comments::fetch_issue_comments(&client, &owner, &repo, cli.pr_number);
+    let reviews_future = github::review::fetch_reviews(&client, &owner, &repo, cli.pr_number);
 
-    let ((pr_title, pr_body, pr_author, files_map), review_comments) =
-        tokio::try_join!(data_future, comments_future)?;
+    let (data, review_comments, issue_comments, reviews) = tokio::try_join!(
+        data_future,
+        comments_future,
+        issue_comments_future,
+        reviews_future
+    )?;
 
-    let is_own_pr = !current_user.is_empty() && current_user == pr_author;
+    let conversation = build_conversation(issue_comments, reviews);
+
+    let is_own_pr = !current_user.is_empty() && current_user == data.pr_author;
 
     // PR body から画像 URL を収集してダウンロード
-    let image_urls = app::collect_image_urls(&pr_body);
+    let image_urls = app::collect_image_urls(&data.pr_body);
     let media_cache = if image_urls.is_empty() {
         github::media::MediaCache::new()
     } else {
@@ -257,12 +349,17 @@ async fn main() -> Result<()> {
     let mut app = App::new(
         cli.pr_number,
         format!("{}/{}", owner, repo),
-        pr_title,
-        pr_body,
-        pr_author,
+        data.pr_title,
+        data.pr_body,
+        data.pr_author,
+        data.pr_base_branch,
+        data.pr_head_branch,
+        data.pr_created_at,
+        data.pr_state,
         commits,
-        files_map,
+        data.files_map,
         review_comments,
+        conversation,
         Some(client),
         theme,
         is_own_pr,

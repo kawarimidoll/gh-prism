@@ -17,6 +17,7 @@ pub enum Panel {
     FileTree,
     CommitMessage,
     DiffView,
+    Conversation,
 }
 
 /// アプリケーションのモード
@@ -193,6 +194,25 @@ pub struct LayoutCache {
     pub file_tree_rect: Rect,
     pub commit_msg_rect: Rect,
     pub diff_view_rect: Rect,
+    pub conversation_rect: Rect,
+}
+
+/// Conversation エントリの種別
+#[derive(Debug, Clone)]
+pub enum ConversationKind {
+    /// PR レビュー（Approve, Request Changes 等）
+    Review { state: String },
+    /// Issue コメント（Conversation タブの一般コメント）
+    IssueComment,
+}
+
+/// Conversation ペインに表示するエントリ（Issue Comment + Review を時系列マージ）
+#[derive(Debug, Clone)]
+pub struct ConversationEntry {
+    pub author: String,
+    pub body: String,
+    pub created_at: String,
+    pub kind: ConversationKind,
 }
 
 impl Default for DiffViewState {

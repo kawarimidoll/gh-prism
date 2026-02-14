@@ -85,6 +85,10 @@ impl App {
             Panel::DiffView => {
                 self.move_cursor_down();
             }
+            Panel::Conversation => {
+                self.conversation_scroll = self.conversation_scroll.saturating_add(1);
+                self.clamp_conversation_scroll();
+            }
             _ => {}
         }
     }
@@ -118,6 +122,9 @@ impl App {
             }
             Panel::DiffView => {
                 self.move_cursor_up();
+            }
+            Panel::Conversation => {
+                self.conversation_scroll = self.conversation_scroll.saturating_sub(1);
             }
             _ => {}
         }
@@ -476,26 +483,32 @@ impl App {
     }
 
     pub(super) fn next_panel(&mut self) {
-        // DiffView / CommitMessage は Tab 巡回の対象外（Enter/Esc/数字キーで出入りする）
-        if matches!(self.focused_panel, Panel::DiffView | Panel::CommitMessage) {
+        // DiffView / CommitMessage / Conversation は Tab 巡回の対象外
+        if matches!(
+            self.focused_panel,
+            Panel::DiffView | Panel::CommitMessage | Panel::Conversation
+        ) {
             return;
         }
         self.focused_panel = match self.focused_panel {
             Panel::PrDescription => Panel::CommitList,
             Panel::CommitList => Panel::FileTree,
             Panel::FileTree => Panel::PrDescription,
-            Panel::CommitMessage | Panel::DiffView => unreachable!(),
+            Panel::CommitMessage | Panel::DiffView | Panel::Conversation => unreachable!(),
         }
     }
     pub(super) fn prev_panel(&mut self) {
-        if matches!(self.focused_panel, Panel::DiffView | Panel::CommitMessage) {
+        if matches!(
+            self.focused_panel,
+            Panel::DiffView | Panel::CommitMessage | Panel::Conversation
+        ) {
             return;
         }
         self.focused_panel = match self.focused_panel {
             Panel::PrDescription => Panel::FileTree,
             Panel::CommitList => Panel::PrDescription,
             Panel::FileTree => Panel::CommitList,
-            Panel::CommitMessage | Panel::DiffView => unreachable!(),
+            Panel::CommitMessage | Panel::DiffView | Panel::Conversation => unreachable!(),
         }
     }
 }

@@ -146,6 +146,10 @@ impl App {
                     self.layout.commit_msg_rect = full_area;
                     self.render_commit_message(frame, full_area);
                 }
+                Panel::Conversation => {
+                    self.layout.conversation_rect = full_area;
+                    self.render_conversation_pane(frame, full_area);
+                }
                 Panel::DiffView => {
                     if self.mode == AppMode::ReviewBodyInput {
                         // ReviewBodyInput 時は全幅パネルで描画するため CommitMsg + DiffView のみ
@@ -211,16 +215,33 @@ impl App {
             self.layout.pr_desc_rect = sidebar_layout[0];
             self.layout.commit_list_rect = sidebar_layout[1];
             self.layout.file_tree_rect = sidebar_layout[2];
-            self.layout.commit_msg_rect = commit_msg_area;
-            self.layout.diff_view_rect = diff_area;
 
             // サイドバー3ペイン描画
             self.render_pr_description(frame, sidebar_layout[0]);
             self.render_commit_list_stateful(frame, sidebar_layout[1]);
             self.render_file_tree(frame, sidebar_layout[2]);
-            // 右カラム3ペイン描画
-            self.render_commit_message(frame, commit_msg_area);
-            self.render_diff_view_widget(frame, diff_area);
+
+            // 右カラム描画: PrDescription/Conversation フォーカス時は Info+Conversation に切替
+            let show_conversation = matches!(
+                self.focused_panel,
+                Panel::PrDescription | Panel::Conversation
+            );
+
+            if show_conversation {
+                self.layout.commit_msg_rect = Rect::default();
+                self.layout.diff_view_rect = Rect::default();
+                self.layout.conversation_rect = diff_area;
+
+                self.render_info_pane(frame, commit_msg_area);
+                self.render_conversation_pane(frame, diff_area);
+            } else {
+                self.layout.commit_msg_rect = commit_msg_area;
+                self.layout.diff_view_rect = diff_area;
+                self.layout.conversation_rect = Rect::default();
+
+                self.render_commit_message(frame, commit_msg_area);
+                self.render_diff_view_widget(frame, diff_area);
+            }
             // コメントペイン（ReviewBodyInput 時は全幅パネルで描画するためスキップ）
             if self.mode != AppMode::ReviewBodyInput {
                 self.render_editor_panel(frame, comment_area);
@@ -517,6 +538,146 @@ impl App {
             self.commit_msg_visual_total as usize,
             self.commit_msg_scroll as usize,
             self.commit_msg_view_height as usize,
+        );
+    }
+
+    /// Info ペイン描画（PrDescription/Conversation フォーカス時に右上に表示）
+    fn render_info_pane(&self, frame: &mut Frame, area: Rect) {
+        let mut lines: Vec<Line> = Vec::new();
+
+        // Status (Open/Merged/Closed)
+        if !self.pr_state.is_empty() {
+            let state_color = match self.pr_state.as_str() {
+                "Open" => Color::Green,
+                "Merged" => Color::Magenta,
+                "Closed" => Color::Red,
+                _ => Color::White,
+            };
+            lines.push(Line::from(vec![
+                Span::styled(" Status:  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(&self.pr_state, Style::default().fg(state_color)),
+            ]));
+        }
+
+        // Author
+        lines.push(Line::from(vec![
+            Span::styled(" Author:  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("@{}", self.pr_author),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+
+        // Branch
+        if !self.pr_base_branch.is_empty() || !self.pr_head_branch.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled(" Branch:  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(&self.pr_base_branch, Style::default()),
+                Span::styled(" ← ", Style::default().fg(Color::DarkGray)),
+                Span::styled(&self.pr_head_branch, Style::default().fg(Color::Green)),
+            ]));
+        }
+
+        // Date
+        if !self.pr_created_at.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled(" Date:    ", Style::default().fg(Color::DarkGray)),
+                Span::styled(&self.pr_created_at, Style::default()),
+            ]));
+        }
+
+        let paragraph = Paragraph::new(lines).block(
+            Block::default()
+                .title(" Info ")
+                .borders(Borders::ALL)
+                .border_style(Style::default()),
+        );
+        frame.render_widget(paragraph, area);
+    }
+
+    /// Conversation ペイン描画（PrDescription/Conversation フォーカス時に右中央に表示）
+    fn render_conversation_pane(&mut self, frame: &mut Frame, area: Rect) {
+        let border_style = if self.focused_panel == Panel::Conversation {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default()
+        };
+
+        self.conversation_view_height = area.height.saturating_sub(2);
+        let inner_width = area.width.saturating_sub(2);
+
+        let mut lines: Vec<Line> = Vec::new();
+
+        if self.conversation.is_empty() {
+            lines.push(Line::styled(
+                " (No conversation)",
+                Style::default().fg(Color::DarkGray),
+            ));
+        } else {
+            for entry in &self.conversation {
+                // ヘッダー行: @author (date) [STATE]
+                let date_display = &entry.created_at[..10.min(entry.created_at.len())];
+                let mut header_spans = vec![
+                    Span::styled(
+                        format!(" @{}", entry.author),
+                        Style::default().fg(Color::Cyan),
+                    ),
+                    Span::styled(
+                        format!(" ({})", date_display),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ];
+
+                // Review の場合は state ラベルを追加（COMMENTED は非表示）
+                if let ConversationKind::Review { ref state } = entry.kind {
+                    let label_opt = match state.as_str() {
+                        "APPROVED" => Some(("APPROVED", Color::Green)),
+                        "CHANGES_REQUESTED" => Some(("CHANGES REQUESTED", Color::Red)),
+                        "DISMISSED" => Some(("DISMISSED", Color::DarkGray)),
+                        _ => None, // COMMENTED やその他は非表示
+                    };
+                    if let Some((label, color)) = label_opt {
+                        header_spans.push(Span::styled(
+                            format!(" [{}]", label),
+                            Style::default().fg(color),
+                        ));
+                    }
+                }
+
+                lines.push(Line::from(header_spans));
+
+                // 本文をマークダウンレンダリング（テーブル対応・スタイル統一）
+                if !entry.body.is_empty() {
+                    lines.extend(markdown::render_markdown(&entry.body, self.theme));
+                }
+
+                // 空行（エントリ間セパレータ）
+                lines.push(Line::raw(""));
+            }
+        }
+
+        let title = format!(" Conversation ({}) ", self.conversation.len());
+
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+        self.conversation_visual_total = paragraph.line_count(inner_width) as u16;
+        self.clamp_conversation_scroll();
+
+        let paragraph = paragraph
+            .block(
+                Block::default()
+                    .title(title)
+                    .borders(Borders::ALL)
+                    .border_style(border_style),
+            )
+            .scroll((self.conversation_scroll, 0));
+        frame.render_widget(paragraph, area);
+
+        Self::render_scrollbar(
+            frame,
+            area,
+            self.conversation_visual_total as usize,
+            self.conversation_scroll as usize,
+            self.conversation_view_height as usize,
         );
     }
 
@@ -1178,8 +1339,9 @@ impl App {
             ("l / → / Tab", "Next pane"),
             ("h / ← / BackTab", "Previous pane"),
             ("1 / 2 / 3 / 4", "Jump to pane"),
-            ("Enter", "Open diff / comment / media"),
-            ("Esc", "Back to Files pane"),
+            ("Enter", "Open diff / conversation / comment"),
+            ("o", "Open media viewer (PR Desc)"),
+            ("Esc", "Back to parent pane"),
             ("", "Scroll (Desc / Diff)"),
             ("Ctrl+d / Ctrl+u", "Half page down / up"),
             ("Ctrl+f / Ctrl+b", "Full page down / up"),

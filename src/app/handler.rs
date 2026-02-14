@@ -61,6 +61,14 @@ impl App {
                     self.commit_msg_scroll = self.commit_msg_scroll.saturating_sub(1);
                 }
             }
+            Panel::Conversation => {
+                if down {
+                    self.conversation_scroll = self.conversation_scroll.saturating_add(1);
+                    self.clamp_conversation_scroll();
+                } else {
+                    self.conversation_scroll = self.conversation_scroll.saturating_sub(1);
+                }
+            }
             Panel::DiffView => {
                 let line_count = self.current_diff_line_count();
                 let total_visual = self.visual_line_offset(line_count);
@@ -160,6 +168,7 @@ impl App {
             Panel::FileTree => self.handle_file_tree_keys(code),
             Panel::CommitMessage => self.handle_commit_msg_keys(code),
             Panel::DiffView => self.handle_diff_view_keys(code),
+            Panel::Conversation => self.handle_conversation_keys(code),
         }
     }
 
@@ -194,6 +203,11 @@ impl App {
                         self.commit_msg_scroll = self.commit_msg_scroll.saturating_add(half);
                         self.clamp_commit_msg_scroll();
                     }
+                    Panel::Conversation => {
+                        let half = self.conversation_view_height / 2;
+                        self.conversation_scroll = self.conversation_scroll.saturating_add(half);
+                        self.clamp_conversation_scroll();
+                    }
                     _ => self.scroll_diff_down(),
                 }
             }
@@ -206,6 +220,10 @@ impl App {
                     Panel::CommitMessage => {
                         let half = self.commit_msg_view_height / 2;
                         self.commit_msg_scroll = self.commit_msg_scroll.saturating_sub(half);
+                    }
+                    Panel::Conversation => {
+                        let half = self.conversation_view_height / 2;
+                        self.conversation_scroll = self.conversation_scroll.saturating_sub(half);
                     }
                     _ => self.scroll_diff_up(),
                 }
@@ -223,6 +241,12 @@ impl App {
                             .saturating_add(self.commit_msg_view_height);
                         self.clamp_commit_msg_scroll();
                     }
+                    Panel::Conversation => {
+                        self.conversation_scroll = self
+                            .conversation_scroll
+                            .saturating_add(self.conversation_view_height);
+                        self.clamp_conversation_scroll();
+                    }
                     _ => self.page_down(),
                 }
             }
@@ -237,6 +261,11 @@ impl App {
                             .commit_msg_scroll
                             .saturating_sub(self.commit_msg_view_height);
                     }
+                    Panel::Conversation => {
+                        self.conversation_scroll = self
+                            .conversation_scroll
+                            .saturating_sub(self.conversation_view_height);
+                    }
                     _ => self.page_up(),
                 }
             }
@@ -246,6 +275,9 @@ impl App {
                 }
                 Panel::CommitMessage => {
                     self.commit_msg_scroll = 0;
+                }
+                Panel::Conversation => {
+                    self.conversation_scroll = 0;
                 }
                 Panel::DiffView => {
                     self.diff.cursor_line = 0;
@@ -261,6 +293,9 @@ impl App {
                 }
                 Panel::CommitMessage => {
                     self.commit_msg_scroll = self.commit_msg_max_scroll();
+                }
+                Panel::Conversation => {
+                    self.conversation_scroll = self.conversation_max_scroll();
                 }
                 Panel::DiffView => {
                     self.scroll_diff_to_end();
@@ -297,6 +332,7 @@ impl App {
                 // zoom 切替で描画幅が変わり、Wrap 済み視覚行数も変わる
                 self.pr_desc_visual_total = 0;
                 self.commit_msg_visual_total = 0;
+                self.conversation_visual_total = 0;
             }
             KeyCode::Char('?') => {
                 self.help_scroll = 0;
@@ -312,8 +348,14 @@ impl App {
 
     /// PR Description パネルのキー処理
     fn handle_pr_desc_keys(&mut self, code: KeyCode) {
-        if code == KeyCode::Enter {
-            self.enter_media_viewer();
+        match code {
+            KeyCode::Enter => {
+                self.focused_panel = Panel::Conversation;
+            }
+            KeyCode::Char('o') => {
+                self.enter_media_viewer();
+            }
+            _ => {}
         }
     }
 
@@ -393,6 +435,13 @@ impl App {
     fn handle_commit_msg_keys(&mut self, code: KeyCode) {
         if code == KeyCode::Esc {
             self.focused_panel = Panel::CommitList;
+        }
+    }
+
+    /// Conversation パネルのキー処理
+    fn handle_conversation_keys(&mut self, code: KeyCode) {
+        if code == KeyCode::Esc {
+            self.focused_panel = Panel::PrDescription;
         }
     }
 

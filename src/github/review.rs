@@ -1,7 +1,8 @@
+use crate::github::comments::ReviewCommentUser;
 use crate::github::files::DiffFile;
 use color_eyre::{Result, eyre::eyre};
 use octocrab::Octocrab;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// 保留中のレビューコメント
@@ -83,6 +84,29 @@ pub fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
     let new_start: usize = new_part.split(',').next()?.parse().ok()?;
 
     Some((old_start, new_start))
+}
+
+/// PR レビュー概要（APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED）
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReviewSummary {
+    pub id: u64,
+    pub user: ReviewCommentUser,
+    pub body: Option<String>,
+    pub state: String,
+    pub submitted_at: Option<String>,
+}
+
+/// PR Reviews API でレビュー一覧を取得
+pub async fn fetch_reviews(
+    client: &Octocrab,
+    owner: &str,
+    repo: &str,
+    pr_number: u64,
+) -> Result<Vec<ReviewSummary>> {
+    let url = format!("/repos/{}/{}/pulls/{}/reviews", owner, repo, pr_number);
+    let reviews: Vec<ReviewSummary> = client.get(url, None::<&()>).await?;
+    Ok(reviews)
 }
 
 #[derive(Debug, Serialize)]

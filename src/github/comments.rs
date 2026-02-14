@@ -33,3 +33,25 @@ pub async fn fetch_review_comments(
     let comments: Vec<ReviewComment> = client.get(url, None::<&()>).await?;
     Ok(comments)
 }
+
+/// PR（Issue）への一般コメント（Conversation タブに表示されるもの）
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize)]
+pub struct IssueComment {
+    pub id: u64,
+    pub body: Option<String>,
+    pub user: ReviewCommentUser,
+    pub created_at: String,
+}
+
+/// Issue Comments API で PR の一般コメントを取得
+pub async fn fetch_issue_comments(
+    client: &Octocrab,
+    owner: &str,
+    repo: &str,
+    pr_number: u64,
+) -> Result<Vec<IssueComment>> {
+    let url = format!("/repos/{}/{}/issues/{}/comments", owner, repo, pr_number);
+    let comments: Vec<IssueComment> = client.get(url, None::<&()>).await?;
+    Ok(comments)
+}

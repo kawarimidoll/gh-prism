@@ -1,6 +1,7 @@
 pub mod editor;
 mod handler;
 mod helpers;
+mod markdown;
 mod media;
 mod navigation;
 mod render;
@@ -9,7 +10,6 @@ mod types;
 
 use helpers::{open_url_in_browser, truncate_path, truncate_str};
 pub use media::{collect_image_urls, preprocess_pr_body};
-use style::PrDescStyleSheet;
 pub use types::*;
 
 use crate::github::comments::ReviewComment;
@@ -23,7 +23,7 @@ use ratatui::{
     DefaultTerminal,
     layout::Position,
     style::{Color, Modifier, Style},
-    text::{Line, Span, Text},
+    text::{Line, Text},
     widgets::ListState,
 };
 use ratatui_image::picker::Picker;
@@ -40,6 +40,10 @@ pub struct App {
     pr_title: String,
     pr_body: String,
     pr_author: String,
+    pr_base_branch: String,
+    pr_head_branch: String,
+    pr_created_at: String,
+    pr_state: String,
     commits: Vec<CommitInfo>,
     commit_list_state: ListState,
     files_map: HashMap<String, Vec<DiffFile>>,
@@ -93,6 +97,14 @@ pub struct App {
     visible_review_comment_cache: HashMap<(String, String), usize>,
     /// 自分のPRかどうか（Approve/Request Changesを非表示にする）
     is_own_pr: bool,
+    /// Conversation エントリ（Issue Comment + Review を時系列マージ）
+    conversation: Vec<ConversationEntry>,
+    /// Conversation ペインのスクロール位置
+    conversation_scroll: u16,
+    /// Conversation ペインの表示可能行数（render 時に更新）
+    conversation_view_height: u16,
+    /// Conversation の Wrap 考慮済み視覚行数（render 時に更新）
+    conversation_visual_total: u16,
 }
 
 impl App {
@@ -103,9 +115,14 @@ impl App {
         pr_title: String,
         pr_body: String,
         pr_author: String,
+        pr_base_branch: String,
+        pr_head_branch: String,
+        pr_created_at: String,
+        pr_state: String,
         commits: Vec<CommitInfo>,
         files_map: HashMap<String, Vec<DiffFile>>,
         review_comments: Vec<ReviewComment>,
+        conversation: Vec<ConversationEntry>,
         client: Option<Octocrab>,
         theme: ThemeMode,
         is_own_pr: bool,
@@ -137,6 +154,10 @@ impl App {
             pr_title,
             pr_body,
             pr_author,
+            pr_base_branch,
+            pr_head_branch,
+            pr_created_at,
+            pr_state,
             commits,
             commit_list_state,
             files_map,
@@ -169,6 +190,10 @@ impl App {
             media_viewer_protocol: None,
             visible_review_comment_cache,
             is_own_pr,
+            conversation,
+            conversation_scroll: 0,
+            conversation_view_height: 10, // 初期値、render で更新される
+            conversation_visual_total: 0, // 初期値、render で更新される
         }
     }
 
@@ -506,14 +531,9 @@ impl App {
         let (processed_body, media_refs) = preprocess_pr_body(&self.pr_body);
         self.media_refs = media_refs;
 
-        // PR タイトルと作者をヘッダー行として先頭に挿入
-        let author_part = if self.pr_author.is_empty() {
-            String::new()
-        } else {
-            format!(" by @{}", self.pr_author)
-        };
+        // PR タイトルをヘッダー行として先頭に挿入（author は Info ペインに表示）
         let title_line = Line::styled(
-            format!("{}{}", self.pr_title, author_part),
+            self.pr_title.clone(),
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -528,23 +548,8 @@ impl App {
                 Line::raw("(No description)"),
             ])
         } else {
-            let options = tui_markdown::Options::new(PrDescStyleSheet { theme: self.theme });
-            let rendered = tui_markdown::from_str_with_options(&processed_body, &options);
-            // 借用ライフタイムを 'static に変換（各 Span の content を所有文字列化）
-            // Line::style（heading/blockquote の色）も保持する
             let mut lines: Vec<Line<'static>> = vec![title_line, separator, Line::raw("")];
-            lines.extend(rendered.lines.into_iter().map(|line| {
-                let mut new_line = Line::from(
-                    line.spans
-                        .into_iter()
-                        .map(|span| Span::styled(span.content.into_owned(), span.style))
-                        .collect::<Vec<_>>(),
-                );
-                new_line.style = line.style;
-                new_line.alignment = line.alignment;
-                new_line
-            }));
-
+            lines.extend(markdown::render_markdown(&processed_body, self.theme));
             Text::from(lines)
         };
         self.pr_desc_rendered = Some(text);
@@ -578,6 +583,20 @@ impl App {
         }
     }
 
+    /// Conversation のスクロール上限を返す
+    fn conversation_max_scroll(&self) -> u16 {
+        self.conversation_visual_total
+            .saturating_sub(self.conversation_view_height)
+    }
+
+    /// Conversation のスクロール位置を上限にクランプする
+    fn clamp_conversation_scroll(&mut self) {
+        let max = self.conversation_max_scroll();
+        if self.conversation_scroll > max {
+            self.conversation_scroll = max;
+        }
+    }
+
     /// Commit Message のスクロール上限を返す
     fn commit_msg_max_scroll(&self) -> u16 {
         self.commit_msg_visual_total
@@ -601,6 +620,8 @@ impl App {
             Some(Panel::CommitList)
         } else if self.layout.file_tree_rect.contains(pos) {
             Some(Panel::FileTree)
+        } else if self.layout.conversation_rect.contains(pos) {
+            Some(Panel::Conversation)
         } else if self.layout.commit_msg_rect.contains(pos) {
             Some(Panel::CommitMessage)
         } else if self.layout.diff_view_rect.contains(pos) {
@@ -998,9 +1019,14 @@ mod tests {
                 self.pr_title,
                 self.pr_body,
                 self.pr_author,
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
                 self.commits,
                 self.files_map,
                 self.review_comments,
+                Vec::new(),
                 self.client,
                 self.theme,
                 self.is_own_pr,
