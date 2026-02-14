@@ -15,6 +15,7 @@ pub enum Panel {
     PrDescription,
     CommitList,
     FileTree,
+    CommitMessage,
     DiffView,
 }
 
@@ -190,6 +191,7 @@ pub struct LayoutCache {
     pub pr_desc_rect: Rect,
     pub commit_list_rect: Rect,
     pub file_tree_rect: Rect,
+    pub commit_msg_rect: Rect,
     pub diff_view_rect: Rect,
 }
 

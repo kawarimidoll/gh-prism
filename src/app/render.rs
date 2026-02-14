@@ -142,6 +142,10 @@ impl App {
                     self.layout.file_tree_rect = full_area;
                     self.render_file_tree(frame, full_area);
                 }
+                Panel::CommitMessage => {
+                    self.layout.commit_msg_rect = full_area;
+                    self.render_commit_message(frame, full_area);
+                }
                 Panel::DiffView => {
                     if self.mode == AppMode::ReviewBodyInput {
                         // ReviewBodyInput 時は全幅パネルで描画するため CommitMsg + DiffView のみ
@@ -152,6 +156,7 @@ impl App {
                                 Constraint::Min(0),
                             ])
                             .split(full_area);
+                        self.layout.commit_msg_rect = zoom_layout[0];
                         self.layout.diff_view_rect = zoom_layout[1];
                         self.render_commit_message(frame, zoom_layout[0]);
                         self.render_diff_view_widget(frame, zoom_layout[1]);
@@ -164,6 +169,7 @@ impl App {
                                 Constraint::Length(COMMENT_PANE_HEIGHT),
                             ])
                             .split(full_area);
+                        self.layout.commit_msg_rect = zoom_layout[0];
                         self.layout.diff_view_rect = zoom_layout[1];
                         self.render_commit_message(frame, zoom_layout[0]);
                         self.render_diff_view_widget(frame, zoom_layout[1]);
@@ -205,6 +211,7 @@ impl App {
             self.layout.pr_desc_rect = sidebar_layout[0];
             self.layout.commit_list_rect = sidebar_layout[1];
             self.layout.file_tree_rect = sidebar_layout[2];
+            self.layout.commit_msg_rect = commit_msg_area;
             self.layout.diff_view_rect = diff_area;
 
             // サイドバー3ペイン描画
@@ -449,19 +456,42 @@ impl App {
         frame.render_stateful_widget(list, area, &mut self.file_list_state);
     }
 
-    fn render_commit_message(&self, frame: &mut Frame, area: Rect) {
+    fn render_commit_message(&mut self, frame: &mut Frame, area: Rect) {
+        let border_style = if self.focused_panel == Panel::CommitMessage {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default()
+        };
+
+        // ボーダー分を引いた表示可能行数を記録
+        self.commit_msg_view_height = area.height.saturating_sub(2);
+        let inner_width = area.width.saturating_sub(2);
+
         let commit_msg = self
             .commit_list_state
             .selected()
             .and_then(|idx| self.commits.get(idx))
-            .map(|c| c.commit.message.as_str())
-            .unwrap_or("");
+            .map(|c| c.commit.message.clone())
+            .unwrap_or_default();
 
-        let msg_paragraph = Paragraph::new(commit_msg)
-            .block(Block::default().title(" Commit ").borders(Borders::ALL))
+        // block なしで line_count を計算（block 付きだとボーダー行が加算されてしまう）
+        let paragraph = Paragraph::new(commit_msg)
             .wrap(Wrap { trim: false })
             .style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(msg_paragraph, area);
+
+        self.commit_msg_visual_total = paragraph.line_count(inner_width) as u16;
+        self.clamp_commit_msg_scroll();
+
+        let paragraph = paragraph
+            .block(
+                Block::default()
+                    .title(" Commit ")
+                    .borders(Borders::ALL)
+                    .border_style(border_style),
+            )
+            .scroll((self.commit_msg_scroll, 0));
+
+        frame.render_widget(paragraph, area);
     }
 
     fn render_diff_view_widget(&mut self, frame: &mut Frame, area: Rect) {
@@ -1094,7 +1124,7 @@ impl App {
             ("k / ↑", "Move up"),
             ("l / → / Tab", "Next pane"),
             ("h / ← / BackTab", "Previous pane"),
-            ("1 / 2 / 3", "Jump to pane"),
+            ("1 / 2 / 3 / 4", "Jump to pane"),
             ("Enter", "Open diff / comment / media"),
             ("Esc", "Back to Files pane"),
             ("", "Scroll (Desc / Diff)"),

@@ -49,6 +49,12 @@ pub struct App {
     pr_desc_view_height: u16,
     /// PR Description の Wrap 考慮済み視覚行数（render 時に更新）
     pr_desc_visual_total: u16,
+    /// Commit Message ペインのスクロール位置
+    commit_msg_scroll: u16,
+    /// Commit Message ペインの表示可能行数（render 時に更新）
+    commit_msg_view_height: u16,
+    /// Commit Message の Wrap 考慮済み視覚行数（render 時に更新）
+    commit_msg_visual_total: u16,
     /// DiffView パネルの表示状態
     pub diff: DiffViewState,
     /// 行選択モードでの選択状態
@@ -138,6 +144,9 @@ impl App {
             pr_desc_scroll: 0,
             pr_desc_view_height: 10, // 初期値、render で更新される
             pr_desc_visual_total: 0, // 初期値、render で更新される
+            commit_msg_scroll: 0,
+            commit_msg_view_height: 4,  // 初期値、render で更新される
+            commit_msg_visual_total: 0, // 初期値、render で更新される
             diff: DiffViewState::default(),
             line_selection: None,
             review: ReviewState {
@@ -209,6 +218,7 @@ impl App {
         }
         self.diff.cursor_line = 0;
         self.diff.scroll = 0;
+        self.commit_msg_scroll = 0;
         // 先頭の @@ 行をスキップ
         let max = self.current_diff_line_count();
         self.diff.cursor_line = self.skip_hunk_header_forward(0, max);
@@ -568,6 +578,20 @@ impl App {
         }
     }
 
+    /// Commit Message のスクロール上限を返す
+    fn commit_msg_max_scroll(&self) -> u16 {
+        self.commit_msg_visual_total
+            .saturating_sub(self.commit_msg_view_height)
+    }
+
+    /// Commit Message のスクロール位置を上限にクランプする
+    fn clamp_commit_msg_scroll(&mut self) {
+        let max = self.commit_msg_max_scroll();
+        if self.commit_msg_scroll > max {
+            self.commit_msg_scroll = max;
+        }
+    }
+
     /// 座標からペインを特定
     fn panel_at(&self, x: u16, y: u16) -> Option<Panel> {
         let pos = Position::new(x, y);
@@ -577,6 +601,8 @@ impl App {
             Some(Panel::CommitList)
         } else if self.layout.file_tree_rect.contains(pos) {
             Some(Panel::FileTree)
+        } else if self.layout.commit_msg_rect.contains(pos) {
+            Some(Panel::CommitMessage)
         } else if self.layout.diff_view_rect.contains(pos) {
             Some(Panel::DiffView)
         } else {

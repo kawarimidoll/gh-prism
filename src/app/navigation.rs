@@ -78,6 +78,10 @@ impl App {
                     }
                 }
             }
+            Panel::CommitMessage => {
+                self.commit_msg_scroll = self.commit_msg_scroll.saturating_add(1);
+                self.clamp_commit_msg_scroll();
+            }
             Panel::DiffView => {
                 self.move_cursor_down();
             }
@@ -108,6 +112,9 @@ impl App {
                         self.reset_cursor();
                     }
                 }
+            }
+            Panel::CommitMessage => {
+                self.commit_msg_scroll = self.commit_msg_scroll.saturating_sub(1);
             }
             Panel::DiffView => {
                 self.move_cursor_up();
@@ -469,26 +476,26 @@ impl App {
     }
 
     pub(super) fn next_panel(&mut self) {
-        // DiffView は Tab 巡回の対象外（Enter/Esc で出入りする）
-        if self.focused_panel == Panel::DiffView {
+        // DiffView / CommitMessage は Tab 巡回の対象外（Enter/Esc/数字キーで出入りする）
+        if matches!(self.focused_panel, Panel::DiffView | Panel::CommitMessage) {
             return;
         }
         self.focused_panel = match self.focused_panel {
             Panel::PrDescription => Panel::CommitList,
             Panel::CommitList => Panel::FileTree,
             Panel::FileTree => Panel::PrDescription,
-            Panel::DiffView => unreachable!(),
+            Panel::CommitMessage | Panel::DiffView => unreachable!(),
         }
     }
     pub(super) fn prev_panel(&mut self) {
-        if self.focused_panel == Panel::DiffView {
+        if matches!(self.focused_panel, Panel::DiffView | Panel::CommitMessage) {
             return;
         }
         self.focused_panel = match self.focused_panel {
             Panel::PrDescription => Panel::FileTree,
             Panel::CommitList => Panel::PrDescription,
             Panel::FileTree => Panel::CommitList,
-            Panel::DiffView => unreachable!(),
+            Panel::CommitMessage | Panel::DiffView => unreachable!(),
         }
     }
 }

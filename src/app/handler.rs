@@ -53,6 +53,14 @@ impl App {
                     self.pr_desc_scroll = self.pr_desc_scroll.saturating_sub(1);
                 }
             }
+            Panel::CommitMessage => {
+                if down {
+                    self.commit_msg_scroll = self.commit_msg_scroll.saturating_add(1);
+                    self.clamp_commit_msg_scroll();
+                } else {
+                    self.commit_msg_scroll = self.commit_msg_scroll.saturating_sub(1);
+                }
+            }
             Panel::DiffView => {
                 let line_count = self.current_diff_line_count();
                 let total_visual = self.visual_line_offset(line_count);
@@ -150,6 +158,7 @@ impl App {
             Panel::PrDescription => self.handle_pr_desc_keys(code),
             Panel::CommitList => self.handle_commit_list_keys(code),
             Panel::FileTree => self.handle_file_tree_keys(code),
+            Panel::CommitMessage => self.handle_commit_msg_keys(code),
             Panel::DiffView => self.handle_diff_view_keys(code),
         }
     }
@@ -170,6 +179,7 @@ impl App {
             KeyCode::Char('1') => self.focused_panel = Panel::PrDescription,
             KeyCode::Char('2') => self.focused_panel = Panel::CommitList,
             KeyCode::Char('3') => self.focused_panel = Panel::FileTree,
+            KeyCode::Char('4') => self.focused_panel = Panel::CommitMessage,
             KeyCode::Char('j') | KeyCode::Down => self.select_next(),
             KeyCode::Char('k') | KeyCode::Up => self.select_prev(),
             KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
@@ -179,6 +189,11 @@ impl App {
                         self.pr_desc_scroll = self.pr_desc_scroll.saturating_add(half);
                         self.clamp_pr_desc_scroll();
                     }
+                    Panel::CommitMessage => {
+                        let half = self.commit_msg_view_height / 2;
+                        self.commit_msg_scroll = self.commit_msg_scroll.saturating_add(half);
+                        self.clamp_commit_msg_scroll();
+                    }
                     _ => self.scroll_diff_down(),
                 }
             }
@@ -187,6 +202,10 @@ impl App {
                     Panel::PrDescription => {
                         let half = self.pr_desc_view_height / 2;
                         self.pr_desc_scroll = self.pr_desc_scroll.saturating_sub(half);
+                    }
+                    Panel::CommitMessage => {
+                        let half = self.commit_msg_view_height / 2;
+                        self.commit_msg_scroll = self.commit_msg_scroll.saturating_sub(half);
                     }
                     _ => self.scroll_diff_up(),
                 }
@@ -198,6 +217,12 @@ impl App {
                             self.pr_desc_scroll.saturating_add(self.pr_desc_view_height);
                         self.clamp_pr_desc_scroll();
                     }
+                    Panel::CommitMessage => {
+                        self.commit_msg_scroll = self
+                            .commit_msg_scroll
+                            .saturating_add(self.commit_msg_view_height);
+                        self.clamp_commit_msg_scroll();
+                    }
                     _ => self.page_down(),
                 }
             }
@@ -207,12 +232,20 @@ impl App {
                         self.pr_desc_scroll =
                             self.pr_desc_scroll.saturating_sub(self.pr_desc_view_height);
                     }
+                    Panel::CommitMessage => {
+                        self.commit_msg_scroll = self
+                            .commit_msg_scroll
+                            .saturating_sub(self.commit_msg_view_height);
+                    }
                     _ => self.page_up(),
                 }
             }
             KeyCode::Char('g') => match self.focused_panel {
                 Panel::PrDescription => {
                     self.pr_desc_scroll = 0;
+                }
+                Panel::CommitMessage => {
+                    self.commit_msg_scroll = 0;
                 }
                 Panel::DiffView => {
                     self.diff.cursor_line = 0;
@@ -225,6 +258,9 @@ impl App {
             KeyCode::Char('G') => match self.focused_panel {
                 Panel::PrDescription => {
                     self.pr_desc_scroll = self.pr_desc_max_scroll();
+                }
+                Panel::CommitMessage => {
+                    self.commit_msg_scroll = self.commit_msg_max_scroll();
                 }
                 Panel::DiffView => {
                     self.scroll_diff_to_end();
@@ -260,6 +296,7 @@ impl App {
                 self.zoomed = !self.zoomed;
                 // zoom 切替で描画幅が変わり、Wrap 済み視覚行数も変わる
                 self.pr_desc_visual_total = 0;
+                self.commit_msg_visual_total = 0;
             }
             KeyCode::Char('?') => {
                 self.help_scroll = 0;
@@ -349,6 +386,13 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Commit Message パネルのキー処理
+    fn handle_commit_msg_keys(&mut self, code: KeyCode) {
+        if code == KeyCode::Esc {
+            self.focused_panel = Panel::CommitList;
         }
     }
 
