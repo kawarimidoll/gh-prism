@@ -252,20 +252,21 @@ impl App {
 
         // Paragraph::new は Text をムーブするため clone が必要
         let text = self.pr_desc_rendered.as_ref().unwrap().clone();
-        let paragraph = Paragraph::new(text)
+
+        // block なしで line_count を計算（block 付きだとボーダー行が加算されてしまう）
+        let paragraph = Paragraph::new(text).wrap(Wrap { trim: false });
+        self.pr_desc_visual_total = paragraph.line_count(inner_width) as u16;
+        // zoom 切替等で描画幅が変わった場合にスクロール位置をクランプ
+        self.clamp_pr_desc_scroll();
+
+        let paragraph = paragraph
             .block(
                 Block::default()
                     .title(" PR Description ")
                     .borders(Borders::ALL)
                     .border_style(style),
             )
-            .wrap(Wrap { trim: false })
             .scroll((self.pr_desc_scroll, 0));
-
-        // Wrap 考慮済み視覚行数を計算（スクロール上限に使用）
-        self.pr_desc_visual_total = paragraph.line_count(inner_width) as u16;
-        // zoom 切替等で描画幅が変わった場合にスクロール位置をクランプ
-        self.clamp_pr_desc_scroll();
 
         frame.render_widget(paragraph, area);
     }
@@ -1056,21 +1057,21 @@ impl App {
             Style::default().fg(Color::DarkGray),
         ));
 
-        let paragraph = Paragraph::new(lines)
+        // block なしで line_count を計算（block 付きだとボーダー行が加算されてしまう）
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+        let dialog_inner_width = dialog_width.saturating_sub(2);
+        let visual_total = paragraph.line_count(dialog_inner_width) as u16;
+        let visible_height = dialog_height.saturating_sub(2);
+        self.review.comment_view_max_scroll = visual_total.saturating_sub(visible_height);
+
+        let paragraph = paragraph
             .block(
                 Block::default()
                     .title(" Review Comments ")
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::Yellow)),
             )
-            .wrap(Wrap { trim: false });
-
-        // Paragraph::line_count() で wrap 考慮の正確な視覚行数を取得
-        let visual_total = paragraph.line_count(dialog_width) as u16;
-        let visible_height = dialog_height.saturating_sub(2);
-        self.review.comment_view_max_scroll = visual_total.saturating_sub(visible_height);
-
-        let paragraph = paragraph.scroll((self.review.viewing_comment_scroll, 0));
+            .scroll((self.review.viewing_comment_scroll, 0));
         frame.render_widget(paragraph, dialog);
     }
 

@@ -3168,4 +3168,41 @@ mod tests {
         app.handle_review_submit_mode(KeyCode::Up);
         assert_eq!(app.review.review_event_cursor, 0);
     }
+
+    /// Paragraph::line_count は block 付きだとボーダー行を含む値を返す。
+    /// そのため line_count は block なしの Paragraph で呼ぶ必要がある。
+    #[test]
+    fn test_paragraph_line_count_block_inflates() {
+        use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+
+        let text = "line1\nline2\nline3\nline4";
+        let inner_width: u16 = 78;
+
+        // block なし: 純粋なテキスト行数
+        let count_no_block = Paragraph::new(text)
+            .wrap(Wrap { trim: false })
+            .line_count(inner_width);
+        assert_eq!(count_no_block, 4);
+
+        // block あり: ボーダー行が加算される
+        let count_with_block = Paragraph::new(text)
+            .block(Block::default().borders(Borders::ALL))
+            .wrap(Wrap { trim: false })
+            .line_count(inner_width);
+        assert_eq!(count_with_block, 6, "block adds 2 border lines");
+
+        // スクロール計算には block なしの値を使うべき
+        let view_height: u16 = 4;
+        let max_scroll_correct = (count_no_block as u16).saturating_sub(view_height);
+        assert_eq!(
+            max_scroll_correct, 0,
+            "4 lines fit in 4-line view, no scroll needed"
+        );
+
+        let max_scroll_wrong = (count_with_block as u16).saturating_sub(view_height);
+        assert_eq!(
+            max_scroll_wrong, 2,
+            "block-inflated count wrongly allows 2 lines of scroll"
+        );
+    }
 }
