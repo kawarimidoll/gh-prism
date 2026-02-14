@@ -949,8 +949,13 @@ impl App {
         frame.render_widget(paragraph, area);
 
         // Scrollbar（必要な場合のみ）
-        if let Some((content_length, position)) = scrollbar_state {
-            let mut sb_state = ScrollbarState::new(content_length).position(position);
+        if let Some((total_rows, position)) = scrollbar_state {
+            // ratatui は max_position = content_length - 1 でサム位置を計算するため、
+            // content_length にスクロール範囲（max_scroll + 1）を渡す
+            let scroll_range = total_rows.saturating_sub(visible_height) + 1;
+            let mut sb_state = ScrollbarState::new(scroll_range)
+                .position(position)
+                .viewport_content_length(visible_height);
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
             frame.render_stateful_widget(scrollbar, area, &mut sb_state);
         }

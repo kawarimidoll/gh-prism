@@ -223,7 +223,7 @@ impl TextEditor {
         self.cursor_visual_position_inner()
     }
 
-    /// Scrollbar 用: (content_length, position) を返す
+    /// Scrollbar 用: (total_visual_rows, scroll_position) を返す
     pub fn scrollbar_state(&self, visible_height: usize) -> Option<(usize, usize)> {
         let total = self.total_visual_rows();
         if total <= visible_height {
