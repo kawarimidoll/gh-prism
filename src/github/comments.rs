@@ -44,6 +44,21 @@ pub struct IssueComment {
     pub created_at: String,
 }
 
+/// Issue Comments API で PR に一般コメントを投稿
+pub async fn post_issue_comment(
+    client: &Octocrab,
+    owner: &str,
+    repo: &str,
+    pr_number: u64,
+    body: &str,
+) -> Result<IssueComment> {
+    let url = format!("/repos/{}/{}/issues/{}/comments", owner, repo, pr_number);
+    let comment: IssueComment = client
+        .post(url, Some(&serde_json::json!({ "body": body })))
+        .await?;
+    Ok(comment)
+}
+
 /// Issue Comments API で PR の一般コメントを取得
 pub async fn fetch_issue_comments(
     client: &Octocrab,

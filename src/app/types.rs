@@ -27,6 +27,7 @@ pub enum AppMode {
     Normal,
     LineSelect,
     CommentInput,
+    IssueCommentInput,
     CommentView,
     ReviewSubmit,
     ReviewBodyInput,
@@ -142,8 +143,9 @@ pub struct MediaRef {
 }
 
 /// レビュー・コメント関連の状態
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ReviewState {
+    /// CommentInput（diff 行コメント）と IssueCommentInput（PR 全体コメント）で共有
     pub comment_editor: TextEditor,
     pub pending_comments: Vec<crate::github::review::PendingComment>,
     pub review_comments: Vec<crate::github::comments::ReviewComment>,
@@ -154,23 +156,6 @@ pub struct ReviewState {
     pub review_body_editor: TextEditor,
     pub needs_submit: Option<ReviewEvent>,
     pub quit_after_submit: bool,
-}
-
-impl Default for ReviewState {
-    fn default() -> Self {
-        Self {
-            comment_editor: TextEditor::new(),
-            pending_comments: Vec::new(),
-            review_comments: Vec::new(),
-            viewing_comments: Vec::new(),
-            viewing_comment_scroll: 0,
-            comment_view_max_scroll: 0,
-            review_event_cursor: 0,
-            review_body_editor: TextEditor::new(),
-            needs_submit: None,
-            quit_after_submit: false,
-        }
-    }
 }
 
 /// DiffView パネルの表示状態

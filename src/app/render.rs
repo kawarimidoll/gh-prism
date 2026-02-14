@@ -43,7 +43,7 @@ impl App {
         let mode_indicator = match self.mode {
             AppMode::Normal => "",
             AppMode::LineSelect => " [LINE SELECT] ",
-            AppMode::CommentInput => " [COMMENT] ",
+            AppMode::CommentInput | AppMode::IssueCommentInput => " [COMMENT] ",
             AppMode::CommentView => " [VIEWING] ",
             AppMode::ReviewSubmit => " [REVIEW] ",
             AppMode::ReviewBodyInput => " [REVIEW] ",
@@ -61,7 +61,7 @@ impl App {
         let header_bg = match self.mode {
             AppMode::Normal => Color::Blue,
             AppMode::LineSelect => Color::Magenta,
-            AppMode::CommentInput => Color::Green,
+            AppMode::CommentInput | AppMode::IssueCommentInput => Color::Green,
             AppMode::CommentView => Color::Yellow,
             AppMode::ReviewSubmit => Color::Cyan,
             AppMode::ReviewBodyInput => Color::Green,
@@ -225,7 +225,7 @@ impl App {
             let show_conversation = matches!(
                 self.focused_panel,
                 Panel::PrDescription | Panel::Conversation
-            );
+            ) || self.mode == AppMode::IssueCommentInput;
 
             if show_conversation {
                 self.layout.commit_msg_rect = Rect::default();
@@ -1095,6 +1095,12 @@ impl App {
                     true,
                 )
             }
+            AppMode::IssueCommentInput => (
+                " Comment (PR) ".to_string(),
+                " Ctrl+S: submit | Esc: cancel ",
+                &mut self.review.comment_editor,
+                true,
+            ),
             AppMode::ReviewBodyInput => {
                 let event = self.available_events()[self.review.review_event_cursor];
                 (
@@ -1351,7 +1357,7 @@ impl App {
             ("]h / [h", "Next / prev hunk"),
             ("", "Selection & Comment"),
             ("v", "Enter line select mode"),
-            ("c", "Comment on current line"),
+            ("c", "Comment on line (Diff) / PR (Conv.)"),
             ("Ctrl+G", "Insert suggestion (comment)"),
             ("Ctrl+S", "Submit (in comment/review)"),
             ("S", "Submit review"),

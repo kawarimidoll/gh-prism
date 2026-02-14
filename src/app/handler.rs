@@ -116,6 +116,9 @@ impl App {
                 AppMode::Normal => self.handle_normal_mode(key.code, key.modifiers),
                 AppMode::LineSelect => self.handle_line_select_mode(key.code),
                 AppMode::CommentInput => self.handle_comment_input_mode(key.code, key.modifiers),
+                AppMode::IssueCommentInput => {
+                    self.handle_issue_comment_input_mode(key.code, key.modifiers)
+                }
                 AppMode::CommentView => self.handle_comment_view_mode(key.code),
                 AppMode::ReviewSubmit => self.handle_review_submit_mode(key.code),
                 AppMode::ReviewBodyInput => {
@@ -440,8 +443,15 @@ impl App {
 
     /// Conversation パネルのキー処理
     fn handle_conversation_keys(&mut self, code: KeyCode) {
-        if code == KeyCode::Esc {
-            self.focused_panel = Panel::PrDescription;
+        match code {
+            KeyCode::Esc => {
+                self.focused_panel = Panel::PrDescription;
+            }
+            KeyCode::Char('c') => {
+                self.review.comment_editor.clear();
+                self.mode = AppMode::IssueCommentInput;
+            }
+            _ => {}
         }
     }
 
@@ -465,6 +475,40 @@ impl App {
             }
             KeyCode::Char('g') if modifiers.contains(KeyModifiers::CONTROL) => {
                 self.insert_suggestion();
+            }
+            _ => {
+                self.review.comment_editor.handle_key(code, modifiers);
+            }
+        }
+        self.review
+            .comment_editor
+            .ensure_visible(editor::EDITOR_VISIBLE_HEIGHT);
+    }
+
+    /// Issue Comment 入力モードのキー処理
+    pub(super) fn handle_issue_comment_input_mode(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) {
+        match code {
+            KeyCode::Esc => {
+                self.review.comment_editor.clear();
+                self.mode = AppMode::Normal;
+                self.focused_panel = Panel::Conversation;
+                return;
+            }
+            KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
+                let text = self.review.comment_editor.text();
+                if text.trim().is_empty() {
+                    self.status_message = Some(StatusMessage::error("Comment is empty"));
+                    return;
+                }
+                self.needs_issue_comment_submit = true;
+                self.status_message = Some(StatusMessage::info("Submitting comment..."));
+                self.mode = AppMode::Normal;
+                self.focused_panel = Panel::Conversation;
+                return;
             }
             _ => {
                 self.review.comment_editor.handle_key(code, modifiers);

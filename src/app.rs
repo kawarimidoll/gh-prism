@@ -12,7 +12,7 @@ use helpers::{open_url_in_browser, truncate_path, truncate_str};
 pub use media::{collect_image_urls, preprocess_pr_body};
 pub use types::*;
 
-use crate::github::comments::ReviewComment;
+use crate::github::comments::{self as comments, ReviewComment};
 use crate::github::commits::CommitInfo;
 use crate::github::files::DiffFile;
 use crate::github::media::MediaCache;
@@ -105,6 +105,8 @@ pub struct App {
     conversation_view_height: u16,
     /// Conversation の Wrap 考慮済み視覚行数（render 時に更新）
     conversation_visual_total: u16,
+    /// Issue Comment 送信フラグ（draw 後に実行）
+    needs_issue_comment_submit: bool,
 }
 
 impl App {
@@ -194,6 +196,7 @@ impl App {
             conversation_scroll: 0,
             conversation_view_height: 10, // 初期値、render で更新される
             conversation_visual_total: 0, // 初期値、render で更新される
+            needs_issue_comment_submit: false,
         }
     }
 
@@ -518,6 +521,11 @@ impl App {
                 }
             }
 
+            if self.needs_issue_comment_submit {
+                self.needs_issue_comment_submit = false;
+                self.submit_issue_comment();
+            }
+
             self.handle_events()?;
         }
         Ok(())
@@ -806,6 +814,52 @@ impl App {
                 self.status_message = Some(StatusMessage::info(msg));
                 self.review.pending_comments.clear();
                 self.review.review_body_editor.clear();
+            }
+            Err(e) => {
+                self.status_message = Some(StatusMessage::error(format!("✗ Failed: {}", e)));
+            }
+        }
+    }
+
+    /// Issue Comment を GitHub API に送信
+    fn submit_issue_comment(&mut self) {
+        let body = self.review.comment_editor.text();
+        if body.trim().is_empty() {
+            return;
+        }
+
+        let Some(client) = &self.client else {
+            self.status_message = Some(StatusMessage::error("✗ No API client available"));
+            return;
+        };
+
+        let Some((owner, repo)) = self.parse_repo() else {
+            self.status_message = Some(StatusMessage::error("✗ Invalid repo format"));
+            return;
+        };
+
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(comments::post_issue_comment(
+                client,
+                owner,
+                repo,
+                self.pr_number,
+                &body,
+            ))
+        });
+
+        match result {
+            Ok(comment) => {
+                self.conversation.push(ConversationEntry {
+                    author: comment.user.login,
+                    body: comment.body.unwrap_or_default(),
+                    created_at: comment.created_at,
+                    kind: ConversationKind::IssueComment,
+                });
+                self.review.comment_editor.clear();
+                // 末尾までスクロール（次の render で visual_total が更新されるため大きな値を設定）
+                self.conversation_scroll = u16::MAX;
+                self.status_message = Some(StatusMessage::info("✓ Comment posted"));
             }
             Err(e) => {
                 self.status_message = Some(StatusMessage::error(format!("✗ Failed: {}", e)));
@@ -3255,6 +3309,105 @@ mod tests {
         assert_eq!(
             max_scroll_wrong, 2,
             "block-inflated count wrongly allows 2 lines of scroll"
+        );
+    }
+
+    // ── Issue Comment Input モード ──────────────────────────────
+
+    #[test]
+    fn test_conversation_c_key_enters_issue_comment_input() {
+        let mut app = create_app_with_patch();
+        app.focused_panel = Panel::Conversation;
+
+        // 'c' キーで IssueCommentInput モードに遷移
+        app.handle_normal_mode(KeyCode::Char('c'), KeyModifiers::NONE);
+        assert_eq!(app.mode, AppMode::IssueCommentInput);
+        assert!(app.review.comment_editor.is_empty());
+    }
+
+    #[test]
+    fn test_issue_comment_input_esc_cancels() {
+        let mut app = create_app_with_patch();
+        app.focused_panel = Panel::Conversation;
+        app.handle_normal_mode(KeyCode::Char('c'), KeyModifiers::NONE);
+        assert_eq!(app.mode, AppMode::IssueCommentInput);
+
+        // テキスト入力後に Esc → エディタクリア、Normal モード、Conversation パネル
+        app.handle_issue_comment_input_mode(KeyCode::Char('x'), KeyModifiers::NONE);
+        assert!(!app.review.comment_editor.is_empty());
+
+        app.handle_issue_comment_input_mode(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.mode, AppMode::Normal);
+        assert_eq!(app.focused_panel, Panel::Conversation);
+        assert!(app.review.comment_editor.is_empty());
+    }
+
+    #[test]
+    fn test_issue_comment_input_ctrl_s_empty_shows_error() {
+        let mut app = create_app_with_patch();
+        app.focused_panel = Panel::Conversation;
+        app.handle_normal_mode(KeyCode::Char('c'), KeyModifiers::NONE);
+
+        // 空テキストで Ctrl+S → エラーメッセージ、フラグは false
+        app.handle_issue_comment_input_mode(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert!(!app.needs_issue_comment_submit);
+        assert!(app.status_message.is_some());
+        assert_eq!(
+            app.status_message.as_ref().unwrap().level,
+            StatusLevel::Error
+        );
+    }
+
+    #[test]
+    fn test_issue_comment_input_ctrl_s_with_text_sets_flag() {
+        let mut app = create_app_with_patch();
+        app.focused_panel = Panel::Conversation;
+        app.handle_normal_mode(KeyCode::Char('c'), KeyModifiers::NONE);
+
+        // テキスト入力
+        app.handle_issue_comment_input_mode(KeyCode::Char('H'), KeyModifiers::NONE);
+        app.handle_issue_comment_input_mode(KeyCode::Char('i'), KeyModifiers::NONE);
+
+        // Ctrl+S → フラグ設定、Normal モード、Conversation パネル
+        app.handle_issue_comment_input_mode(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert!(app.needs_issue_comment_submit);
+        assert_eq!(app.mode, AppMode::Normal);
+        assert_eq!(app.focused_panel, Panel::Conversation);
+        assert_eq!(
+            app.status_message.as_ref().unwrap().level,
+            StatusLevel::Info
+        );
+    }
+
+    #[test]
+    fn test_issue_comment_input_typing() {
+        let mut app = create_app_with_patch();
+        app.focused_panel = Panel::Conversation;
+        app.handle_normal_mode(KeyCode::Char('c'), KeyModifiers::NONE);
+
+        // 文字入力がエディタに反映される
+        app.handle_issue_comment_input_mode(KeyCode::Char('A'), KeyModifiers::NONE);
+        app.handle_issue_comment_input_mode(KeyCode::Char('B'), KeyModifiers::NONE);
+        assert_eq!(app.review.comment_editor.text(), "AB");
+
+        // Backspace
+        app.handle_issue_comment_input_mode(KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(app.review.comment_editor.text(), "A");
+    }
+
+    #[test]
+    fn test_submit_issue_comment_without_client_sets_error() {
+        let mut app = create_app_with_patch();
+        // client は None（テストデフォルト）
+        app.review
+            .comment_editor
+            .handle_key(KeyCode::Char('x'), KeyModifiers::NONE);
+
+        app.submit_issue_comment();
+        assert!(app.status_message.is_some());
+        assert_eq!(
+            app.status_message.as_ref().unwrap().level,
+            StatusLevel::Error
         );
     }
 }
