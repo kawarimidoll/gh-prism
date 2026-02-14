@@ -14,6 +14,8 @@ use ratatui::{
 use ratatui_image::StatefulImage;
 use unicode_width::UnicodeWidthStr;
 
+/// コミットメッセージペインの高さ（ボーダー上下 2 + 内容 4 行）
+const COMMIT_MSG_HEIGHT: u16 = 6;
 /// コメントペインの高さ（ボーダー上下 2 + 内容 4 行）
 const COMMENT_PANE_HEIGHT: u16 = 6;
 
@@ -141,21 +143,31 @@ impl App {
                     self.render_file_tree(frame, full_area);
                 }
                 Panel::DiffView => {
-                    // ReviewBodyInput 時は全幅パネルで描画するため Zoom は DiffView のみ
                     if self.mode == AppMode::ReviewBodyInput {
-                        self.layout.diff_view_rect = full_area;
-                        self.render_diff_view_widget(frame, full_area);
+                        // ReviewBodyInput 時は全幅パネルで描画するため CommitMsg + DiffView のみ
+                        let zoom_layout = Layout::default()
+                            .direction(Direction::Vertical)
+                            .constraints([
+                                Constraint::Length(COMMIT_MSG_HEIGHT),
+                                Constraint::Min(0),
+                            ])
+                            .split(full_area);
+                        self.layout.diff_view_rect = zoom_layout[1];
+                        self.render_commit_message(frame, zoom_layout[0]);
+                        self.render_diff_view_widget(frame, zoom_layout[1]);
                     } else {
                         let zoom_layout = Layout::default()
                             .direction(Direction::Vertical)
                             .constraints([
+                                Constraint::Length(COMMIT_MSG_HEIGHT),
                                 Constraint::Min(0),
                                 Constraint::Length(COMMENT_PANE_HEIGHT),
                             ])
                             .split(full_area);
-                        self.layout.diff_view_rect = zoom_layout[0];
-                        self.render_diff_view_widget(frame, zoom_layout[0]);
-                        self.render_editor_panel(frame, zoom_layout[1]);
+                        self.layout.diff_view_rect = zoom_layout[1];
+                        self.render_commit_message(frame, zoom_layout[0]);
+                        self.render_diff_view_widget(frame, zoom_layout[1]);
+                        self.render_editor_panel(frame, zoom_layout[2]);
                     }
                 }
             }
@@ -169,20 +181,25 @@ impl App {
             let sidebar_layout = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
+                    Constraint::Percentage(40),
                     Constraint::Percentage(30),
-                    Constraint::Percentage(35),
-                    Constraint::Percentage(35),
+                    Constraint::Percentage(30),
                 ])
                 .split(body_layout[0]);
 
-            // body_layout[1] を DiffView + CommentPane に縦分割
+            // body_layout[1] を CommitMsg + DiffView + CommentPane に縦分割
             let right_layout = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(0), Constraint::Length(COMMENT_PANE_HEIGHT)])
+                .constraints([
+                    Constraint::Length(COMMIT_MSG_HEIGHT),
+                    Constraint::Min(0),
+                    Constraint::Length(COMMENT_PANE_HEIGHT),
+                ])
                 .split(body_layout[1]);
 
-            let diff_area = right_layout[0];
-            let comment_area = right_layout[1];
+            let commit_msg_area = right_layout[0];
+            let diff_area = right_layout[1];
+            let comment_area = right_layout[2];
 
             // マウスヒットテスト用に各ペインの Rect を記録
             self.layout.pr_desc_rect = sidebar_layout[0];
@@ -194,9 +211,10 @@ impl App {
             self.render_pr_description(frame, sidebar_layout[0]);
             self.render_commit_list_stateful(frame, sidebar_layout[1]);
             self.render_file_tree(frame, sidebar_layout[2]);
-            // diff_view_height は render_diff_view_widget 内で正確に更新
+            // 右カラム3ペイン描画
+            self.render_commit_message(frame, commit_msg_area);
             self.render_diff_view_widget(frame, diff_area);
-            // コメントペインを常時描画（ReviewBodyInput 時は全幅パネルで描画するためスキップ）
+            // コメントペイン（ReviewBodyInput 時は全幅パネルで描画するためスキップ）
             if self.mode != AppMode::ReviewBodyInput {
                 self.render_editor_panel(frame, comment_area);
             }
@@ -430,14 +448,7 @@ impl App {
         frame.render_stateful_widget(list, area, &mut self.file_list_state);
     }
 
-    fn render_diff_view_widget(&mut self, frame: &mut Frame, area: Rect) {
-        let border_style = if self.focused_panel == Panel::DiffView {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        };
-
-        // コミットメッセージを取得
+    fn render_commit_message(&self, frame: &mut Frame, area: Rect) {
         let commit_msg = self
             .commit_list_state
             .selected()
@@ -445,42 +456,23 @@ impl App {
             .map(|c| c.commit.message.as_str())
             .unwrap_or("");
 
-        let msg_line_count = if commit_msg.is_empty() {
-            0u16
-        } else {
-            commit_msg.lines().count() as u16
-        };
+        let msg_paragraph = Paragraph::new(commit_msg)
+            .block(Block::default().title(" Commit ").borders(Borders::ALL))
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(msg_paragraph, area);
+    }
 
-        // コミットメッセージがあればエリアを上下分割
-        // メッセージ領域: 行数 + 2（ボーダー上下）、最大で area の 1/3
-        let (msg_area, diff_area) = if msg_line_count > 0 {
-            let msg_height = (msg_line_count + 2).min(area.height / 3).max(3);
-            let layout = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(msg_height), Constraint::Min(3)])
-                .split(area);
-            (Some(layout[0]), layout[1])
+    fn render_diff_view_widget(&mut self, frame: &mut Frame, area: Rect) {
+        let border_style = if self.focused_panel == Panel::DiffView {
+            Style::default().fg(Color::Yellow)
         } else {
-            (None, area)
+            Style::default()
         };
 
         // DiffView の表示可能サイズを更新（ボーダー分を引く）
-        self.diff.view_height = diff_area.height.saturating_sub(2);
-        self.diff.view_width = diff_area.width.saturating_sub(2);
-
-        // コミットメッセージ描画
-        if let Some(msg_area) = msg_area {
-            let msg_paragraph = Paragraph::new(commit_msg)
-                .block(
-                    Block::default()
-                        .title(" Commit ")
-                        .borders(Borders::ALL)
-                        .border_style(border_style),
-                )
-                .wrap(Wrap { trim: false })
-                .style(Style::default().fg(Color::DarkGray));
-            frame.render_widget(msg_paragraph, msg_area);
-        }
+        self.diff.view_height = area.height.saturating_sub(2);
+        self.diff.view_width = area.width.saturating_sub(2);
 
         // 選択中ファイルを取得し、所有型にクローンして self の借用を解放
         let (has_file, has_patch, patch, filename, file_status, additions, deletions) = {
@@ -572,11 +564,11 @@ impl App {
                 Style::default().fg(Color::DarkGray),
             ))
             .block(block);
-            frame.render_widget(paragraph, diff_area);
+            frame.render_widget(paragraph, area);
             return;
         }
 
-        let inner_width = diff_area.width.saturating_sub(2);
+        let inner_width = area.width.saturating_sub(2);
 
         self.update_diff_highlight_cache(&patch, &filename, &file_status);
         let mut text = self.prepare_diff_text(&patch, &file_status, inner_width);
@@ -609,9 +601,9 @@ impl App {
         } else {
             paragraph
         };
-        frame.render_widget(paragraph, diff_area);
+        frame.render_widget(paragraph, area);
 
-        self.apply_diff_bg_highlights(frame, &bg_lines, diff_area, inner_width);
+        self.apply_diff_bg_highlights(frame, &bg_lines, area, inner_width);
     }
 
     /// delta 出力をキャッシュ（ファイル選択が変わったときだけ再実行）
