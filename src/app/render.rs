@@ -276,6 +276,14 @@ impl App {
             .scroll((self.pr_desc_scroll, 0));
 
         frame.render_widget(paragraph, area);
+
+        Self::render_scrollbar(
+            frame,
+            area,
+            self.pr_desc_visual_total as usize,
+            self.pr_desc_scroll as usize,
+            self.pr_desc_view_height as usize,
+        );
     }
 
     fn render_commit_list_stateful(&mut self, frame: &mut Frame, area: Rect) {
@@ -357,7 +365,12 @@ impl App {
             )
             .highlight_style(self.highlight_style());
 
+        let total = self.commits.len();
         frame.render_stateful_widget(list, area, &mut self.commit_list_state);
+
+        let offset = self.commit_list_state.offset();
+        let vh = area.height.saturating_sub(2) as usize;
+        Self::render_scrollbar(frame, area, total, offset, vh);
     }
 
     fn render_file_tree(&mut self, frame: &mut Frame, area: Rect) {
@@ -443,6 +456,7 @@ impl App {
             .collect();
 
         let selected = self.file_list_state.selected().map(|i| i + 1).unwrap_or(0);
+        let total = items.len();
         let title = format!(" Files {}/{} ✓{} ", selected, files.len(), viewed_count);
         let list = List::new(items)
             .block(
@@ -454,6 +468,10 @@ impl App {
             .highlight_style(self.highlight_style());
 
         frame.render_stateful_widget(list, area, &mut self.file_list_state);
+
+        let offset = self.file_list_state.offset();
+        let vh = area.height.saturating_sub(2) as usize;
+        Self::render_scrollbar(frame, area, total, offset, vh);
     }
 
     fn render_commit_message(&mut self, frame: &mut Frame, area: Rect) {
@@ -492,6 +510,14 @@ impl App {
             .scroll((self.commit_msg_scroll, 0));
 
         frame.render_widget(paragraph, area);
+
+        Self::render_scrollbar(
+            frame,
+            area,
+            self.commit_msg_visual_total as usize,
+            self.commit_msg_scroll as usize,
+            self.commit_msg_view_height as usize,
+        );
     }
 
     fn render_diff_view_widget(&mut self, frame: &mut Frame, area: Rect) {
@@ -624,6 +650,7 @@ impl App {
             self.diff.visual_offsets = None;
         }
 
+        let line_count = text.lines.len();
         let paragraph = Paragraph::new(text)
             .block(block)
             .scroll((self.diff.scroll, 0));
@@ -635,6 +662,15 @@ impl App {
         frame.render_widget(paragraph, area);
 
         self.apply_diff_bg_highlights(frame, &bg_lines, area, inner_width);
+
+        let total_visual = self.visual_line_offset(line_count);
+        Self::render_scrollbar(
+            frame,
+            area,
+            total_visual,
+            self.diff.scroll as usize,
+            self.diff.view_height as usize,
+        );
     }
 
     /// delta 出力をキャッシュ（ファイル選択が変わったときだけ再実行）
@@ -950,14 +986,7 @@ impl App {
 
         // Scrollbar（必要な場合のみ）
         if let Some((total_rows, position)) = scrollbar_state {
-            // ratatui は max_position = content_length - 1 でサム位置を計算するため、
-            // content_length にスクロール範囲（max_scroll + 1）を渡す
-            let scroll_range = total_rows.saturating_sub(visible_height) + 1;
-            let mut sb_state = ScrollbarState::new(scroll_range)
-                .position(position)
-                .viewport_content_length(visible_height);
-            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
-            frame.render_stateful_widget(scrollbar, area, &mut sb_state);
+            Self::render_scrollbar(frame, area, total_rows, position, visible_height);
         }
 
         // カーソル位置計算（編集中のみ）
@@ -967,6 +996,25 @@ impl App {
             let cursor_y = area.y + 1 + vrow as u16;
             frame.set_cursor_position(Position::new(cursor_x, cursor_y));
         }
+    }
+
+    /// コンテンツがビューポートを超えている場合のみスクロールバーを描画する
+    fn render_scrollbar(
+        frame: &mut Frame,
+        area: Rect,
+        total_rows: usize,
+        position: usize,
+        view_height: usize,
+    ) {
+        if total_rows <= view_height {
+            return;
+        }
+        let scroll_range = total_rows.saturating_sub(view_height) + 1;
+        let mut sb_state = ScrollbarState::new(scroll_range)
+            .position(position)
+            .viewport_content_length(view_height);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+        frame.render_stateful_widget(scrollbar, area, &mut sb_state);
     }
 
     /// 中央に固定サイズの矩形を配置
