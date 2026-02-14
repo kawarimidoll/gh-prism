@@ -5,14 +5,26 @@ use std::path::PathBuf;
 use super::commits::CommitInfo;
 use super::files::DiffFile;
 
+pub const CACHE_VERSION: u32 = 1;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PrCache {
+    #[serde(default)]
+    pub version: u32,
     pub head_sha: String,
     pub pr_title: String,
     pub pr_body: String,
     pub pr_author: String,
     pub commits: Vec<CommitInfo>,
     pub files_map: HashMap<String, Vec<DiffFile>>,
+    #[serde(default)]
+    pub pr_base_branch: String,
+    #[serde(default)]
+    pub pr_head_branch: String,
+    #[serde(default)]
+    pub pr_created_at: String,
+    #[serde(default)]
+    pub pr_state: String,
 }
 
 fn cache_dir(owner: &str, repo: &str) -> PathBuf {
@@ -61,6 +73,7 @@ mod tests {
         let pr_number = 99999;
 
         let cache = PrCache {
+            version: CACHE_VERSION,
             head_sha: "abc1234".to_string(),
             pr_title: "Test PR".to_string(),
             pr_body: "Test body".to_string(),
@@ -85,6 +98,10 @@ mod tests {
                 );
                 m
             },
+            pr_base_branch: "main".to_string(),
+            pr_head_branch: "feature".to_string(),
+            pr_created_at: "2024-01-15".to_string(),
+            pr_state: "Open".to_string(),
         };
 
         write_cache(owner, repo, pr_number, &cache);
