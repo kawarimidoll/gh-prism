@@ -616,7 +616,7 @@ impl App {
         } else {
             for entry in &self.conversation {
                 // ヘッダー行: @author (date) [STATE]
-                let date_display = &entry.created_at[..10.min(entry.created_at.len())];
+                let date_display = format_datetime(&entry.created_at);
                 let mut header_spans = vec![
                     Span::styled(
                         format!(" @{}", entry.author),
@@ -1293,7 +1293,7 @@ impl App {
                 format!(
                     "  @{} ({})",
                     comment.user.login,
-                    &comment.created_at[..10.min(comment.created_at.len())]
+                    format_datetime(&comment.created_at)
                 ),
                 Style::default().fg(Color::Cyan),
             ));

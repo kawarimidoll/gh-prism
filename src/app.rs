@@ -8,7 +8,7 @@ mod render;
 mod style;
 mod types;
 
-use helpers::{open_url_in_browser, truncate_path, truncate_str};
+use helpers::{format_datetime, open_url_in_browser, truncate_path, truncate_str};
 pub use media::{collect_image_urls, preprocess_pr_body};
 pub use types::*;
 
