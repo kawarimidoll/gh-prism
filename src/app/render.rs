@@ -514,9 +514,7 @@ impl App {
             .unwrap_or_default();
 
         // block なしで line_count を計算（block 付きだとボーダー行が加算されてしまう）
-        let paragraph = Paragraph::new(commit_msg)
-            .wrap(Wrap { trim: false })
-            .style(Style::default().fg(Color::DarkGray));
+        let paragraph = Paragraph::new(commit_msg).wrap(Wrap { trim: false });
 
         self.commit_msg_visual_total = paragraph.line_count(inner_width) as u16;
         self.clamp_commit_msg_scroll();
@@ -554,14 +552,14 @@ impl App {
                 _ => Color::White,
             };
             lines.push(Line::from(vec![
-                Span::styled(" Status:  ", Style::default().fg(Color::DarkGray)),
+                Span::raw(" Status:  "),
                 Span::styled(&self.pr_state, Style::default().fg(state_color)),
             ]));
         }
 
         // Author
         lines.push(Line::from(vec![
-            Span::styled(" Author:  ", Style::default().fg(Color::DarkGray)),
+            Span::raw(" Author:  "),
             Span::styled(
                 format!("@{}", self.pr_author),
                 Style::default().fg(Color::Cyan),
@@ -571,9 +569,9 @@ impl App {
         // Branch
         if !self.pr_base_branch.is_empty() || !self.pr_head_branch.is_empty() {
             lines.push(Line::from(vec![
-                Span::styled(" Branch:  ", Style::default().fg(Color::DarkGray)),
-                Span::styled(&self.pr_base_branch, Style::default()),
-                Span::styled(" ← ", Style::default().fg(Color::DarkGray)),
+                Span::raw(" Branch:  "),
+                Span::raw(&self.pr_base_branch),
+                Span::raw(" ← "),
                 Span::styled(&self.pr_head_branch, Style::default().fg(Color::Green)),
             ]));
         }
@@ -581,8 +579,8 @@ impl App {
         // Date
         if !self.pr_created_at.is_empty() {
             lines.push(Line::from(vec![
-                Span::styled(" Date:    ", Style::default().fg(Color::DarkGray)),
-                Span::styled(&self.pr_created_at, Style::default()),
+                Span::raw(" Date:    "),
+                Span::raw(&self.pr_created_at),
             ]));
         }
 
