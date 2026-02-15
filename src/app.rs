@@ -5,7 +5,6 @@ mod markdown;
 mod media;
 mod navigation;
 mod render;
-mod style;
 mod types;
 
 use helpers::{format_datetime, open_url_in_browser, truncate_path, truncate_str};
@@ -23,7 +22,7 @@ use ratatui::{
     DefaultTerminal,
     layout::Position,
     style::{Color, Modifier, Style},
-    text::{Line, Text},
+    text::{Line, Span, Text},
     widgets::ListState,
 };
 use ratatui_image::picker::Picker;
@@ -79,6 +78,8 @@ pub struct App {
     viewed_files: HashSet<String>,
     /// PR Description のマークダウンレンダリングキャッシュ
     pr_desc_rendered: Option<Text<'static>>,
+    /// Conversation ペインのマークダウンレンダリングキャッシュ
+    conversation_rendered: Option<Vec<Line<'static>>>,
     /// カラーテーマ（ライト/ダーク）
     theme: ThemeMode,
     /// 各ペインの描画領域キャッシュ（マウスヒットテスト用、render 時に更新）
@@ -183,6 +184,7 @@ impl App {
             zoomed: false,
             viewed_files: HashSet::new(),
             pr_desc_rendered: None,
+            conversation_rendered: None,
             theme,
             layout: LayoutCache::default(),
             media_refs: Vec::new(),
@@ -563,6 +565,65 @@ impl App {
         self.pr_desc_rendered = Some(text);
     }
 
+    /// Conversation ペインのマークダウンレンダリングキャッシュを生成（未生成の場合のみ）
+    fn ensure_conversation_rendered(&mut self) {
+        if self.conversation_rendered.is_some() {
+            return;
+        }
+
+        let mut lines: Vec<Line<'static>> = Vec::new();
+
+        if self.conversation.is_empty() {
+            lines.push(Line::styled(
+                " (No conversation)",
+                Style::default().fg(Color::DarkGray),
+            ));
+        } else {
+            for entry in &self.conversation {
+                // ヘッダー行: @author (date) [STATE]
+                let date_display = format_datetime(&entry.created_at);
+                let mut header_spans = vec![
+                    Span::styled(
+                        format!(" @{}", entry.author),
+                        Style::default().fg(Color::Cyan),
+                    ),
+                    Span::styled(
+                        format!(" ({})", date_display),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ];
+
+                // Review の場合は state ラベルを追加（COMMENTED は非表示）
+                if let ConversationKind::Review { ref state } = entry.kind {
+                    let label_opt = match state.as_str() {
+                        "APPROVED" => Some(("APPROVED", Color::Green)),
+                        "CHANGES_REQUESTED" => Some(("CHANGES REQUESTED", Color::Red)),
+                        "DISMISSED" => Some(("DISMISSED", Color::DarkGray)),
+                        _ => None, // COMMENTED やその他は非表示
+                    };
+                    if let Some((label, color)) = label_opt {
+                        header_spans.push(Span::styled(
+                            format!(" [{}]", label),
+                            Style::default().fg(color),
+                        ));
+                    }
+                }
+
+                lines.push(Line::from(header_spans));
+
+                // 本文をマークダウンレンダリング（bat ハイライト or プレーンテキスト）
+                if !entry.body.is_empty() {
+                    lines.extend(markdown::render_markdown(&entry.body, self.theme));
+                }
+
+                // 空行（エントリ間セパレータ）
+                lines.push(Line::raw(""));
+            }
+        }
+
+        self.conversation_rendered = Some(lines);
+    }
+
     /// PR Description の Wrap 考慮済み視覚行数を返す
     /// render 前は論理行数にフォールバック
     fn pr_desc_total_lines(&mut self) -> u16 {
@@ -856,6 +917,7 @@ impl App {
                     created_at: comment.created_at,
                     kind: ConversationKind::IssueComment,
                 });
+                self.conversation_rendered = None; // キャッシュ無効化
                 self.review.comment_editor.clear();
                 // 末尾までスクロール（次の render で visual_total が更新されるため大きな値を設定）
                 self.conversation_scroll = u16::MAX;

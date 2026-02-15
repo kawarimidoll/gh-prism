@@ -23,7 +23,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.149"
 termbg = "0.6"
 tokio = { version = "1.49.0", features = ["full"] }
-tui-markdown = { version = "0.3", default-features = false }
 unicode-width = "0.2"
 
 [features]

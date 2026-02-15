@@ -606,55 +606,8 @@ impl App {
         self.conversation_view_height = area.height.saturating_sub(2);
         let inner_width = area.width.saturating_sub(2);
 
-        let mut lines: Vec<Line> = Vec::new();
-
-        if self.conversation.is_empty() {
-            lines.push(Line::styled(
-                " (No conversation)",
-                Style::default().fg(Color::DarkGray),
-            ));
-        } else {
-            for entry in &self.conversation {
-                // ヘッダー行: @author (date) [STATE]
-                let date_display = format_datetime(&entry.created_at);
-                let mut header_spans = vec![
-                    Span::styled(
-                        format!(" @{}", entry.author),
-                        Style::default().fg(Color::Cyan),
-                    ),
-                    Span::styled(
-                        format!(" ({})", date_display),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ];
-
-                // Review の場合は state ラベルを追加（COMMENTED は非表示）
-                if let ConversationKind::Review { ref state } = entry.kind {
-                    let label_opt = match state.as_str() {
-                        "APPROVED" => Some(("APPROVED", Color::Green)),
-                        "CHANGES_REQUESTED" => Some(("CHANGES REQUESTED", Color::Red)),
-                        "DISMISSED" => Some(("DISMISSED", Color::DarkGray)),
-                        _ => None, // COMMENTED やその他は非表示
-                    };
-                    if let Some((label, color)) = label_opt {
-                        header_spans.push(Span::styled(
-                            format!(" [{}]", label),
-                            Style::default().fg(color),
-                        ));
-                    }
-                }
-
-                lines.push(Line::from(header_spans));
-
-                // 本文をマークダウンレンダリング（テーブル対応・スタイル統一）
-                if !entry.body.is_empty() {
-                    lines.extend(markdown::render_markdown(&entry.body, self.theme));
-                }
-
-                // 空行（エントリ間セパレータ）
-                lines.push(Line::raw(""));
-            }
-        }
+        self.ensure_conversation_rendered();
+        let lines = self.conversation_rendered.as_ref().unwrap().clone();
 
         let title = format!(" Conversation ({}) ", self.conversation.len());
 

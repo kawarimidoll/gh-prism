@@ -1,115 +1,97 @@
 use super::ThemeMode;
-use super::style::PrDescStyleSheet;
+use crate::git::diff::ansi_to_text;
 use ratatui::text::{Line, Span};
+use std::io::Write;
+use std::process::{Command, Stdio};
+use std::sync::OnceLock;
+
+static BAT_AVAILABLE: OnceLock<bool> = OnceLock::new();
+
+/// bat の可用性を起動時に1回だけチェック（OnceLock でキャッシュ）
+fn has_bat() -> bool {
+    *BAT_AVAILABLE.get_or_init(|| {
+        Command::new("bat")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
+}
+
+/// テーマに応じた bat のカラースキームを返す
+fn bat_theme(theme: ThemeMode) -> &'static str {
+    match theme {
+        ThemeMode::Dark => "base16",
+        ThemeMode::Light => "GitHub",
+    }
+}
+
+/// bat でマークダウンをシンタックスハイライト
+/// パイプデッドロック回避は highlight_with_delta と同じ thread::spawn パターン
+fn highlight_with_bat(text: &str, theme: ThemeMode) -> Option<Vec<Line<'static>>> {
+    if !has_bat() {
+        return None;
+    }
+
+    let mut child = Command::new("bat")
+        .args([
+            "--language=markdown",
+            "--color=always",
+            "--style=plain",
+            "--paging=never",
+            &format!("--theme={}", bat_theme(theme)),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+
+    let mut stdin = child.stdin.take().expect("stdin was configured");
+    let text_bytes = text.as_bytes().to_vec();
+    let writer = std::thread::spawn(move || {
+        // bat クラッシュ時のみ broken pipe が発生するが、output.status で検知するため無視して良い
+        let _ = stdin.write_all(&text_bytes);
+    });
+
+    let output = child.wait_with_output().ok()?;
+    let _ = writer.join();
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let ansi_str = String::from_utf8_lossy(&output.stdout);
+    let ratatui_text = ansi_to_text(&ansi_str).ok()?;
+    Some(
+        ratatui_text
+            .lines
+            .into_iter()
+            .map(|line| {
+                let mut new_line = Line::from(
+                    line.spans
+                        .into_iter()
+                        .map(|span| Span::styled(span.content.into_owned(), span.style))
+                        .collect::<Vec<_>>(),
+                );
+                new_line.style = line.style;
+                new_line.alignment = line.alignment;
+                new_line
+            })
+            .collect(),
+    )
+}
 
 /// マークダウンテキストを ratatui Line に変換する。
-/// テーブルブロックは tui_markdown を迂回してプレーンテキストとして保持する。
+/// bat が利用可能なら bat でシンタックスハイライト、なければ生テキストをそのまま表示。
 pub(super) fn render_markdown(text: &str, theme: ThemeMode) -> Vec<Line<'static>> {
-    let blocks = split_blocks(text);
-    let options = tui_markdown::Options::new(PrDescStyleSheet { theme });
-    let mut lines = Vec::new();
-
-    for block in blocks {
-        match block {
-            MdBlock::Text(t) => {
-                let rendered = tui_markdown::from_str_with_options(&t, &options);
-                for line in rendered.lines {
-                    let mut new_line = Line::from(
-                        line.spans
-                            .into_iter()
-                            .map(|span| Span::styled(span.content.into_owned(), span.style))
-                            .collect::<Vec<_>>(),
-                    );
-                    new_line.style = line.style;
-                    new_line.alignment = line.alignment;
-                    lines.push(new_line);
-                }
-            }
-            MdBlock::Table(rows) => {
-                // テーブルはプレーンテキストとしてそのまま表示
-                // (tui_markdown が改行を除去してしまうのを防ぐ)
-                for row in &rows {
-                    lines.push(Line::raw(row.to_string()));
-                }
-            }
-        }
+    if let Some(lines) = highlight_with_bat(text, theme) {
+        return lines;
     }
-
-    lines
-}
-
-// ── ブロック分割 ──────────────────────────────────
-
-enum MdBlock {
-    Text(String),
-    Table(Vec<String>),
-}
-
-/// テキストをテーブルブロックと非テーブルブロックに分割する
-fn split_blocks(text: &str) -> Vec<MdBlock> {
-    let src_lines: Vec<&str> = text.lines().collect();
-    let mut blocks: Vec<MdBlock> = Vec::new();
-    let mut text_buf = String::new();
-    let mut i = 0;
-
-    while i < src_lines.len() {
-        if is_table_line(src_lines[i]) {
-            // テーブル候補: 連続する table line を集めて separator の有無を確認
-            let start = i;
-            let mut has_separator = false;
-            while i < src_lines.len() && is_table_line(src_lines[i]) {
-                if is_separator_line(src_lines[i]) {
-                    has_separator = true;
-                }
-                i += 1;
-            }
-
-            if has_separator && i - start >= 2 {
-                // 有効なテーブルブロック
-                if !text_buf.is_empty() {
-                    blocks.push(MdBlock::Text(std::mem::take(&mut text_buf)));
-                }
-                let table_lines: Vec<String> =
-                    src_lines[start..i].iter().map(|l| l.to_string()).collect();
-                blocks.push(MdBlock::Table(table_lines));
-                continue;
-            }
-
-            // separator がない場合はテキストとして戻す
-            for line in &src_lines[start..i] {
-                if !text_buf.is_empty() {
-                    text_buf.push('\n');
-                }
-                text_buf.push_str(line);
-            }
-            continue;
-        }
-
-        if !text_buf.is_empty() {
-            text_buf.push('\n');
-        }
-        text_buf.push_str(src_lines[i]);
-        i += 1;
-    }
-
-    if !text_buf.is_empty() {
-        blocks.push(MdBlock::Text(text_buf));
-    }
-
-    blocks
-}
-
-fn is_table_line(line: &str) -> bool {
-    let trimmed = line.trim();
-    trimmed.starts_with('|') && trimmed.len() > 1
-}
-
-fn is_separator_line(line: &str) -> bool {
-    let inner = line.trim().trim_matches('|');
-    !inner.is_empty()
-        && inner
-            .chars()
-            .all(|c| c == '-' || c == ':' || c == ' ' || c == '|')
+    // bat が利用不可の場合は生テキストをそのまま表示
+    text.lines().map(|l| Line::raw(l.to_string())).collect()
 }
 
 #[cfg(test)]
@@ -117,62 +99,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_is_table_line() {
-        assert!(is_table_line("| a | b |"));
-        assert!(is_table_line("| --- | --- |"));
-        assert!(!is_table_line("not a table"));
-        assert!(!is_table_line("|")); // too short
-        assert!(!is_table_line(""));
-    }
-
-    #[test]
-    fn test_is_separator_line() {
-        assert!(is_separator_line("| --- | --- |"));
-        assert!(is_separator_line("| :--- | ---: |"));
-        assert!(is_separator_line("|---|---|"));
-        assert!(!is_separator_line("| a | b |"));
-    }
-
-    #[test]
-    fn test_split_blocks_no_table() {
-        let text = "# Hello\n\nSome text";
-        let blocks = split_blocks(text);
-        assert_eq!(blocks.len(), 1);
-        assert!(matches!(&blocks[0], MdBlock::Text(t) if t == text));
-    }
-
-    #[test]
-    fn test_split_blocks_table_only() {
-        let text = "| a | b |\n| - | - |\n| 1 | 2 |";
-        let blocks = split_blocks(text);
-        assert_eq!(blocks.len(), 1);
-        assert!(matches!(&blocks[0], MdBlock::Table(rows) if rows.len() == 3));
-    }
-
-    #[test]
-    fn test_split_blocks_text_then_table() {
-        let text = "Some text\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\nMore text";
-        let blocks = split_blocks(text);
-        assert_eq!(blocks.len(), 3);
-        assert!(matches!(&blocks[0], MdBlock::Text(_)));
-        assert!(matches!(&blocks[1], MdBlock::Table(rows) if rows.len() == 3));
-        assert!(matches!(&blocks[2], MdBlock::Text(t) if t.contains("More text")));
-    }
-
-    #[test]
-    fn test_split_blocks_pipe_without_separator_is_text() {
-        let text = "| just a pipe line |";
-        let blocks = split_blocks(text);
-        assert_eq!(blocks.len(), 1);
-        assert!(matches!(&blocks[0], MdBlock::Text(_)));
-    }
-
-    #[test]
-    fn test_render_markdown_preserves_table_lines() {
-        let text = "# Title\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\nEnd";
+    fn test_render_markdown_returns_lines() {
+        let text = "# Title\n\nSome text\n\n| a | b |\n| - | - |\n| 1 | 2 |";
         let lines = render_markdown(text, ThemeMode::Dark);
         assert!(!lines.is_empty());
-        // テーブル行がプレーンテキストとして保持されていることを確認
+        // bat の有無にかかわらず入力行数と出力行数が一致する
+        // (bat はハイライトのみで行数を変えない)
+        assert_eq!(lines.len(), text.lines().count());
+    }
+
+    #[test]
+    fn test_render_markdown_preserves_content() {
+        let text = "Hello world\n\nSecond line";
+        let lines = render_markdown(text, ThemeMode::Dark);
         let text_content: String = lines
             .iter()
             .map(|l| {
@@ -183,7 +122,7 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text_content.contains("| a | b |"));
-        assert!(text_content.contains("| 1 | 2 |"));
+        assert!(text_content.contains("Hello world"));
+        assert!(text_content.contains("Second line"));
     }
 }
