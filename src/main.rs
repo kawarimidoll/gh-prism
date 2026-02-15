@@ -239,8 +239,26 @@ fn build_conversation(
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    color_eyre::install()?;
+async fn main() {
+    let _ = color_eyre::install();
+    if let Err(e) = run().await {
+        // エラーチェーンから根本原因メッセージを抽出してユーザーフレンドリーに表示
+        let root = e.root_cause().to_string();
+        let message = if root.contains("Not Found") {
+            "PR or repository not found. Check the PR number and repository name.".to_string()
+        } else if root.contains("rate limit") {
+            "GitHub API rate limit exceeded. Please try again later.".to_string()
+        } else if root.contains("401") || root.contains("Bad credentials") {
+            "Authentication failed. Run `gh auth login` to authenticate.".to_string()
+        } else {
+            format!("{e:#}")
+        };
+        eprintln!("Error: {message}");
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<()> {
     let cli = Cli::parse();
 
     // リポジトリ情報を解決
