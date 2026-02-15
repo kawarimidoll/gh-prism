@@ -726,10 +726,11 @@ impl App {
         }
     }
 
-    /// コメント入力をキャンセルして LineSelect に戻る（選択範囲維持）
+    /// コメント入力をキャンセルして Normal モードに戻る（選択範囲もクリア）
     fn cancel_comment_input(&mut self) {
         self.review.comment_editor.clear();
-        self.mode = AppMode::LineSelect;
+        self.line_selection = None;
+        self.mode = AppMode::Normal;
     }
 
     /// コメントを確定して pending_comments に追加
@@ -1495,20 +1496,19 @@ mod tests {
     }
 
     #[test]
-    fn test_comment_input_mode_cancel_returns_to_line_select() {
+    fn test_comment_input_mode_cancel_returns_to_normal() {
         let mut app = create_app_with_patch();
         app.focused_panel = Panel::DiffView;
 
         // 行選択 → コメント入力
         app.enter_line_select_mode();
-        let selection_before = app.line_selection;
         app.enter_comment_input_mode();
         assert_eq!(app.mode, AppMode::CommentInput);
 
-        // Esc で LineSelect に戻る（選択範囲維持）
+        // Esc で Normal に戻る（選択範囲もクリア）
         app.cancel_comment_input();
-        assert_eq!(app.mode, AppMode::LineSelect);
-        assert_eq!(app.line_selection, selection_before);
+        assert_eq!(app.mode, AppMode::Normal);
+        assert_eq!(app.line_selection, None);
     }
 
     #[test]
