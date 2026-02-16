@@ -70,6 +70,7 @@ impl App {
                 }
             }
             Panel::DiffView => {
+                let prev_cursor = self.diff.cursor_line;
                 let line_count = self.current_diff_line_count();
                 let total_visual = self.visual_line_offset(line_count);
                 let max_scroll = (total_visual as u16).saturating_sub(self.diff.view_height);
@@ -98,6 +99,10 @@ impl App {
                     self.diff.cursor_line -= 1;
                     self.diff.cursor_line =
                         self.skip_hunk_header_backward(self.diff.cursor_line, line_count);
+                }
+                // カーソル行が変わったらコメントペインのスクロールをリセット
+                if self.diff.cursor_line != prev_cursor {
+                    self.review.viewing_comment_scroll = 0;
                 }
             }
             _ => {}
@@ -287,6 +292,7 @@ impl App {
                     self.diff.scroll = 0;
                     let max = self.current_diff_line_count();
                     self.diff.cursor_line = self.skip_hunk_header_forward(0, max);
+                    self.review.viewing_comment_scroll = 0;
                 }
                 _ => {}
             },
@@ -302,6 +308,7 @@ impl App {
                 }
                 Panel::DiffView => {
                     self.scroll_diff_to_end();
+                    self.review.viewing_comment_scroll = 0;
                 }
                 _ => {}
             },
@@ -519,10 +526,10 @@ impl App {
             .ensure_visible(editor::EDITOR_VISIBLE_HEIGHT);
     }
 
-    /// コメント表示ダイアログのキー処理
+    /// コメントペイン（フォーカス状態）のキー処理
     pub(super) fn handle_comment_view_mode(&mut self, code: KeyCode) {
         match code {
-            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+            KeyCode::Esc | KeyCode::Char('q') => {
                 self.review.viewing_comments.clear();
                 self.review.viewing_comment_scroll = 0;
                 self.mode = AppMode::Normal;

@@ -255,7 +255,6 @@ impl App {
 
         // ダイアログ描画（画面中央にオーバーレイ）
         match self.mode {
-            AppMode::CommentView => self.render_comment_view_dialog(frame, area),
             AppMode::ReviewSubmit => self.render_review_submit_dialog(frame, area),
             AppMode::QuitConfirm => self.render_quit_confirm_dialog(frame, area),
             AppMode::Help => self.render_help_dialog(frame, area),
@@ -1031,6 +1030,27 @@ impl App {
     /// それ以外は薄いグレーのボーダーで空のコメント欄を表示。
     /// ReviewBodyInput は呼び出し側で全幅パネルとして別途呼び出す。
     fn render_editor_panel(&mut self, frame: &mut Frame, area: Rect) {
+        // CommentView モード: viewing_comments をペインに表示（フォーカス状態）
+        if self.mode == AppMode::CommentView && !self.review.viewing_comments.is_empty() {
+            // render_cursor_comments が &mut self を取るため clone で借用を分離
+            let comments = self.review.viewing_comments.clone();
+            self.render_cursor_comments(frame, area, &comments, true);
+            return;
+        }
+
+        // 編集モードでなく Diff が表示中なら、カーソル行のレビューコメントを自動表示
+        if !matches!(
+            self.mode,
+            AppMode::CommentInput | AppMode::IssueCommentInput | AppMode::ReviewBodyInput
+        ) && self.layout.diff_view_rect.width > 0
+        {
+            let comments = self.comments_at_diff_line(self.diff.cursor_line);
+            if !comments.is_empty() {
+                self.render_cursor_comments(frame, area, &comments, false);
+                return;
+            }
+        }
+
         let (title, help_text, editor, show_cursor) = match self.mode {
             AppMode::CommentInput => {
                 let title = if let Some(selection) = self.line_selection {
@@ -1113,6 +1133,75 @@ impl App {
             let cursor_x = area.x + 1 + vcol as u16;
             let cursor_y = area.y + 1 + vrow as u16;
             frame.set_cursor_position(Position::new(cursor_x, cursor_y));
+        }
+    }
+
+    /// カーソル行のレビューコメントをコメントペインに表示する。
+    /// `focused` が true の場合はフォーカス状態（CommentView モード）として描画する。
+    fn render_cursor_comments(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        comments: &[crate::github::comments::ReviewComment],
+        focused: bool,
+    ) {
+        // 非フォーカス時はスクロールをリセット（全ナビゲーション経路を統一的にカバー）
+        if !focused {
+            self.review.viewing_comment_scroll = 0;
+        }
+
+        let mut lines = Vec::new();
+        for (i, comment) in comments.iter().enumerate() {
+            if i > 0 {
+                lines.push(Line::raw(""));
+            }
+            lines.push(Line::styled(
+                format!(
+                    "@{} ({})",
+                    comment.user.login,
+                    format_datetime(&comment.created_at)
+                ),
+                Style::default().fg(Color::Cyan),
+            ));
+            for body_line in comment.body.lines() {
+                lines.push(Line::raw(body_line.to_string()));
+            }
+        }
+
+        let title = format!(" 💬 Review Comments ({}) ", comments.len());
+        let (help_text, border_color) = if focused {
+            (" j/k: scroll | Esc: back ", Color::Yellow)
+        } else {
+            (" Enter: focus ", Color::DarkGray)
+        };
+        let block = Block::default()
+            .title(title)
+            .title_bottom(Line::from(help_text).alignment(HorizontalAlignment::Right))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color));
+
+        // block なしで line_count を計算（block 付きだとボーダー行が加算されてしまう）
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+        let visible_height = area.height.saturating_sub(2) as usize;
+        let inner_width = area.width.saturating_sub(2);
+        let visual_total = paragraph.line_count(inner_width);
+        self.review.comment_view_max_scroll =
+            (visual_total as u16).saturating_sub(visible_height as u16);
+
+        let paragraph = paragraph
+            .block(block)
+            .scroll((self.review.viewing_comment_scroll, 0));
+
+        frame.render_widget(paragraph, area);
+
+        if visual_total > visible_height {
+            Self::render_scrollbar(
+                frame,
+                area,
+                visual_total,
+                self.review.viewing_comment_scroll as usize,
+                visible_height,
+            );
         }
     }
 
@@ -1218,61 +1307,6 @@ impl App {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Red)),
         );
-        frame.render_widget(paragraph, dialog);
-    }
-
-    fn render_comment_view_dialog(&mut self, frame: &mut Frame, area: Rect) {
-        // ダイアログサイズ: 幅60, 高さはコメント数に応じて動的（最大 area の 2/3）
-        let content_height: u16 = self
-            .review
-            .viewing_comments
-            .iter()
-            .map(|c| {
-                // @user (date) + 本文行数 + 空行
-                1 + c.body.lines().count() as u16 + 1
-            })
-            .sum::<u16>()
-            .max(3);
-        let dialog_height = (content_height + 4).min(area.height * 2 / 3); // +4 for borders + footer
-        let dialog_width = 60.min(area.width.saturating_sub(4));
-        let dialog = Self::centered_rect(dialog_width, dialog_height, area);
-        frame.render_widget(Clear, dialog);
-
-        let mut lines = vec![Line::raw("")];
-        for comment in &self.review.viewing_comments {
-            lines.push(Line::styled(
-                format!(
-                    "  @{} ({})",
-                    comment.user.login,
-                    format_datetime(&comment.created_at)
-                ),
-                Style::default().fg(Color::Cyan),
-            ));
-            for body_line in comment.body.lines() {
-                lines.push(Line::raw(format!("  {}", body_line)));
-            }
-            lines.push(Line::raw(""));
-        }
-        lines.push(Line::styled(
-            "  Esc/Enter/q: close",
-            Style::default().fg(Color::DarkGray),
-        ));
-
-        // block なしで line_count を計算（block 付きだとボーダー行が加算されてしまう）
-        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-        let dialog_inner_width = dialog_width.saturating_sub(2);
-        let visual_total = paragraph.line_count(dialog_inner_width) as u16;
-        let visible_height = dialog_height.saturating_sub(2);
-        self.review.comment_view_max_scroll = visual_total.saturating_sub(visible_height);
-
-        let paragraph = paragraph
-            .block(
-                Block::default()
-                    .title(" Review Comments ")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Yellow)),
-            )
-            .scroll((self.review.viewing_comment_scroll, 0));
         frame.render_widget(paragraph, dialog);
     }
 

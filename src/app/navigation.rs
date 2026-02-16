@@ -136,6 +136,7 @@ impl App {
         self.diff.scroll = 0;
         let max = self.current_diff_line_count();
         self.diff.cursor_line = self.skip_hunk_header_forward(0, max);
+        self.review.viewing_comment_scroll = 0;
     }
 
     /// カーソルを下に移動（@@ 行をスキップ）
