@@ -1340,6 +1340,7 @@ impl App {
             ("", "Diff Jump"),
             ("]c / [c", "Next / prev change block"),
             ("]h / [h", "Next / prev hunk"),
+            ("]n / [n", "Next / prev comment"),
             ("", "Selection & Comment"),
             ("v", "Enter line select mode"),
             ("c", "Comment on line (Diff) / PR (Conv.)"),

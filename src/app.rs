@@ -2721,6 +2721,109 @@ mod tests {
         assert_eq!(app.diff.cursor_line, 0); // 動かない
     }
 
+    #[test]
+    fn test_jump_to_next_comment() {
+        // patch: @@ -0,0 +1,5 @@\n+line1\n+line2\n+line3\n+line4\n+line5
+        // idx:   0                 1       2       3       4       5
+        // コメント: line 2 (idx 2), line 4 (idx 4)
+        let comments = vec![
+            make_review_comment("src/main.rs", Some(2), "RIGHT", "Comment A"),
+            make_review_comment("src/main.rs", Some(4), "RIGHT", "Comment B"),
+        ];
+        let mut app = TestAppBuilder::new()
+            .with_custom_patch(
+                "@@ -0,0 +1,5 @@\n+line1\n+line2\n+line3\n+line4\n+line5",
+                "added",
+                5,
+                0,
+            )
+            .review_comments(comments)
+            .build();
+        app.focused_panel = Panel::DiffView;
+        app.diff.cursor_line = 0;
+
+        app.jump_to_next_comment();
+        assert_eq!(app.diff.cursor_line, 2);
+
+        app.jump_to_next_comment();
+        assert_eq!(app.diff.cursor_line, 4);
+
+        // それ以降にコメントがないのでカーソルは動かない
+        app.jump_to_next_comment();
+        assert_eq!(app.diff.cursor_line, 4);
+    }
+
+    #[test]
+    fn test_jump_to_prev_comment() {
+        let comments = vec![
+            make_review_comment("src/main.rs", Some(2), "RIGHT", "Comment A"),
+            make_review_comment("src/main.rs", Some(4), "RIGHT", "Comment B"),
+        ];
+        let mut app = TestAppBuilder::new()
+            .with_custom_patch(
+                "@@ -0,0 +1,5 @@\n+line1\n+line2\n+line3\n+line4\n+line5",
+                "added",
+                5,
+                0,
+            )
+            .review_comments(comments)
+            .build();
+        app.focused_panel = Panel::DiffView;
+        app.diff.cursor_line = 5;
+
+        app.jump_to_prev_comment();
+        assert_eq!(app.diff.cursor_line, 4);
+
+        app.jump_to_prev_comment();
+        assert_eq!(app.diff.cursor_line, 2);
+
+        // それ以前にコメントがないのでカーソルは動かない
+        app.jump_to_prev_comment();
+        assert_eq!(app.diff.cursor_line, 2);
+    }
+
+    #[test]
+    fn test_jump_to_comment_no_comments() {
+        let mut app = create_app_with_multi_hunk_patch();
+        app.focused_panel = Panel::DiffView;
+        app.diff.cursor_line = 3;
+
+        // コメントがない場合はカーソルが動かない
+        app.jump_to_next_comment();
+        assert_eq!(app.diff.cursor_line, 3);
+
+        app.jump_to_prev_comment();
+        assert_eq!(app.diff.cursor_line, 3);
+    }
+
+    #[test]
+    fn test_two_key_sequence_bracket_n() {
+        let comments = vec![make_review_comment(
+            "src/main.rs",
+            Some(2),
+            "RIGHT",
+            "Comment A",
+        )];
+        let mut app = TestAppBuilder::new()
+            .with_custom_patch("@@ -0,0 +1,3 @@\n+line1\n+line2\n+line3", "added", 3, 0)
+            .review_comments(comments)
+            .build();
+        app.focused_panel = Panel::DiffView;
+        app.diff.cursor_line = 0;
+
+        // ]n → 次のコメント行
+        app.handle_normal_mode(KeyCode::Char(']'), KeyModifiers::NONE);
+        assert!(app.pending_key.is_some());
+        app.handle_normal_mode(KeyCode::Char('n'), KeyModifiers::NONE);
+        assert!(app.pending_key.is_none());
+        assert_eq!(app.diff.cursor_line, 2);
+
+        // [n → 前のコメント行（ここでは先頭方向にコメントがないので動かない）
+        app.handle_normal_mode(KeyCode::Char('['), KeyModifiers::NONE);
+        app.handle_normal_mode(KeyCode::Char('n'), KeyModifiers::NONE);
+        assert_eq!(app.diff.cursor_line, 2);
+    }
+
     // === N12: Zoom モードテスト ===
 
     #[test]

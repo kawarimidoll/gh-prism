@@ -483,6 +483,32 @@ impl App {
         }
     }
 
+    /// 次のコメント行にジャンプ
+    pub(super) fn jump_to_next_comment(&mut self) {
+        let comment_lines = self.existing_comment_counts();
+        if let Some(&target) = comment_lines
+            .keys()
+            .filter(|&&idx| idx > self.diff.cursor_line)
+            .min()
+        {
+            self.diff.cursor_line = target;
+            self.ensure_cursor_visible();
+        }
+    }
+
+    /// 前のコメント行にジャンプ
+    pub(super) fn jump_to_prev_comment(&mut self) {
+        let comment_lines = self.existing_comment_counts();
+        if let Some(&target) = comment_lines
+            .keys()
+            .filter(|&&idx| idx < self.diff.cursor_line)
+            .max()
+        {
+            self.diff.cursor_line = target;
+            self.ensure_cursor_visible();
+        }
+    }
+
     pub(super) fn next_panel(&mut self) {
         // DiffView / CommitMessage / Conversation は Tab 巡回の対象外
         if matches!(

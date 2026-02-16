@@ -160,6 +160,8 @@ impl App {
                     ('[', KeyCode::Char('c')) => self.jump_to_prev_change(),
                     (']', KeyCode::Char('h')) => self.jump_to_next_hunk(),
                     ('[', KeyCode::Char('h')) => self.jump_to_prev_hunk(),
+                    (']', KeyCode::Char('n')) => self.jump_to_next_comment(),
+                    ('[', KeyCode::Char('n')) => self.jump_to_prev_comment(),
                     _ => {} // 不明な2文字目は無視
                 }
             }
