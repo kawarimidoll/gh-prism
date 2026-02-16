@@ -305,21 +305,41 @@ impl App {
         self.mode = AppMode::MediaViewer;
     }
 
+    /// 完了したバックグラウンドワーカーの結果をキャッシュに回収する。
+    pub(super) fn poll_media_protocol_worker(&mut self) {
+        if self
+            .media_protocol_worker
+            .as_ref()
+            .is_some_and(|h| h.is_finished())
+            && let Some(handle) = self.media_protocol_worker.take()
+            && let Ok((url, protocol)) = handle.join()
+        {
+            self.media_protocol_cache.insert(url, protocol);
+        }
+    }
+
     /// 現在の media_viewer_index に対応するメディアのレンダリングプロトコルを準備する。
+    /// 既にキャッシュ済みの画像はスキップし、未キャッシュの画像はバックグラウンドで生成する。
     /// 動画の場合はプロトコルを作成しない（サムネイル未対応）。
+    /// 別画像のワーカーが実行中でも、現在の画像のためのワーカーを新たに起動する
+    /// （古いワーカーは完了時にキャッシュへ回収される）。
     pub(super) fn prepare_media_protocol(&mut self) {
         let info = self
             .media_ref_at(self.media_viewer_index)
             .map(|r| (r.media_type.clone(), r.url.clone()));
-        let protocol = info.and_then(|(media_type, url)| {
-            if media_type == MediaType::Video {
-                return None;
+        if let Some((media_type, url)) = info {
+            if media_type == MediaType::Video || self.media_protocol_cache.contains_key(&url) {
+                return;
             }
-            let picker = self.picker.as_ref()?;
-            let img = self.media_cache.get(&url)?;
-            // new_resize_protocol は DynamicImage を所有で受け取るためクローンが必要
-            Some(picker.new_resize_protocol(img.clone()))
-        });
-        self.media_viewer_protocol = protocol;
+            if let Some(picker) = self.picker.clone()
+                && let Some(img) = self.media_cache.get(&url).cloned()
+            {
+                // 代入により前のワーカーの JoinHandle が drop → detach される
+                self.media_protocol_worker = Some(std::thread::spawn(move || {
+                    let protocol = picker.new_resize_protocol(img);
+                    (url, protocol)
+                }));
+            }
+        }
     }
 }

@@ -642,7 +642,6 @@ impl App {
         let count = self.media_count();
         match code {
             KeyCode::Esc | KeyCode::Char('q') => {
-                self.media_viewer_protocol = None;
                 self.mode = AppMode::Normal;
             }
             KeyCode::Char('l') | KeyCode::Right => {

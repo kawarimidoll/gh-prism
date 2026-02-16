@@ -1357,6 +1357,9 @@ impl App {
 
     /// メディアビューアオーバーレイを描画する
     fn render_media_viewer_overlay(&mut self, frame: &mut Frame, area: Rect) {
+        // 未キャッシュの画像ならバックグラウンドワーカーを起動
+        self.prepare_media_protocol();
+
         frame.render_widget(Clear, area);
 
         let total = self.media_count();
@@ -1407,9 +1410,24 @@ impl App {
             .alignment(Alignment::Center);
             let centered = Self::centered_rect(45, 3, content_area);
             frame.render_widget(msg, centered);
-        } else if let Some(ref mut protocol) = self.media_viewer_protocol {
-            let widget = StatefulImage::default();
-            frame.render_stateful_widget(widget, content_area, protocol);
+        } else if let Some(url) = current.map(|r| r.url.clone()) {
+            if let Some(protocol) = self.media_protocol_cache.get_mut(&url) {
+                let widget = StatefulImage::default();
+                frame.render_stateful_widget(widget, content_area, protocol);
+            } else if self.media_protocol_worker.is_some() {
+                let msg = Paragraph::new("Loading...")
+                    .style(Style::default().fg(Color::DarkGray))
+                    .wrap(Wrap { trim: false })
+                    .alignment(Alignment::Center);
+                let centered = Self::centered_rect(15, 1, content_area);
+                frame.render_widget(msg, centered);
+            } else {
+                let msg = Paragraph::new("Press o to open in browser")
+                    .style(Style::default().fg(Color::DarkGray))
+                    .wrap(Wrap { trim: false });
+                let centered = Self::centered_rect(30, 1, content_area);
+                frame.render_widget(msg, centered);
+            }
         } else {
             let msg = Paragraph::new("Press o to open in browser")
                 .style(Style::default().fg(Color::DarkGray))

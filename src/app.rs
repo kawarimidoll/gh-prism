@@ -92,8 +92,10 @@ pub struct App {
     media_cache: MediaCache,
     /// メディアビューアの現在のインデックス
     media_viewer_index: usize,
-    /// メディアビューアの現在のレンダリング状態（画像のみ、動画は None）
-    media_viewer_protocol: Option<StatefulProtocol>,
+    /// メディアビューアのプロトコルキャッシュ（URL → StatefulProtocol）
+    media_protocol_cache: HashMap<String, StatefulProtocol>,
+    /// バックグラウンドでプロトコル生成中のワーカー
+    media_protocol_worker: Option<std::thread::JoinHandle<(String, StatefulProtocol)>>,
     /// (commit_sha, filename) → 可視レビューコメント数のキャッシュ（起動時に計算）
     visible_review_comment_cache: HashMap<(String, String), usize>,
     /// 自分のPRかどうか（Approve/Request Changesを非表示にする）
@@ -191,7 +193,8 @@ impl App {
             picker: None,
             media_cache: MediaCache::new(),
             media_viewer_index: 0,
-            media_viewer_protocol: None,
+            media_protocol_cache: HashMap::new(),
+            media_protocol_worker: None,
             visible_review_comment_cache,
             is_own_pr,
             conversation,
@@ -511,6 +514,9 @@ impl App {
             if self.status_message.as_ref().is_some_and(|m| m.is_expired()) {
                 self.status_message = None;
             }
+
+            // バックグラウンドワーカーの完了チェック
+            self.poll_media_protocol_worker();
 
             terminal.draw(|frame| self.render(frame))?;
 
