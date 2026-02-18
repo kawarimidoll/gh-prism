@@ -182,6 +182,14 @@ pub struct LayoutCache {
     pub conversation_rect: Rect,
 }
 
+/// コード行コメントスレッドのリプライ
+#[derive(Debug, Clone)]
+pub struct CodeCommentReply {
+    pub author: String,
+    pub body: String,
+    pub created_at: String,
+}
+
 /// Conversation エントリの種別
 #[derive(Debug, Clone)]
 pub enum ConversationKind {
@@ -189,6 +197,12 @@ pub enum ConversationKind {
     Review { state: String },
     /// Issue コメント（Conversation タブの一般コメント）
     IssueComment,
+    /// コード行コメント（diff 上のレビューコメントスレッド）
+    CodeComment {
+        path: String,
+        line: Option<usize>,
+        replies: Vec<CodeCommentReply>,
+    },
 }
 
 /// Conversation ペインに表示するエントリ（Issue Comment + Review を時系列マージ）

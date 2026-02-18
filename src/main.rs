@@ -2,12 +2,12 @@ mod app;
 mod git;
 mod github;
 
-use app::{App, ConversationEntry, ConversationKind, ThemeMode};
+use app::{App, CodeCommentReply, ConversationEntry, ConversationKind, ThemeMode};
 use clap::Parser;
 use color_eyre::Result;
 use futures::stream::{FuturesUnordered, StreamExt};
 use github::cache::PrCache;
-use github::comments::IssueComment;
+use github::comments::{IssueComment, ReviewComment};
 use github::commits::CommitInfo;
 use github::files::DiffFile;
 use github::review::ReviewSummary;
@@ -199,10 +199,11 @@ async fn fetch_all(
     })
 }
 
-/// IssueComment と ReviewSummary を ConversationEntry にマージして時系列ソート
+/// IssueComment, ReviewSummary, ReviewComment を ConversationEntry にマージして時系列ソート
 fn build_conversation(
     issue_comments: Vec<IssueComment>,
     reviews: Vec<ReviewSummary>,
+    review_comments: Vec<ReviewComment>,
 ) -> Vec<ConversationEntry> {
     let mut entries = Vec::new();
 
@@ -230,6 +231,45 @@ fn build_conversation(
             body: body.to_string(),
             created_at: submitted_at,
             kind: ConversationKind::Review { state: r.state },
+        });
+    }
+
+    // ReviewComment をスレッドごとにグルーピング
+    // in_reply_to_id が None のものがルートコメント、Some のものがリプライ
+    let mut root_comments: Vec<&ReviewComment> = Vec::new();
+    let mut replies_map: HashMap<u64, Vec<&ReviewComment>> = HashMap::new();
+
+    for rc in &review_comments {
+        if let Some(parent_id) = rc.in_reply_to_id {
+            replies_map.entry(parent_id).or_default().push(rc);
+        } else {
+            root_comments.push(rc);
+        }
+    }
+
+    for root in root_comments {
+        let mut replies = Vec::new();
+        if let Some(thread_replies) = replies_map.get(&root.id) {
+            let mut sorted_replies: Vec<&&ReviewComment> = thread_replies.iter().collect();
+            sorted_replies.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+            for r in sorted_replies {
+                replies.push(CodeCommentReply {
+                    author: r.user.login.clone(),
+                    body: r.body.clone(),
+                    created_at: r.created_at.clone(),
+                });
+            }
+        }
+
+        entries.push(ConversationEntry {
+            author: root.user.login.clone(),
+            body: root.body.clone(),
+            created_at: root.created_at.clone(),
+            kind: ConversationKind::CodeComment {
+                path: root.path.clone(),
+                line: root.line,
+                replies,
+            },
         });
     }
 
@@ -340,7 +380,7 @@ async fn run() -> Result<()> {
         reviews_future
     )?;
 
-    let conversation = build_conversation(issue_comments, reviews);
+    let conversation = build_conversation(issue_comments, reviews, review_comments.clone());
 
     let is_own_pr = !current_user.is_empty() && current_user == data.pr_author;
 
@@ -392,4 +432,111 @@ async fn run() -> Result<()> {
     crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture)?;
     ratatui::restore();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use github::comments::{ReviewComment, ReviewCommentUser};
+
+    fn make_review_comment(
+        id: u64,
+        body: &str,
+        path: &str,
+        line: Option<usize>,
+        in_reply_to_id: Option<u64>,
+        created_at: &str,
+    ) -> ReviewComment {
+        ReviewComment {
+            id,
+            body: body.to_string(),
+            path: path.to_string(),
+            line,
+            start_line: None,
+            side: None,
+            start_side: None,
+            commit_id: "abc123".to_string(),
+            user: ReviewCommentUser {
+                login: "user1".to_string(),
+            },
+            created_at: created_at.to_string(),
+            in_reply_to_id,
+        }
+    }
+
+    #[test]
+    fn test_build_conversation_thread_grouping() {
+        let root = make_review_comment(
+            1,
+            "root comment",
+            "src/main.rs",
+            Some(10),
+            None,
+            "2024-01-01T00:00:00Z",
+        );
+        let reply1 = make_review_comment(
+            2,
+            "reply 1",
+            "src/main.rs",
+            Some(10),
+            Some(1),
+            "2024-01-01T01:00:00Z",
+        );
+        let reply2 = make_review_comment(
+            3,
+            "reply 2",
+            "src/main.rs",
+            Some(10),
+            Some(1),
+            "2024-01-01T02:00:00Z",
+        );
+
+        let entries = build_conversation(vec![], vec![], vec![root, reply1, reply2]);
+        assert_eq!(entries.len(), 1);
+
+        match &entries[0].kind {
+            ConversationKind::CodeComment {
+                path,
+                line,
+                replies,
+            } => {
+                assert_eq!(path, "src/main.rs");
+                assert_eq!(*line, Some(10));
+                assert_eq!(replies.len(), 2);
+                assert_eq!(replies[0].body, "reply 1");
+                assert_eq!(replies[1].body, "reply 2");
+            }
+            _ => panic!("Expected CodeComment"),
+        }
+    }
+
+    #[test]
+    fn test_build_conversation_chronological_sort() {
+        let issue = IssueComment {
+            id: 100,
+            body: Some("issue comment".to_string()),
+            user: ReviewCommentUser {
+                login: "user1".to_string(),
+            },
+            created_at: "2024-01-01T02:00:00Z".to_string(),
+        };
+        let code = make_review_comment(
+            1,
+            "code comment",
+            "src/lib.rs",
+            Some(5),
+            None,
+            "2024-01-01T01:00:00Z",
+        );
+
+        let entries = build_conversation(vec![issue], vec![], vec![code]);
+        assert_eq!(entries.len(), 2);
+
+        // code comment (01:00) は issue comment (02:00) より前に来る
+        assert!(matches!(
+            entries[0].kind,
+            ConversationKind::CodeComment { .. }
+        ));
+        assert!(matches!(entries[1].kind, ConversationKind::IssueComment));
+    }
 }

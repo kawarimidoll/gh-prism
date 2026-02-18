@@ -615,11 +615,42 @@ impl App {
                     }
                 }
 
+                // CodeComment の場合はファイルパスと行番号を表示
+                if let ConversationKind::CodeComment { ref path, line, .. } = entry.kind {
+                    let location = if let Some(l) = line {
+                        format!(" {}:{}", path, l)
+                    } else {
+                        format!(" {}", path)
+                    };
+                    header_spans.push(Span::styled(location, Style::default().fg(Color::Yellow)));
+                }
+
                 lines.push(Line::from(header_spans));
 
                 // 本文をマークダウンレンダリング（bat ハイライト or プレーンテキスト）
                 if !entry.body.is_empty() {
                     lines.extend(markdown::render_markdown(&entry.body, self.theme));
+                }
+
+                // CodeComment のリプライを描画
+                if let ConversationKind::CodeComment { ref replies, .. } = entry.kind {
+                    for reply in replies {
+                        let reply_date = format_datetime(&reply.created_at);
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("   @{}", reply.author),
+                                Style::default().fg(Color::Cyan),
+                            ),
+                            Span::styled(
+                                format!(" ({})", reply_date),
+                                Style::default().fg(Color::DarkGray),
+                            ),
+                        ]));
+                        if !reply.body.is_empty() {
+                            // リプライ本文もマークダウンレンダリング
+                            lines.extend(markdown::render_markdown(&reply.body, self.theme));
+                        }
+                    }
                 }
 
                 // 空行（エントリ間セパレータ）
