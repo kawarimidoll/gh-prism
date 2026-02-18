@@ -11,7 +11,7 @@ use helpers::{format_datetime, open_url_in_browser, truncate_path, truncate_str}
 pub use media::{collect_image_urls, preprocess_pr_body};
 pub use types::*;
 
-use crate::github::comments::{self as comments, ReviewComment};
+use crate::github::comments::{self as comments, ReviewComment, ReviewThread};
 use crate::github::commits::CommitInfo;
 use crate::github::files::DiffFile;
 use crate::github::media::MediaCache;
@@ -131,11 +131,18 @@ impl App {
         client: Option<Octocrab>,
         theme: ThemeMode,
         is_own_pr: bool,
+        review_threads: Vec<ReviewThread>,
     ) -> Self {
         let mut commit_list_state = ListState::default();
         if !commits.is_empty() {
             commit_list_state.select(Some(0));
         }
+
+        // root_comment_database_id → ReviewThread のマップを構築
+        let thread_map: HashMap<u64, ReviewThread> = review_threads
+            .into_iter()
+            .map(|t| (t.root_comment_database_id, t))
+            .collect();
 
         // (commit_sha, filename) → 可視レビューコメント数を事前計算
         let visible_review_comment_cache =
@@ -177,6 +184,7 @@ impl App {
             line_selection: None,
             review: ReviewState {
                 review_comments,
+                thread_map,
                 ..Default::default()
             },
             client,
@@ -534,6 +542,10 @@ impl App {
                 self.submit_issue_comment();
             }
 
+            if self.review.needs_resolve_toggle.is_some() {
+                self.execute_resolve_toggle();
+            }
+
             self.handle_events()?;
         }
         Ok(())
@@ -616,13 +628,25 @@ impl App {
                 }
 
                 // CodeComment の場合はファイルパスと行番号を表示
-                if let ConversationKind::CodeComment { ref path, line, .. } = entry.kind {
+                if let ConversationKind::CodeComment {
+                    ref path,
+                    line,
+                    is_resolved,
+                    ..
+                } = entry.kind
+                {
                     let location = if let Some(l) = line {
                         format!(" {}:{}", path, l)
                     } else {
                         format!(" {}", path)
                     };
                     header_spans.push(Span::styled(location, Style::default().fg(Color::Yellow)));
+                    if is_resolved {
+                        header_spans.push(Span::styled(
+                            " [Resolved]",
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                    }
                 }
 
                 lines.push(Line::from(header_spans));
@@ -967,6 +991,80 @@ impl App {
         }
     }
 
+    /// CommentView のルートコメント ID から resolve/unresolve をトグルする
+    pub(super) fn toggle_resolve_thread(&mut self) {
+        let Some(root_id) = comments::root_comment_id(&self.review.viewing_comments) else {
+            return;
+        };
+
+        let Some(thread) = self.review.thread_map.get(&root_id) else {
+            self.status_message = Some(StatusMessage::error("Thread info not available"));
+            return;
+        };
+
+        let should_resolve = !thread.is_resolved;
+        let action = if should_resolve {
+            "Resolving..."
+        } else {
+            "Unresolving..."
+        };
+        self.status_message = Some(StatusMessage::info(action));
+        self.review.needs_resolve_toggle = Some(ResolveToggleRequest {
+            thread_node_id: thread.node_id.clone(),
+            should_resolve,
+            root_comment_id: root_id,
+        });
+    }
+
+    /// resolve/unresolve を実行（draw 後に呼ばれる）
+    fn execute_resolve_toggle(&mut self) {
+        let Some(req) = self.review.needs_resolve_toggle.take() else {
+            return;
+        };
+
+        let result = if req.should_resolve {
+            comments::resolve_review_thread(&req.thread_node_id)
+        } else {
+            comments::unresolve_review_thread(&req.thread_node_id)
+        };
+
+        match result {
+            Ok(is_resolved) if is_resolved == req.should_resolve => {
+                // thread_map を更新
+                if let Some(thread) = self.review.thread_map.get_mut(&req.root_comment_id) {
+                    thread.is_resolved = req.should_resolve;
+                }
+                // conversation 内の該当エントリを更新
+                for entry in &mut self.conversation {
+                    if let ConversationKind::CodeComment {
+                        ref mut is_resolved,
+                        ref thread_node_id,
+                        ..
+                    } = entry.kind
+                        && thread_node_id.as_deref() == Some(&req.thread_node_id)
+                    {
+                        *is_resolved = req.should_resolve;
+                    }
+                }
+                self.conversation_rendered = None; // キャッシュ無効化
+                let label = if req.should_resolve {
+                    "✓ Thread resolved"
+                } else {
+                    "✓ Thread unresolved"
+                };
+                self.status_message = Some(StatusMessage::info(label));
+            }
+            Ok(_) => {
+                self.status_message = Some(StatusMessage::error(
+                    "✗ Operation returned unexpected state",
+                ));
+            }
+            Err(e) => {
+                self.status_message = Some(StatusMessage::error(format!("✗ Failed: {}", e)));
+            }
+        }
+    }
+
     /// 選択範囲を下に拡張（カーソルを下に移動）
     fn extend_selection_down(&mut self) {
         let line_count = self.current_diff_line_count();
@@ -1184,6 +1282,7 @@ mod tests {
                 self.client,
                 self.theme,
                 self.is_own_pr,
+                Vec::new(),
             )
         }
     }

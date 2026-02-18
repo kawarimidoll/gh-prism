@@ -545,6 +545,9 @@ impl App {
                 self.review.viewing_comment_scroll =
                     self.review.viewing_comment_scroll.saturating_sub(1);
             }
+            KeyCode::Char('r') => {
+                self.toggle_resolve_thread();
+            }
             _ => {}
         }
     }

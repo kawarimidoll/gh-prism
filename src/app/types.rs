@@ -142,6 +142,14 @@ pub struct MediaRef {
     pub alt: String,
 }
 
+/// resolve/unresolve リクエスト
+#[derive(Debug, Clone)]
+pub struct ResolveToggleRequest {
+    pub thread_node_id: String,
+    pub should_resolve: bool,
+    pub root_comment_id: u64,
+}
+
 /// レビュー・コメント関連の状態
 #[derive(Debug, Default)]
 pub struct ReviewState {
@@ -156,6 +164,8 @@ pub struct ReviewState {
     pub review_body_editor: TextEditor,
     pub needs_submit: Option<ReviewEvent>,
     pub quit_after_submit: bool,
+    pub thread_map: std::collections::HashMap<u64, crate::github::comments::ReviewThread>,
+    pub needs_resolve_toggle: Option<ResolveToggleRequest>,
 }
 
 /// DiffView パネルの表示状態
@@ -202,6 +212,8 @@ pub enum ConversationKind {
         path: String,
         line: Option<usize>,
         replies: Vec<CodeCommentReply>,
+        is_resolved: bool,
+        thread_node_id: Option<String>,
     },
 }
 

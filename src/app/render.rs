@@ -1168,11 +1168,28 @@ impl App {
             }
         }
 
-        let title = format!(" 💬 Review Comments ({}) ", comments.len());
-        let (help_text, border_color) = if focused {
-            (" j/k: scroll | Esc: back ", Color::Yellow)
+        // ルートコメント ID を特定して resolved 状態を判定
+        let is_resolved = crate::github::comments::root_comment_id(comments)
+            .and_then(|id| self.review.thread_map.get(&id))
+            .is_some_and(|t| t.is_resolved);
+
+        let title = if is_resolved {
+            format!(" 💬 Review Comments ({}) [Resolved] ", comments.len())
         } else {
-            (" Enter: focus ", Color::DarkGray)
+            format!(" 💬 Review Comments ({}) ", comments.len())
+        };
+        let (help_text, border_color) = if focused {
+            let resolve_label = if is_resolved {
+                "r: unresolve"
+            } else {
+                "r: resolve"
+            };
+            (
+                format!(" j/k: scroll | {resolve_label} | Esc: back "),
+                Color::Yellow,
+            )
+        } else {
+            (" Enter: focus ".to_string(), Color::DarkGray)
         };
         let block = Block::default()
             .title(title)
@@ -1344,6 +1361,7 @@ impl App {
             ("", "Selection & Comment"),
             ("v", "Enter line select mode"),
             ("c", "Comment on line (Diff) / PR (Conv.)"),
+            ("r", "Resolve/unresolve thread (Comment)"),
             ("Ctrl+G", "Insert suggestion (comment)"),
             ("Ctrl+S", "Submit (in comment/review)"),
             ("S", "Submit review"),

@@ -7,7 +7,7 @@ use clap::Parser;
 use color_eyre::Result;
 use futures::stream::{FuturesUnordered, StreamExt};
 use github::cache::PrCache;
-use github::comments::{IssueComment, ReviewComment};
+use github::comments::{IssueComment, ReviewComment, ReviewThread};
 use github::commits::CommitInfo;
 use github::files::DiffFile;
 use github::review::ReviewSummary;
@@ -204,7 +204,13 @@ fn build_conversation(
     issue_comments: Vec<IssueComment>,
     reviews: Vec<ReviewSummary>,
     review_comments: Vec<ReviewComment>,
+    review_threads: &[ReviewThread],
 ) -> Vec<ConversationEntry> {
+    // root_comment_database_id → ReviewThread のルックアップマップ
+    let thread_lookup: HashMap<u64, &ReviewThread> = review_threads
+        .iter()
+        .map(|t| (t.root_comment_database_id, t))
+        .collect();
     let mut entries = Vec::new();
 
     for c in issue_comments {
@@ -261,6 +267,7 @@ fn build_conversation(
             }
         }
 
+        let thread_info = thread_lookup.get(&root.id);
         entries.push(ConversationEntry {
             author: root.user.login.clone(),
             body: root.body.clone(),
@@ -269,6 +276,8 @@ fn build_conversation(
                 path: root.path.clone(),
                 line: root.line,
                 replies,
+                is_resolved: thread_info.is_some_and(|t| t.is_resolved),
+                thread_node_id: thread_info.map(|t| t.node_id.clone()),
             },
         });
     }
@@ -373,6 +382,19 @@ async fn run() -> Result<()> {
         github::comments::fetch_issue_comments(&client, &owner, &repo, cli.pr_number);
     let reviews_future = github::review::fetch_reviews(&client, &owner, &repo, cli.pr_number);
 
+    // GraphQL でレビュースレッド情報を取得（同期 API なので spawn_blocking で並列実行）
+    let threads_handle = {
+        let owner = owner.clone();
+        let repo = repo.clone();
+        let pr_number = cli.pr_number;
+        tokio::task::spawn_blocking(move || {
+            github::comments::fetch_review_threads(&owner, &repo, pr_number).unwrap_or_else(|e| {
+                eprintln!("Warning: Could not fetch review threads: {e}");
+                Vec::new()
+            })
+        })
+    };
+
     let (data, review_comments, issue_comments, reviews) = tokio::try_join!(
         data_future,
         comments_future,
@@ -380,7 +402,14 @@ async fn run() -> Result<()> {
         reviews_future
     )?;
 
-    let conversation = build_conversation(issue_comments, reviews, review_comments.clone());
+    let review_threads = threads_handle.await.unwrap_or_default();
+
+    let conversation = build_conversation(
+        issue_comments,
+        reviews,
+        review_comments.clone(),
+        &review_threads,
+    );
 
     let is_own_pr = !current_user.is_empty() && current_user == data.pr_author;
 
@@ -425,6 +454,7 @@ async fn run() -> Result<()> {
         Some(client),
         theme,
         is_own_pr,
+        review_threads,
     );
     app.set_media(picker, media_cache);
     let result = app.run(terminal);
@@ -491,7 +521,7 @@ mod tests {
             "2024-01-01T02:00:00Z",
         );
 
-        let entries = build_conversation(vec![], vec![], vec![root, reply1, reply2]);
+        let entries = build_conversation(vec![], vec![], vec![root, reply1, reply2], &[]);
         assert_eq!(entries.len(), 1);
 
         match &entries[0].kind {
@@ -499,6 +529,7 @@ mod tests {
                 path,
                 line,
                 replies,
+                ..
             } => {
                 assert_eq!(path, "src/main.rs");
                 assert_eq!(*line, Some(10));
@@ -529,7 +560,7 @@ mod tests {
             "2024-01-01T01:00:00Z",
         );
 
-        let entries = build_conversation(vec![issue], vec![], vec![code]);
+        let entries = build_conversation(vec![issue], vec![], vec![code], &[]);
         assert_eq!(entries.len(), 2);
 
         // code comment (01:00) は issue comment (02:00) より前に来る
@@ -538,5 +569,65 @@ mod tests {
             ConversationKind::CodeComment { .. }
         ));
         assert!(matches!(entries[1].kind, ConversationKind::IssueComment));
+    }
+
+    #[test]
+    fn test_build_conversation_with_resolved_thread() {
+        let root = make_review_comment(
+            1,
+            "resolved comment",
+            "src/main.rs",
+            Some(10),
+            None,
+            "2024-01-01T00:00:00Z",
+        );
+        let threads = vec![ReviewThread {
+            node_id: "RT_abc".to_string(),
+            is_resolved: true,
+            root_comment_database_id: 1,
+        }];
+
+        let entries = build_conversation(vec![], vec![], vec![root], &threads);
+        assert_eq!(entries.len(), 1);
+
+        match &entries[0].kind {
+            ConversationKind::CodeComment {
+                is_resolved,
+                thread_node_id,
+                ..
+            } => {
+                assert!(*is_resolved);
+                assert_eq!(thread_node_id.as_deref(), Some("RT_abc"));
+            }
+            _ => panic!("Expected CodeComment"),
+        }
+    }
+
+    #[test]
+    fn test_build_conversation_unresolved_without_thread_info() {
+        let root = make_review_comment(
+            99,
+            "no thread info",
+            "src/lib.rs",
+            Some(5),
+            None,
+            "2024-01-01T00:00:00Z",
+        );
+
+        // スレッド情報なし → is_resolved: false, thread_node_id: None
+        let entries = build_conversation(vec![], vec![], vec![root], &[]);
+        assert_eq!(entries.len(), 1);
+
+        match &entries[0].kind {
+            ConversationKind::CodeComment {
+                is_resolved,
+                thread_node_id,
+                ..
+            } => {
+                assert!(!*is_resolved);
+                assert!(thread_node_id.is_none());
+            }
+            _ => panic!("Expected CodeComment"),
+        }
     }
 }
