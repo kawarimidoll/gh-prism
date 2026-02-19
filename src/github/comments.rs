@@ -1,8 +1,8 @@
 use color_eyre::Result;
 use octocrab::Octocrab;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewThread {
     pub node_id: String,
     pub is_resolved: bool,

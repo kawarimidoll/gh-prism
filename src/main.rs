@@ -332,16 +332,19 @@ async fn run() -> Result<()> {
                         "Using cached data (HEAD: {})",
                         &head_sha[..7.min(head_sha.len())]
                     );
-                    return Ok(FetchedPrData {
-                        pr_title: cached.pr_title,
-                        pr_body: cached.pr_body,
-                        pr_author: cached.pr_author,
-                        pr_base_branch: cached.pr_base_branch,
-                        pr_head_branch: cached.pr_head_branch,
-                        pr_created_at: cached.pr_created_at,
-                        pr_state: cached.pr_state,
-                        files_map: cached.files_map,
-                    });
+                    return Ok((
+                        FetchedPrData {
+                            pr_title: cached.pr_title,
+                            pr_body: cached.pr_body,
+                            pr_author: cached.pr_author,
+                            pr_base_branch: cached.pr_base_branch,
+                            pr_head_branch: cached.pr_head_branch,
+                            pr_created_at: cached.pr_created_at,
+                            pr_state: cached.pr_state,
+                            files_map: cached.files_map,
+                        },
+                        cached.review_threads,
+                    ));
                 }
                 eprintln!(
                     "Cache stale (expected {}, got {})",
@@ -354,7 +357,28 @@ async fn run() -> Result<()> {
         } else {
             eprintln!("Cache disabled, fetching from API...");
         }
+        // threads_handle を fetch_all の前にスポーン → 並列実行維持
+        let threads_handle = {
+            let owner = owner.clone();
+            let repo = repo.clone();
+            let pr_number = cli.pr_number;
+            tokio::task::spawn_blocking(move || {
+                github::comments::fetch_review_threads(&owner, &repo, pr_number).unwrap_or_else(
+                    |e| {
+                        eprintln!("Warning: Could not fetch review threads: {e}");
+                        Vec::new()
+                    },
+                )
+            })
+        };
         let data = fetch_all(&client, &owner, &repo, cli.pr_number, &commits).await?;
+        let review_threads = match threads_handle.await {
+            Ok(threads) => threads,
+            Err(e) => {
+                eprintln!("Warning: review threads task failed: {e}");
+                Vec::new()
+            }
+        };
         github::cache::write_cache(
             &owner,
             &repo,
@@ -371,9 +395,10 @@ async fn run() -> Result<()> {
                 pr_head_branch: data.pr_head_branch.clone(),
                 pr_created_at: data.pr_created_at.clone(),
                 pr_state: data.pr_state.clone(),
+                review_threads: review_threads.clone(),
             },
         );
-        Ok(data)
+        Ok((data, review_threads))
     };
 
     let comments_future =
@@ -382,27 +407,12 @@ async fn run() -> Result<()> {
         github::comments::fetch_issue_comments(&client, &owner, &repo, cli.pr_number);
     let reviews_future = github::review::fetch_reviews(&client, &owner, &repo, cli.pr_number);
 
-    // GraphQL でレビュースレッド情報を取得（同期 API なので spawn_blocking で並列実行）
-    let threads_handle = {
-        let owner = owner.clone();
-        let repo = repo.clone();
-        let pr_number = cli.pr_number;
-        tokio::task::spawn_blocking(move || {
-            github::comments::fetch_review_threads(&owner, &repo, pr_number).unwrap_or_else(|e| {
-                eprintln!("Warning: Could not fetch review threads: {e}");
-                Vec::new()
-            })
-        })
-    };
-
-    let (data, review_comments, issue_comments, reviews) = tokio::try_join!(
+    let ((data, review_threads), review_comments, issue_comments, reviews) = tokio::try_join!(
         data_future,
         comments_future,
         issue_comments_future,
         reviews_future
     )?;
-
-    let review_threads = threads_handle.await.unwrap_or_default();
 
     let conversation = build_conversation(
         issue_comments,

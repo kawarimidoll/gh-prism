@@ -2,10 +2,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use super::comments::ReviewThread;
 use super::commits::CommitInfo;
 use super::files::DiffFile;
 
-pub const CACHE_VERSION: u32 = 1;
+pub const CACHE_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PrCache {
@@ -25,6 +26,8 @@ pub struct PrCache {
     pub pr_created_at: String,
     #[serde(default)]
     pub pr_state: String,
+    #[serde(default)]
+    pub review_threads: Vec<ReviewThread>,
 }
 
 fn cache_dir(owner: &str, repo: &str) -> PathBuf {
@@ -102,6 +105,11 @@ mod tests {
             pr_head_branch: "feature".to_string(),
             pr_created_at: "2024-01-15".to_string(),
             pr_state: "Open".to_string(),
+            review_threads: vec![ReviewThread {
+                node_id: "RT_test123".to_string(),
+                is_resolved: true,
+                root_comment_database_id: 42,
+            }],
         };
 
         write_cache(owner, repo, pr_number, &cache);
@@ -114,6 +122,10 @@ mod tests {
         assert_eq!(loaded.pr_author, "test-author");
         assert_eq!(loaded.commits.len(), 1);
         assert_eq!(loaded.files_map.len(), 1);
+        assert_eq!(loaded.review_threads.len(), 1);
+        assert_eq!(loaded.review_threads[0].node_id, "RT_test123");
+        assert!(loaded.review_threads[0].is_resolved);
+        assert_eq!(loaded.review_threads[0].root_comment_database_id, 42);
 
         // cleanup
         let _ = std::fs::remove_file(cache_path(owner, repo, pr_number));
