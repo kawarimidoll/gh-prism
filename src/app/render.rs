@@ -404,12 +404,18 @@ impl App {
         let current_sha = self.current_commit_sha();
         let viewed_count = files
             .iter()
-            .filter(|f| self.viewed_files.contains(&f.filename))
+            .filter(|f| {
+                current_sha
+                    .as_ref()
+                    .is_some_and(|sha| self.is_file_viewed(sha, &f.filename))
+            })
             .count();
         let items: Vec<ListItem> = files
             .iter()
             .map(|f| {
-                let is_viewed = self.viewed_files.contains(&f.filename);
+                let is_viewed = current_sha
+                    .as_ref()
+                    .is_some_and(|sha| self.is_file_viewed(sha, &f.filename));
                 let status = f.status_char();
                 let status_color = if is_viewed {
                     Color::DarkGray

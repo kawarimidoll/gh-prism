@@ -74,8 +74,8 @@ pub struct App {
     help_scroll: u16,
     /// Zoom モード（フォーカスペインのみ全画面表示）
     zoomed: bool,
-    /// viewed 済みファイル名のセット（コミット跨ぎで維持）
-    viewed_files: HashSet<String>,
+    /// viewed 済みファイルのマップ（コミット SHA → ファイル名の Set）
+    viewed_files: HashMap<String, HashSet<String>>,
     /// PR Description のマークダウンレンダリングキャッシュ
     pr_desc_rendered: Option<Text<'static>>,
     /// Conversation ペインのマークダウンレンダリングキャッシュ
@@ -192,7 +192,7 @@ impl App {
             pending_key: None,
             help_scroll: 0,
             zoomed: false,
-            viewed_files: HashSet::new(),
+            viewed_files: HashMap::new(),
             pr_desc_rendered: None,
             conversation_rendered: None,
             theme,
@@ -274,12 +274,23 @@ impl App {
         None
     }
 
+    /// ファイルが viewed か判定
+    fn is_file_viewed(&self, sha: &str, filename: &str) -> bool {
+        self.viewed_files
+            .get(sha)
+            .is_some_and(|files| files.contains(filename))
+    }
+
     /// viewed フラグをトグル（FileTree 用）
     fn toggle_viewed(&mut self) {
+        let Some(sha) = self.current_commit_sha() else {
+            return;
+        };
         if let Some(file) = self.current_file() {
             let name = file.filename.clone();
-            if !self.viewed_files.remove(&name) {
-                self.viewed_files.insert(name);
+            let set = self.viewed_files.entry(sha).or_default();
+            if !set.remove(&name) {
+                set.insert(name);
             }
         }
     }
@@ -287,10 +298,7 @@ impl App {
     /// コミットの全ファイルが viewed か判定（導出状態）
     fn is_commit_viewed(&self, sha: &str) -> bool {
         if let Some(files) = self.files_map.get(sha) {
-            !files.is_empty()
-                && files
-                    .iter()
-                    .all(|f| self.viewed_files.contains(&f.filename))
+            !files.is_empty() && files.iter().all(|f| self.is_file_viewed(sha, &f.filename))
         } else {
             false
         }
@@ -323,13 +331,16 @@ impl App {
         let filenames: Vec<String> = files.iter().map(|f| f.filename.clone()).collect();
         if self.is_commit_viewed(&sha) {
             // 全ファイルを unview
-            for name in &filenames {
-                self.viewed_files.remove(name);
+            if let Some(set) = self.viewed_files.get_mut(&sha) {
+                for name in &filenames {
+                    set.remove(name);
+                }
             }
         } else {
             // 全ファイルを view
+            let set = self.viewed_files.entry(sha).or_default();
             for name in filenames {
-                self.viewed_files.insert(name);
+                set.insert(name);
             }
         }
     }
@@ -1100,16 +1111,19 @@ mod tests {
     use std::time::{Duration, Instant};
     use unicode_width::UnicodeWidthStr;
 
+    const TEST_SHA_0: &str = "abc1234567890";
+    const TEST_SHA_1: &str = "def4567890123";
+
     fn create_test_commits() -> Vec<CommitInfo> {
         vec![
             CommitInfo {
-                sha: "abc1234567890".to_string(),
+                sha: TEST_SHA_0.to_string(),
                 commit: CommitDetail {
                     message: "First commit".to_string(),
                 },
             },
             CommitInfo {
-                sha: "def4567890123".to_string(),
+                sha: TEST_SHA_1.to_string(),
                 commit: CommitDetail {
                     message: "Second commit".to_string(),
                 },
@@ -1203,7 +1217,7 @@ mod tests {
                 .join("\n");
             let mut files_map = HashMap::new();
             files_map.insert(
-                "abc1234567890".to_string(),
+                TEST_SHA_0.to_string(),
                 vec![DiffFile {
                     filename: "src/main.rs".to_string(),
                     status: "added".to_string(),
@@ -1227,7 +1241,7 @@ mod tests {
             self.commits = create_test_commits();
             let mut files_map = HashMap::new();
             files_map.insert(
-                "abc1234567890".to_string(),
+                TEST_SHA_0.to_string(),
                 vec![DiffFile {
                     filename: "src/main.rs".to_string(),
                     status: status.to_string(),
@@ -1420,7 +1434,7 @@ mod tests {
     fn test_current_files_returns_correct_files() {
         let mut files_map = HashMap::new();
         files_map.insert(
-            "abc1234567890".to_string(),
+            TEST_SHA_0.to_string(),
             vec![DiffFile {
                 filename: "file1.rs".to_string(),
                 status: "added".to_string(),
@@ -1430,7 +1444,7 @@ mod tests {
             }],
         );
         files_map.insert(
-            "def4567890123".to_string(),
+            TEST_SHA_1.to_string(),
             vec![DiffFile {
                 filename: "file2.rs".to_string(),
                 status: "modified".to_string(),
@@ -1455,7 +1469,7 @@ mod tests {
     fn test_commit_change_resets_file_selection() {
         let mut files_map = HashMap::new();
         files_map.insert(
-            "abc1234567890".to_string(),
+            TEST_SHA_0.to_string(),
             vec![
                 DiffFile {
                     filename: "file1.rs".to_string(),
@@ -1474,7 +1488,7 @@ mod tests {
             ],
         );
         files_map.insert(
-            "def4567890123".to_string(),
+            TEST_SHA_1.to_string(),
             vec![DiffFile {
                 filename: "file3.rs".to_string(),
                 status: "modified".to_string(),
@@ -1578,7 +1592,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         files_map.insert(
-            "abc1234567890".to_string(),
+            TEST_SHA_0.to_string(),
             vec![DiffFile {
                 filename: "file1.rs".to_string(),
                 status: "added".to_string(),
@@ -2042,7 +2056,7 @@ mod tests {
         // patch が None のファイルに対して current_diff_line_count が 0 を返す
         let mut files_map = HashMap::new();
         files_map.insert(
-            "abc1234567890".to_string(),
+            TEST_SHA_0.to_string(),
             vec![DiffFile {
                 filename: "image.png".to_string(),
                 status: "added".to_string(),
@@ -2062,7 +2076,7 @@ mod tests {
     fn test_commit_message_summary_vs_full() {
         // message_summary は1行目のみ、commit.message は全文
         let commit = CommitInfo {
-            sha: "abc1234567890".to_string(),
+            sha: TEST_SHA_0.to_string(),
             commit: CommitDetail {
                 message: "First line\n\nDetailed description\nMore details".to_string(),
             },
@@ -2112,7 +2126,7 @@ mod tests {
             start_line: 2,
             end_line: 4,
             body: "Review this".to_string(),
-            commit_sha: "abc1234567890".to_string(),
+            commit_sha: TEST_SHA_0.to_string(),
         });
 
         // 該当ファイルにペンディングコメントがある
@@ -2144,7 +2158,7 @@ mod tests {
             start_line: 0,
             end_line: 0,
             body: "test".to_string(),
-            commit_sha: "abc1234567890".to_string(),
+            commit_sha: TEST_SHA_0.to_string(),
         });
 
         // q キーで QuitConfirm モードに遷移
@@ -2414,29 +2428,29 @@ mod tests {
 
         // トグル → viewed に追加
         app.toggle_viewed();
-        assert!(app.viewed_files.contains("src/main.rs"));
+        assert!(app.is_file_viewed(TEST_SHA_0, "src/main.rs"));
 
         // 再トグル → viewed から削除
         app.toggle_viewed();
-        assert!(!app.viewed_files.contains("src/main.rs"));
+        assert!(!app.is_file_viewed(TEST_SHA_0, "src/main.rs"));
     }
 
     #[test]
-    fn test_viewed_persists_across_commits() {
+    fn test_viewed_is_per_commit() {
         let mut app = TestAppBuilder::new().with_test_data().build();
         app.focused_panel = Panel::FileTree;
 
-        // ファイルを viewed にする
+        // コミット0 のファイルを viewed にする
         app.toggle_viewed();
-        assert!(app.viewed_files.contains("src/main.rs"));
+        assert!(app.is_file_viewed(TEST_SHA_0, "src/main.rs"));
 
         // コミットを切り替え
         app.focused_panel = Panel::CommitList;
         app.select_next();
         assert_eq!(app.commit_list_state.selected(), Some(1));
 
-        // viewed は維持される
-        assert!(app.viewed_files.contains("src/main.rs"));
+        // コミット1 の同名ファイルは viewed でない
+        assert!(!app.is_file_viewed(TEST_SHA_1, "src/main.rs"));
     }
 
     #[test]
@@ -2455,19 +2469,19 @@ mod tests {
 
         // x キーで viewed トグル
         app.handle_normal_mode(KeyCode::Char('x'), KeyModifiers::NONE);
-        assert!(app.viewed_files.contains("src/main.rs"));
+        assert!(app.is_file_viewed(TEST_SHA_0, "src/main.rs"));
 
         // CommitList では x キーでコミットの全ファイルをトグル
         app.focused_panel = Panel::CommitList;
         app.handle_normal_mode(KeyCode::Char('x'), KeyModifiers::NONE);
         // コミット0 の全ファイル (src/main.rs, src/app.rs) が viewed に
-        assert_eq!(app.viewed_files.len(), 2);
-        assert!(app.viewed_files.contains("src/main.rs"));
-        assert!(app.viewed_files.contains("src/app.rs"));
+        assert!(app.is_file_viewed(TEST_SHA_0, "src/main.rs"));
+        assert!(app.is_file_viewed(TEST_SHA_0, "src/app.rs"));
 
         // もう一度 x → 全ファイルが unview（既に全て viewed なので）
         app.handle_normal_mode(KeyCode::Char('x'), KeyModifiers::NONE);
-        assert!(app.viewed_files.is_empty());
+        assert!(!app.is_file_viewed(TEST_SHA_0, "src/main.rs"));
+        assert!(!app.is_file_viewed(TEST_SHA_0, "src/app.rs"));
     }
 
     // === N6: コメント表示テスト ===
@@ -2486,7 +2500,7 @@ mod tests {
             start_line: None,
             side: Some(side.to_string()),
             start_side: None,
-            commit_id: "abc1234567890".to_string(),
+            commit_id: TEST_SHA_0.to_string(),
             user: crate::github::comments::ReviewCommentUser {
                 login: "testuser".to_string(),
             },
@@ -3191,7 +3205,7 @@ mod tests {
         let long_line = format!("+{}", "x".repeat(120));
         let patch = format!("@@ -1,3 +1,3 @@\n context\n-old\n{}", long_line);
         files_map.insert(
-            "abc1234567890".to_string(),
+            TEST_SHA_0.to_string(),
             vec![DiffFile {
                 filename: "src/main.rs".to_string(),
                 status: "modified".to_string(),
@@ -3231,7 +3245,7 @@ mod tests {
             .collect();
         let patch = format!("@@ -0,0 +1,20 @@\n{}", lines.join("\n"));
         files_map.insert(
-            "abc1234567890".to_string(),
+            TEST_SHA_0.to_string(),
             vec![DiffFile {
                 filename: "src/main.rs".to_string(),
                 status: "added".to_string(),
@@ -3285,7 +3299,7 @@ mod tests {
         // added ファイル → 片カラム 6文字
         let mut files_map = HashMap::new();
         files_map.insert(
-            "abc1234567890".to_string(),
+            TEST_SHA_0.to_string(),
             vec![DiffFile {
                 filename: "src/new.rs".to_string(),
                 status: "added".to_string(),
