@@ -2,6 +2,10 @@ use super::editor::TextEditor;
 use ratatui::layout::Rect;
 use std::time::{Duration, Instant};
 
+const STATUS_MSG_TTL_SECS: u64 = 3;
+const DEFAULT_DIFF_VIEW_HEIGHT: u16 = 20;
+const DEFAULT_DIFF_VIEW_WIDTH: u16 = 80;
+
 /// ターミナルのカラーテーマ
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ThemeMode {
@@ -99,7 +103,7 @@ impl StatusMessage {
     }
 
     pub fn is_expired(&self) -> bool {
-        self.created_at.elapsed() >= Duration::from_secs(3)
+        self.created_at.elapsed() >= Duration::from_secs(STATUS_MSG_TTL_SECS)
     }
 }
 
@@ -231,8 +235,8 @@ impl Default for DiffViewState {
         Self {
             scroll: 0,
             cursor_line: 0,
-            view_height: 20,
-            view_width: 80,
+            view_height: DEFAULT_DIFF_VIEW_HEIGHT,
+            view_width: DEFAULT_DIFF_VIEW_WIDTH,
             wrap: false,
             show_line_numbers: false,
             visual_offsets: None,

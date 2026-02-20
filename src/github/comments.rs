@@ -2,6 +2,8 @@ use color_eyre::Result;
 use octocrab::Octocrab;
 use serde::{Deserialize, Serialize};
 
+const REVIEW_THREADS_PAGE_SIZE: u32 = 100;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewThread {
     pub node_id: String,
@@ -19,23 +21,26 @@ pub fn root_comment_id(comments: &[ReviewComment]) -> Option<u64> {
 /// GraphQL API で PR のレビュースレッド一覧を取得する（`gh api graphql` 経由）。
 /// 最大 100 スレッドまで取得。超過分はページネーション未実装のため取得されない。
 pub fn fetch_review_threads(owner: &str, repo: &str, pr_number: u64) -> Result<Vec<ReviewThread>> {
-    let query = r#"query($owner: String!, $repo: String!, $pr: Int!) {
-  repository(owner: $owner, name: $repo) {
-    pullRequest(number: $pr) {
-      reviewThreads(first: 100) {
-        nodes {
+    let query = format!(
+        r#"query($owner: String!, $repo: String!, $pr: Int!) {{
+  repository(owner: $owner, name: $repo) {{
+    pullRequest(number: $pr) {{
+      reviewThreads(first: {}) {{
+        nodes {{
           id
           isResolved
-          comments(first: 1) {
-            nodes {
+          comments(first: 1) {{
+            nodes {{
               databaseId
-            }
-          }
-        }
-      }
-    }
-  }
-}"#;
+            }}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}"#,
+        REVIEW_THREADS_PAGE_SIZE
+    );
 
     let output = std::process::Command::new("gh")
         .args([

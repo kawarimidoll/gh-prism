@@ -14,6 +14,9 @@ use github::review::ReviewSummary;
 use octocrab::Octocrab;
 use std::collections::HashMap;
 
+const SHORT_SHA_LEN: usize = 7;
+const THEME_DETECT_TIMEOUT_MS: u64 = 100;
+
 struct FetchedPrData {
     pr_title: String,
     pr_body: String,
@@ -52,7 +55,7 @@ struct Cli {
 /// termbg でターミナル背景色を検出し、ライト/ダークモードを判定する。
 /// 検出失敗時はダークモードにフォールバック。
 fn detect_theme() -> ThemeMode {
-    match termbg::theme(std::time::Duration::from_millis(100)) {
+    match termbg::theme(std::time::Duration::from_millis(THEME_DETECT_TIMEOUT_MS)) {
         Ok(termbg::Theme::Light) => ThemeMode::Light,
         _ => ThemeMode::Dark,
     }
@@ -330,7 +333,7 @@ async fn run() -> Result<()> {
                 if cached.head_sha == head_sha && cached.version >= github::cache::CACHE_VERSION {
                     eprintln!(
                         "Using cached data (HEAD: {})",
-                        &head_sha[..7.min(head_sha.len())]
+                        &head_sha[..SHORT_SHA_LEN.min(head_sha.len())]
                     );
                     return Ok((
                         FetchedPrData {
@@ -348,8 +351,8 @@ async fn run() -> Result<()> {
                 }
                 eprintln!(
                     "Cache stale (expected {}, got {})",
-                    &cached.head_sha[..7.min(cached.head_sha.len())],
-                    &head_sha[..7.min(head_sha.len())]
+                    &cached.head_sha[..SHORT_SHA_LEN.min(cached.head_sha.len())],
+                    &head_sha[..SHORT_SHA_LEN.min(head_sha.len())]
                 );
             } else {
                 eprintln!("No cache found, fetching from API...");

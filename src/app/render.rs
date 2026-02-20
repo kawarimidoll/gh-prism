@@ -19,6 +19,33 @@ const COMMIT_MSG_HEIGHT: u16 = 6;
 /// コメントペインの高さ（ボーダー上下 2 + 内容 4 行）
 const COMMENT_PANE_HEIGHT: u16 = 6;
 
+// --- レイアウト比率 ---
+const SIDEBAR_WIDTH_PCT: u16 = 30;
+const DIFF_WIDTH_PCT: u16 = 70;
+const PR_DESC_HEIGHT_PCT: u16 = 40;
+const COMMIT_LIST_HEIGHT_PCT: u16 = 30;
+const FILE_TREE_HEIGHT_PCT: u16 = 30;
+
+// --- ダイアログサイズ ---
+const REVIEW_DIALOG_WIDTH: u16 = 36;
+const REVIEW_DIALOG_HEIGHT: u16 = 10;
+const QUIT_DIALOG_WIDTH: u16 = 38;
+const QUIT_DIALOG_HEIGHT: u16 = 9;
+const HELP_DIALOG_WIDTH: u16 = 50;
+const HELP_DIALOG_MIN_HEIGHT: u16 = 20;
+const HELP_KEY_COLUMN_WIDTH: usize = 18;
+
+// --- 行番号フォーマット ---
+const LINE_NUM_WIDTH: usize = 4;
+/// LINE_NUM_WIDTH + 1(trailing space) の空白文字列
+const LINE_NUM_BLANK: &str = "     ";
+
+// --- テーマカラー ---
+const CURSOR_BG_DARK: Color = Color::DarkGray;
+const CURSOR_BG_LIGHT: Color = Color::Indexed(254);
+const PENDING_BG_DARK: Color = Color::Indexed(22);
+const PENDING_BG_LIGHT: Color = Color::Indexed(151);
+
 impl App {
     pub(super) fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
@@ -185,15 +212,18 @@ impl App {
             // 通常表示: サイドバー30% + Diff70%
             let body_layout = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
+                .constraints([
+                    Constraint::Percentage(SIDEBAR_WIDTH_PCT),
+                    Constraint::Percentage(DIFF_WIDTH_PCT),
+                ])
                 .split(main_layout[1]);
 
             let sidebar_layout = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Percentage(40),
-                    Constraint::Percentage(30),
-                    Constraint::Percentage(30),
+                    Constraint::Percentage(PR_DESC_HEIGHT_PCT),
+                    Constraint::Percentage(COMMIT_LIST_HEIGHT_PCT),
+                    Constraint::Percentage(FILE_TREE_HEIGHT_PCT),
                 ])
                 .split(body_layout[0]);
 
@@ -894,9 +924,9 @@ impl App {
 
                         if show_old {
                             let old_str = if raw.starts_with('+') {
-                                "     ".to_string()
+                                LINE_NUM_BLANK.to_string()
                             } else {
-                                let s = format!("{:>4} ", old_line);
+                                let s = format!("{:>LINE_NUM_WIDTH$} ", old_line);
                                 old_line += 1;
                                 s
                             };
@@ -905,9 +935,9 @@ impl App {
 
                         if show_new {
                             let new_str = if raw.starts_with('-') {
-                                "     ".to_string()
+                                LINE_NUM_BLANK.to_string()
                             } else {
-                                let s = format!("{:>4} ", new_line);
+                                let s = format!("{:>LINE_NUM_WIDTH$} ", new_line);
                                 new_line += 1;
                                 s
                             };
@@ -931,12 +961,12 @@ impl App {
         let has_selection = self.mode == AppMode::LineSelect || self.mode == AppMode::CommentInput;
         let existing_counts = self.existing_comment_counts();
         let cursor_bg = match self.theme {
-            ThemeMode::Dark => Color::DarkGray,
-            ThemeMode::Light => Color::Indexed(254),
+            ThemeMode::Dark => CURSOR_BG_DARK,
+            ThemeMode::Light => CURSOR_BG_LIGHT,
         };
         let pending_bg = match self.theme {
-            ThemeMode::Dark => Color::Indexed(22),
-            ThemeMode::Light => Color::Indexed(151),
+            ThemeMode::Dark => PENDING_BG_DARK,
+            ThemeMode::Light => PENDING_BG_LIGHT,
         };
 
         // 背景色が必要な論理行を収集（render 後に Buffer で適用）
@@ -1255,7 +1285,7 @@ impl App {
     }
 
     fn render_review_submit_dialog(&self, frame: &mut Frame, area: Rect) {
-        let dialog = Self::centered_rect(36, 10, area);
+        let dialog = Self::centered_rect(REVIEW_DIALOG_WIDTH, REVIEW_DIALOG_HEIGHT, area);
         frame.render_widget(Clear, dialog);
 
         let comments_info = if self.review.pending_comments.is_empty() {
@@ -1305,7 +1335,7 @@ impl App {
     }
 
     fn render_quit_confirm_dialog(&self, frame: &mut Frame, area: Rect) {
-        let dialog = Self::centered_rect(38, 9, area);
+        let dialog = Self::centered_rect(QUIT_DIALOG_WIDTH, QUIT_DIALOG_HEIGHT, area);
         frame.render_widget(Clear, dialog);
 
         let lines = vec![
@@ -1335,9 +1365,9 @@ impl App {
 
     fn render_help_dialog(&self, frame: &mut Frame, area: Rect) {
         let dialog_height = (area.height * 2 / 3)
-            .max(20)
+            .max(HELP_DIALOG_MIN_HEIGHT)
             .min(area.height.saturating_sub(4));
-        let dialog_width = 50.min(area.width.saturating_sub(4));
+        let dialog_width = HELP_DIALOG_WIDTH.min(area.width.saturating_sub(4));
         let dialog = Self::centered_rect(dialog_width, dialog_height, area);
         frame.render_widget(Clear, dialog);
 
@@ -1392,7 +1422,7 @@ impl App {
                 lines.push(Line::styled("  ──────────────────────────", s));
             } else {
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  {key:<18}"), k),
+                    Span::styled(format!("  {key:<HELP_KEY_COLUMN_WIDTH$}"), k),
                     Span::styled(*desc, d),
                 ]));
             }

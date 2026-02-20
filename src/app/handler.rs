@@ -6,6 +6,8 @@ use crossterm::event::{
 };
 use std::time::Duration;
 
+const EVENT_POLL_MS: u64 = 250;
+
 impl App {
     /// マウスクリック処理
     pub(super) fn handle_mouse_click(&mut self, x: u16, y: u16) {
@@ -112,7 +114,7 @@ impl App {
     /// イベントループからのイベント受信・ディスパッチ
     pub(super) fn handle_events(&mut self) -> Result<()> {
         // 250ms 以内にイベントがなければ早期リターン（render ループを回す）
-        if !event::poll(Duration::from_millis(250))? {
+        if !event::poll(Duration::from_millis(EVENT_POLL_MS))? {
             return Ok(());
         }
 

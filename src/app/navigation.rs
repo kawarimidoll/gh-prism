@@ -1,6 +1,13 @@
 use super::*;
 use ratatui::widgets::{Paragraph, Wrap};
 
+/// 片側のみの行番号プレフィックス幅: "NNNN │" = 6文字
+/// (render.rs の LINE_NUM_WIDTH と連動: WIDTH + 1(space) + 1(separator))
+const LINE_NUM_PREFIX_SINGLE: u16 = 6;
+/// 両側の行番号プレフィックス幅: "NNNN NNNN │" = 11文字
+/// (render.rs の LINE_NUM_WIDTH と連動: (WIDTH + 1(space)) * 2 + 1(separator))
+const LINE_NUM_PREFIX_DUAL: u16 = 11;
+
 impl App {
     /// 指定行が hunk header（`@@` で始まる行）かどうか判定
     pub(super) fn is_hunk_header(&self, line_idx: usize) -> bool {
@@ -167,10 +174,8 @@ impl App {
         }
         let file_status = self.current_file().map(|f| f.status.as_str()).unwrap_or("");
         match file_status {
-            // 片側のみ: "NNNN │" = 6文字
-            "added" | "removed" | "deleted" => 6,
-            // 両側: "NNNN NNNN │" = 11文字
-            _ => 11,
+            "added" | "removed" | "deleted" => LINE_NUM_PREFIX_SINGLE,
+            _ => LINE_NUM_PREFIX_DUAL,
         }
     }
 
