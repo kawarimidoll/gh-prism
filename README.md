@@ -25,6 +25,35 @@ Or build from source (requires Rust toolchain):
 cargo install --path .
 ```
 
+### Installation with Nix / home-manager
+
+Add the input to your `flake.nix`:
+
+```nix
+{
+  inputs = {
+    gh-prism = {
+      url = "github:kawarimidoll/gh-prism";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+}
+```
+
+Then add it to `programs.gh.extensions`:
+
+```nix
+{ inputs, pkgs, ... }:
+{
+  programs.gh = {
+    enable = true;
+    extensions = [
+      inputs.gh-prism.packages.${pkgs.stdenv.hostPlatform.system}.default
+    ];
+  };
+}
+```
+
 ## Usage
 
 ```bash

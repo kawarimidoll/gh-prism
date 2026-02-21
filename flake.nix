@@ -39,9 +39,54 @@
             cargoLock = {
               lockFile = ./Cargo.lock;
             };
+
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+
+            postInstall = ''
+              wrapProgram $out/bin/gh-prism \
+                --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.gh ]}
+            '';
+
+            meta = with pkgs.lib; {
+              description = "gh extension TUI for reviewing GitHub Pull Requests";
+              homepage = "https://github.com/kawarimidoll/gh-prism";
+              license = licenses.mit;
+              maintainers = [ ];
+              mainProgram = "gh-prism";
+            };
           };
         }
       );
+
+      overlays.default = _final: prev: {
+        gh-prism = self.packages.${prev.system}.default;
+      };
+
+      homeManagerModules.default =
+        {
+          config,
+          lib,
+          pkgs,
+          ...
+        }:
+        let
+          cfg = config.programs.gh-prism;
+        in
+        {
+          options.programs.gh-prism = {
+            enable = lib.mkEnableOption "gh-prism - TUI for reviewing GitHub Pull Requests";
+
+            package = lib.mkOption {
+              type = lib.types.package;
+              default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+              description = "The gh-prism package to use.";
+            };
+          };
+
+          config = lib.mkIf cfg.enable {
+            home.packages = [ cfg.package ];
+          };
+        };
 
       checks = forAllSystems (
         system:
