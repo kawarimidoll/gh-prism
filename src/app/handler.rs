@@ -37,7 +37,49 @@ impl App {
                     self.reset_cursor();
                 }
             }
+            Panel::DiffView => {
+                let relative_y = y.saturating_sub(self.layout.diff_view_rect.y + 1);
+                if let Some(line) = self.diff_line_at_y(relative_y) {
+                    let prev_cursor = self.diff.cursor_line;
+                    self.diff.cursor_line = line;
+                    if self.diff.cursor_line != prev_cursor {
+                        self.review.viewing_comment_scroll = 0;
+                    }
+                }
+            }
             _ => {}
+        }
+    }
+
+    /// マウスドラッグ処理（DiffView での範囲選択）
+    ///
+    /// `handle_events` 側でも `focused_panel == DiffView` を確認しているが、
+    /// ドラッグ中にポインタが DiffView 外に出た場合のガードとして冒頭でも再チェックする。
+    pub(super) fn handle_mouse_drag(&mut self, x: u16, y: u16) {
+        // ドラッグ先が DiffView 領域外なら無視
+        if self.panel_at(x, y) != Some(Panel::DiffView) {
+            return;
+        }
+        let relative_y = y.saturating_sub(self.layout.diff_view_rect.y + 1);
+        let Some(line) = self.diff_line_at_y(relative_y) else {
+            return;
+        };
+
+        if self.mode == AppMode::Normal && !self.is_hunk_header(self.diff.cursor_line) {
+            // ドラッグ開始: 現在のカーソル位置をアンカーとして行選択モードに入る
+            self.line_selection = Some(LineSelection {
+                anchor: self.diff.cursor_line,
+            });
+            self.mode = AppMode::LineSelect;
+        }
+
+        if self.mode == AppMode::LineSelect
+            && let Some(selection) = self.line_selection
+            && self.is_same_hunk(selection.anchor, line)
+            && !self.is_hunk_header(line)
+        {
+            self.diff.cursor_line = line;
+            self.ensure_cursor_visible();
         }
     }
 
@@ -135,18 +177,27 @@ impl App {
                 AppMode::Help => self.handle_help_mode(key.code),
                 AppMode::MediaViewer => self.handle_media_viewer_mode(key.code),
             },
-            Event::Mouse(mouse) if self.mode == AppMode::Normal => match mouse.kind {
-                MouseEventKind::Down(MouseButton::Left) => {
-                    self.handle_mouse_click(mouse.column, mouse.row);
+            Event::Mouse(mouse)
+                if self.mode == AppMode::Normal || self.mode == AppMode::LineSelect =>
+            {
+                match mouse.kind {
+                    MouseEventKind::Down(MouseButton::Left) if self.mode == AppMode::Normal => {
+                        self.handle_mouse_click(mouse.column, mouse.row);
+                    }
+                    MouseEventKind::Drag(MouseButton::Left)
+                        if self.focused_panel == Panel::DiffView =>
+                    {
+                        self.handle_mouse_drag(mouse.column, mouse.row);
+                    }
+                    MouseEventKind::ScrollDown if self.mode == AppMode::Normal => {
+                        self.handle_mouse_scroll(mouse.column, mouse.row, true);
+                    }
+                    MouseEventKind::ScrollUp if self.mode == AppMode::Normal => {
+                        self.handle_mouse_scroll(mouse.column, mouse.row, false);
+                    }
+                    _ => {}
                 }
-                MouseEventKind::ScrollDown => {
-                    self.handle_mouse_scroll(mouse.column, mouse.row, true);
-                }
-                MouseEventKind::ScrollUp => {
-                    self.handle_mouse_scroll(mouse.column, mouse.row, false);
-                }
-                _ => {}
-            },
+            }
             _ => {}
         }
         Ok(())

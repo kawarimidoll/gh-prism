@@ -514,6 +514,29 @@ impl App {
         }
     }
 
+    /// スクリーン上の相対 Y 座標（DiffView 内部、ボーダー除外済み）から
+    /// 論理 diff 行番号に変換する。hunk header はスキップ。
+    pub(super) fn diff_line_at_y(&self, relative_y: u16) -> Option<usize> {
+        let visual_row = self.diff.scroll as usize + relative_y as usize;
+        let logical_line = self.visual_to_logical_line(visual_row);
+        let line_count = self.current_diff_line_count();
+        if line_count == 0 || logical_line >= line_count {
+            return None;
+        }
+        // hunk header をスキップ
+        let line = if self.is_hunk_header(logical_line) {
+            let forward = self.skip_hunk_header_forward(logical_line, line_count);
+            if forward >= line_count {
+                self.skip_hunk_header_backward(logical_line, line_count)
+            } else {
+                forward
+            }
+        } else {
+            logical_line
+        };
+        if line >= line_count { None } else { Some(line) }
+    }
+
     pub(super) fn next_panel(&mut self) {
         // DiffView / CommitMessage / Conversation は Tab 巡回の対象外
         if matches!(
