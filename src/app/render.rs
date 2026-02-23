@@ -1387,7 +1387,7 @@ impl App {
         frame.render_widget(paragraph, dialog);
     }
 
-    fn render_help_dialog(&self, frame: &mut Frame, area: Rect) {
+    fn render_help_dialog(&mut self, frame: &mut Frame, area: Rect) {
         let dialog_height = (area.height * 2 / 3)
             .max(HELP_DIALOG_MIN_HEIGHT)
             .min(area.height.saturating_sub(4));
@@ -1456,6 +1456,13 @@ impl App {
             "  ?/Esc/q: close",
             Style::default().fg(Color::DarkGray),
         ));
+
+        // コンテンツ末尾を超えてスクロールしないようにクランプ
+        let content_height = lines.len() as u16;
+        let inner_height = dialog_height.saturating_sub(2); // ボーダー上下分
+        let max_scroll = content_height.saturating_sub(inner_height);
+        // 内部状態も同期して、スクロールアップ時のラグを防ぐ
+        self.help_scroll = self.help_scroll.min(max_scroll);
 
         let paragraph = Paragraph::new(lines)
             .block(
