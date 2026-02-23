@@ -46,20 +46,7 @@ pub fn preprocess_pr_body(body: &str) -> (String, Vec<MediaRef>) {
     for line in body.lines() {
         let trimmed = line.trim();
 
-        // --- Pattern 4: HTML <video> tag ---
-        if let Some(processed) = try_parse_html_video(trimmed) {
-            result_lines.push(String::new());
-            result_lines.push("[🎬 Video]".to_string());
-            result_lines.push(String::new());
-            refs.push(MediaRef {
-                media_type: MediaType::Video,
-                url: processed,
-                alt: "Video".to_string(),
-            });
-            continue;
-        }
-
-        // --- Pattern 3: Bare video URL on its own line ---
+        // --- Bare video URL on its own line ---
         if let Some(url) = try_parse_bare_video_url(trimmed) {
             result_lines.push(String::new());
             result_lines.push("[🎬 Video]".to_string());
@@ -72,9 +59,7 @@ pub fn preprocess_pr_body(body: &str) -> (String, Vec<MediaRef>) {
             continue;
         }
 
-        // --- Pattern 2: HTML <img> tag ---
-        // --- Pattern 1: Markdown image ![alt](url) ---
-        // These can appear inline, so we process within the line
+        // --- Inline media: ![alt](url), <img>, <video> ---
         let processed = process_inline_media(line, &mut refs, &mut result_lines);
         if !processed {
             result_lines.push(line.to_string());
@@ -104,15 +89,20 @@ fn collapse_blank_lines(lines: &[String]) -> String {
     result
 }
 
-/// HTML <video> タグを検出し、src URL を返す
-fn try_parse_html_video(line: &str) -> Option<String> {
-    // <video で始まるかチェック
-    let lower = line.to_lowercase();
-    if !lower.contains("<video") {
-        return None;
+/// HTML <video> タグをパース。成功時は (src_url, end_offset) を返す。
+/// `<video src="...">...</video>` の閉じタグも含めて消費する。
+fn parse_html_video(tag_str: &str) -> Option<(String, usize)> {
+    let open_end = find_tag_end(tag_str)?;
+    let tag_content = &tag_str[..open_end];
+    let src = extract_html_attr(tag_content, "src")?;
+    // </video> 閉じタグがあればそこまで消費する
+    let rest = &tag_str[open_end..];
+    let lower_rest = rest.to_lowercase();
+    if let Some(close_pos) = lower_rest.find("</video>") {
+        Some((src, open_end + close_pos + "</video>".len()))
+    } else {
+        Some((src, open_end))
     }
-    // src="..." を抽出
-    extract_html_attr(line, "src")
 }
 
 /// 行が動画ベア URL かどうかチェック。
@@ -135,7 +125,7 @@ fn try_parse_bare_video_url(line: &str) -> Option<String> {
     Some(trimmed.to_string())
 }
 
-/// 行内の Markdown 画像と HTML img タグを処理する。
+/// 行内の Markdown 画像と HTML img タグをプレースホルダーに置換する。
 /// 置換が発生した場合は true を返し、result_lines に追加済み。
 pub(super) fn process_inline_media(
     line: &str,
@@ -160,14 +150,7 @@ pub(super) fn process_inline_media(
             } else {
                 alt.clone()
             };
-            // 前のテキストがあれば先に追加
-            if !replaced.is_empty() {
-                result_lines.push(replaced.clone());
-                replaced.clear();
-            }
-            result_lines.push(String::new());
-            result_lines.push(format!("[🖼 {}]", display_alt));
-            result_lines.push(String::new());
+            replaced.push_str(&format!("[🖼 {}]", display_alt));
             refs.push(MediaRef {
                 media_type: MediaType::Image,
                 url,
@@ -177,7 +160,7 @@ pub(super) fn process_inline_media(
             continue;
         }
 
-        // Try HTML <img> tag
+        // Try HTML <img> / <video> tag
         if bytes[pos] == b'<' {
             let rest = &line[pos..];
             let lower_rest = rest.to_lowercase();
@@ -190,17 +173,24 @@ pub(super) fn process_inline_media(
                 } else {
                     alt
                 };
-                if !replaced.is_empty() {
-                    result_lines.push(replaced.clone());
-                    replaced.clear();
-                }
-                result_lines.push(String::new());
-                result_lines.push(format!("[🖼 {}]", display_alt));
-                result_lines.push(String::new());
+                replaced.push_str(&format!("[🖼 {}]", display_alt));
                 refs.push(MediaRef {
                     media_type: MediaType::Image,
                     url,
                     alt: display_alt,
+                });
+                pos += end_offset;
+                continue;
+            }
+            if (lower_rest.starts_with("<video ") || lower_rest.starts_with("<video>"))
+                && let Some((url, end_offset)) = parse_html_video(rest)
+            {
+                had_match = true;
+                replaced.push_str("[🎬 Video]");
+                refs.push(MediaRef {
+                    media_type: MediaType::Video,
+                    url,
+                    alt: "Video".to_string(),
                 });
                 pos += end_offset;
                 continue;
@@ -214,11 +204,7 @@ pub(super) fn process_inline_media(
     }
 
     if had_match {
-        // 残りのテキストがあれば追加
-        let trimmed = replaced.trim();
-        if !trimmed.is_empty() {
-            result_lines.push(replaced);
-        }
+        result_lines.push(replaced);
         true
     } else {
         false
@@ -256,23 +242,15 @@ fn parse_html_img(tag_str: &str) -> Option<(String, String, usize)> {
     Some((alt, src, end_pos))
 }
 
-/// HTML タグ文字列の終端位置を探す（`/>` or `>` の直後）
+/// HTML 開きタグの終端位置を探す（`/>` or `>` の直後）
 fn find_tag_end(s: &str) -> Option<usize> {
-    let mut i = 0;
     let bytes = s.as_bytes();
+    let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'>' {
             return Some(i + 2);
         }
         if bytes[i] == b'>' {
-            // </video> のような閉じタグも考慮
-            // タグ全体の終わりを返す
-            // <video ...>...</video> パターンの場合
-            let rest = &s[i + 1..];
-            let lower_rest = rest.to_lowercase();
-            if let Some(close_pos) = lower_rest.find("</video>") {
-                return Some(i + 1 + close_pos + 8); // 8 = "</video>".len()
-            }
             return Some(i + 1);
         }
         i += 1;
@@ -289,6 +267,83 @@ fn extract_html_attr(tag: &str, attr_name: &str) -> Option<String> {
     let rest = &tag[value_start..];
     let end = rest.find('"')?;
     Some(rest[..end].to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_standalone_image_replaced() {
+        let body = "![screenshot](https://example.com/img.png)";
+        let (result, refs) = preprocess_pr_body(body);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].alt, "screenshot");
+        assert!(result.contains("[🖼 screenshot]"));
+    }
+
+    #[test]
+    fn test_image_in_table_uses_inline_style() {
+        let body = "| Before | After |\n| --- | --- |\n| ![before](https://example.com/1.png) | ![after](https://example.com/2.png) |";
+        let (result, refs) = preprocess_pr_body(body);
+        assert_eq!(refs.len(), 2);
+        // テーブル行が保持され、インライン置換される
+        let lines: Vec<&str> = result.lines().collect();
+        let table_data_line = lines.iter().find(|l| l.contains("[🖼")).unwrap();
+        // テーブルパイプが保持されている
+        assert!(table_data_line.starts_with('|'));
+        assert!(table_data_line.ends_with('|'));
+        // 両方のプレースホルダーが同一行内にある
+        assert!(table_data_line.contains("[🖼 before]"));
+        assert!(table_data_line.contains("[🖼 after]"));
+    }
+
+    #[test]
+    fn test_html_img_in_table_uses_inline_style() {
+        let body = r#"| A | B |
+| - | - |
+| <img src="https://example.com/1.png" alt="x"> | text |"#;
+        let (result, refs) = preprocess_pr_body(body);
+        assert_eq!(refs.len(), 1);
+        let lines: Vec<&str> = result.lines().collect();
+        let table_line = lines.iter().find(|l| l.contains("[🖼")).unwrap();
+        assert!(table_line.contains("[🖼 x]"));
+        assert!(table_line.contains("text"));
+    }
+
+    #[test]
+    fn test_multiple_standalone_images() {
+        let body = "![a](https://example.com/a.png)\n![b](https://example.com/b.png)";
+        let (result, refs) = preprocess_pr_body(body);
+        assert_eq!(refs.len(), 2);
+        assert!(result.contains("[🖼 a]"));
+        assert!(result.contains("[🖼 b]"));
+    }
+
+    #[test]
+    fn test_video_in_table_uses_inline_style() {
+        let body = r#"| Before | After |
+| --- | --- |
+| <video src="https://example.com/before.mp4"></video> | <video src="https://example.com/after.mp4"></video> |"#;
+        let (result, refs) = preprocess_pr_body(body);
+        assert_eq!(refs.len(), 2);
+        assert!(refs.iter().all(|r| r.media_type == MediaType::Video));
+        let lines: Vec<&str> = result.lines().collect();
+        let table_line = lines.iter().find(|l| l.contains("[🎬")).unwrap();
+        assert!(table_line.starts_with('|'));
+        assert!(table_line.ends_with('|'));
+        // 両方のプレースホルダーが同一行内にある
+        assert_eq!(table_line.matches("[🎬 Video]").count(), 2);
+    }
+
+    #[test]
+    fn test_standalone_video() {
+        let body = r#"<video src="https://example.com/demo.mp4"></video>"#;
+        let (result, refs) = preprocess_pr_body(body);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].media_type, MediaType::Video);
+        assert!(result.contains("[🎬 Video]"));
+    }
 }
 
 impl App {
