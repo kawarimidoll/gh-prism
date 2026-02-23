@@ -37,9 +37,9 @@ const REVIEW_DIALOG_WIDTH: u16 = 36;
 const REVIEW_DIALOG_HEIGHT: u16 = 10;
 const QUIT_DIALOG_WIDTH: u16 = 38;
 const QUIT_DIALOG_HEIGHT: u16 = 9;
-const HELP_DIALOG_WIDTH: u16 = 50;
+const HELP_DIALOG_WIDTH: u16 = 60;
 const HELP_DIALOG_MIN_HEIGHT: u16 = 20;
-const HELP_KEY_COLUMN_WIDTH: usize = 18;
+const HELP_KEY_COLUMN_WIDTH: usize = 20;
 
 // --- 行番号フォーマット ---
 const LINE_NUM_WIDTH: usize = 4;
@@ -1395,9 +1395,12 @@ impl App {
         let dialog = Self::centered_rect(dialog_width, dialog_height, area);
         frame.render_widget(Clear, dialog);
 
-        let s = Style::default().fg(Color::Yellow); // section
+        let s = Style::default().fg(Color::Yellow); // section header
         let k = Style::default().fg(Color::Cyan); // key
-        let d = Style::default(); // desc
+        let d = Style::default(); // description
+        // ボーダー左右 (2) + インデント (2) + 余白 (2) を引いた幅でセパレータ生成
+        let sep_width = (HELP_DIALOG_WIDTH as usize).saturating_sub(6);
+        let sep: String = format!("  {}", "─".repeat(sep_width));
 
         // (key, desc) のペアか、セクションヘッダーを表す enum 的タプル配列
         let entries: Vec<(&str, &str)> = vec![
@@ -1443,7 +1446,7 @@ impl App {
                 // セクションヘッダー
                 lines.push(Line::raw(""));
                 lines.push(Line::styled(format!("  {desc}"), s));
-                lines.push(Line::styled("  ──────────────────────────", s));
+                lines.push(Line::styled(sep.as_str(), s));
             } else {
                 lines.push(Line::from(vec![
                     Span::styled(format!("  {key:<HELP_KEY_COLUMN_WIDTH$}"), k),
