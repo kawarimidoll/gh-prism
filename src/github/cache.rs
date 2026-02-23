@@ -3,29 +3,17 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use super::comments::ReviewThread;
-use super::commits::CommitInfo;
 use super::files::DiffFile;
 
-pub const CACHE_VERSION: u32 = 2;
+pub const CACHE_VERSION: u32 = 3;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PrCache {
+    /// キャッシュフォーマットのバージョン。古いキャッシュでは 0 にフォールバックし無効扱いとなる。
     #[serde(default)]
     pub version: u32,
     pub head_sha: String,
-    pub pr_title: String,
-    pub pr_body: String,
-    pub pr_author: String,
-    pub commits: Vec<CommitInfo>,
     pub files_map: HashMap<String, Vec<DiffFile>>,
-    #[serde(default)]
-    pub pr_base_branch: String,
-    #[serde(default)]
-    pub pr_head_branch: String,
-    #[serde(default)]
-    pub pr_created_at: String,
-    #[serde(default)]
-    pub pr_state: String,
     #[serde(default)]
     pub review_threads: Vec<ReviewThread>,
 }
@@ -41,7 +29,8 @@ fn cache_path(owner: &str, repo: &str, pr_number: u64) -> PathBuf {
 pub fn read_cache(owner: &str, repo: &str, pr_number: u64) -> Option<PrCache> {
     let path = cache_path(owner, repo, pr_number);
     let data = std::fs::read_to_string(&path).ok()?;
-    serde_json::from_str(&data).ok()
+    let cache: PrCache = serde_json::from_str(&data).ok()?;
+    (cache.version >= CACHE_VERSION).then_some(cache)
 }
 
 pub fn write_cache(owner: &str, repo: &str, pr_number: u64, cache: &PrCache) {
@@ -67,7 +56,6 @@ pub fn write_cache(owner: &str, repo: &str, pr_number: u64, cache: &PrCache) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::github::commits::CommitDetail;
 
     #[test]
     fn test_cache_round_trip() {
@@ -78,15 +66,6 @@ mod tests {
         let cache = PrCache {
             version: CACHE_VERSION,
             head_sha: "abc1234".to_string(),
-            pr_title: "Test PR".to_string(),
-            pr_body: "Test body".to_string(),
-            pr_author: "test-author".to_string(),
-            commits: vec![CommitInfo {
-                sha: "abc1234".to_string(),
-                commit: CommitDetail {
-                    message: "test commit".to_string(),
-                },
-            }],
             files_map: {
                 let mut m = HashMap::new();
                 m.insert(
@@ -101,10 +80,6 @@ mod tests {
                 );
                 m
             },
-            pr_base_branch: "main".to_string(),
-            pr_head_branch: "feature".to_string(),
-            pr_created_at: "2024-01-15".to_string(),
-            pr_state: "Open".to_string(),
             review_threads: vec![ReviewThread {
                 node_id: "RT_test123".to_string(),
                 is_resolved: true,
@@ -118,9 +93,6 @@ mod tests {
 
         let loaded = loaded.unwrap();
         assert_eq!(loaded.head_sha, "abc1234");
-        assert_eq!(loaded.pr_title, "Test PR");
-        assert_eq!(loaded.pr_author, "test-author");
-        assert_eq!(loaded.commits.len(), 1);
         assert_eq!(loaded.files_map.len(), 1);
         assert_eq!(loaded.review_threads.len(), 1);
         assert_eq!(loaded.review_threads[0].node_id, "RT_test123");

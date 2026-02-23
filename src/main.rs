@@ -348,7 +348,7 @@ async fn run() -> Result<()> {
     let data_future = async {
         if !cli.no_cache {
             if let Some(cached) = github::cache::read_cache(&owner, &repo, cli.pr_number) {
-                if cached.head_sha == head_sha && cached.version >= github::cache::CACHE_VERSION {
+                if cached.head_sha == head_sha {
                     eprintln!(
                         "Using cached data (HEAD: {})",
                         &head_sha[..SHORT_SHA_LEN.min(head_sha.len())]
@@ -407,15 +407,7 @@ async fn run() -> Result<()> {
             &PrCache {
                 version: github::cache::CACHE_VERSION,
                 head_sha: head_sha.to_string(),
-                pr_title: data.pr_title.clone(),
-                pr_body: data.pr_body.clone(),
-                pr_author: data.pr_author.clone(),
-                commits: commits.clone(),
                 files_map: data.files_map.clone(),
-                pr_base_branch: data.pr_base_branch.clone(),
-                pr_head_branch: data.pr_head_branch.clone(),
-                pr_created_at: data.pr_created_at.clone(),
-                pr_state: data.pr_state.clone(),
                 review_threads: review_threads.clone(),
             },
         );
