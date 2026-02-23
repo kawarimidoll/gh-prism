@@ -7,6 +7,7 @@ use crossterm::event::{
 use std::time::Duration;
 
 const EVENT_POLL_MS: u64 = 250;
+const HELP_MOUSE_SCROLL_LINES: u16 = 3;
 
 impl App {
     /// マウスクリック処理
@@ -176,6 +177,15 @@ impl App {
                 AppMode::QuitConfirm => self.handle_quit_confirm_mode(key.code),
                 AppMode::Help => self.handle_help_mode(key.code),
                 AppMode::MediaViewer => self.handle_media_viewer_mode(key.code),
+            },
+            Event::Mouse(mouse) if self.mode == AppMode::Help => match mouse.kind {
+                MouseEventKind::ScrollDown => {
+                    self.help_scroll = self.help_scroll.saturating_add(HELP_MOUSE_SCROLL_LINES);
+                }
+                MouseEventKind::ScrollUp => {
+                    self.help_scroll = self.help_scroll.saturating_sub(HELP_MOUSE_SCROLL_LINES);
+                }
+                _ => {}
             },
             Event::Mouse(mouse)
                 if self.mode == AppMode::Normal || self.mode == AppMode::LineSelect =>
