@@ -26,6 +26,12 @@ const PR_DESC_HEIGHT_PCT: u16 = 40;
 const COMMIT_LIST_HEIGHT_PCT: u16 = 30;
 const FILE_TREE_HEIGHT_PCT: u16 = 30;
 
+// --- パネルキーヒント ---
+const HINT_MEDIA: &str = " o: media ";
+const HINT_VIEWED: &str = " x: viewed ";
+const HINT_COMMENT: &str = " c: comment ";
+const HINT_SELECT_COMMENT: &str = " v: select | c: comment ";
+
 // --- ダイアログサイズ ---
 const REVIEW_DIALOG_WIDTH: u16 = 36;
 const REVIEW_DIALOG_HEIGHT: u16 = 10;
@@ -131,7 +137,10 @@ impl App {
 
         // 左セクション: PR 情報（残り幅で truncate）
         let total_width = main_layout[0].width as usize;
-        let left_full = format!(" prism - {}#{} | ?: help", self.repo, self.pr_number,);
+        let left_full = format!(
+            " prism - {}#{} | z: zoom | ?: help",
+            self.repo, self.pr_number,
+        );
         let left_max = total_width.saturating_sub(right_width);
         let left_text = truncate_str(&left_full, left_max);
 
@@ -316,14 +325,15 @@ impl App {
         // zoom 切替等で描画幅が変わった場合にスクロール位置をクランプ
         self.clamp_pr_desc_scroll();
 
-        let paragraph = paragraph
-            .block(
-                Block::default()
-                    .title(" PR Description ")
-                    .borders(Borders::ALL)
-                    .border_style(style),
-            )
-            .scroll((self.pr_desc_scroll, 0));
+        let mut block = Block::default()
+            .title(" PR Description ")
+            .borders(Borders::ALL)
+            .border_style(style);
+        if self.focused_panel == Panel::PrDescription {
+            block =
+                block.title_bottom(Line::from(HINT_MEDIA).alignment(HorizontalAlignment::Right));
+        }
+        let paragraph = paragraph.block(block).scroll((self.pr_desc_scroll, 0));
 
         frame.render_widget(paragraph, area);
 
@@ -406,13 +416,16 @@ impl App {
             self.commits.len(),
             viewed_count
         );
+        let mut block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(style);
+        if self.focused_panel == Panel::CommitList {
+            block =
+                block.title_bottom(Line::from(HINT_VIEWED).alignment(HorizontalAlignment::Right));
+        }
         let list = List::new(items)
-            .block(
-                Block::default()
-                    .title(title)
-                    .borders(Borders::ALL)
-                    .border_style(style),
-            )
+            .block(block)
             .highlight_style(self.highlight_style());
 
         let total = self.commits.len();
@@ -514,13 +527,16 @@ impl App {
         let selected = self.file_list_state.selected().map(|i| i + 1).unwrap_or(0);
         let total = items.len();
         let title = format!(" Files {}/{} ✓{} ", selected, files.len(), viewed_count);
+        let mut block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(style);
+        if self.focused_panel == Panel::FileTree {
+            block =
+                block.title_bottom(Line::from(HINT_VIEWED).alignment(HorizontalAlignment::Right));
+        }
         let list = List::new(items)
-            .block(
-                Block::default()
-                    .title(title)
-                    .borders(Borders::ALL)
-                    .border_style(style),
-            )
+            .block(block)
             .highlight_style(self.highlight_style());
 
         frame.render_stateful_widget(list, area, &mut self.file_list_state);
@@ -554,14 +570,11 @@ impl App {
         self.commit_msg_visual_total = paragraph.line_count(inner_width) as u16;
         self.clamp_commit_msg_scroll();
 
-        let paragraph = paragraph
-            .block(
-                Block::default()
-                    .title(" Commit ")
-                    .borders(Borders::ALL)
-                    .border_style(border_style),
-            )
-            .scroll((self.commit_msg_scroll, 0));
+        let block = Block::default()
+            .title(" Commit ")
+            .borders(Borders::ALL)
+            .border_style(border_style);
+        let paragraph = paragraph.block(block).scroll((self.commit_msg_scroll, 0));
 
         frame.render_widget(paragraph, area);
 
@@ -648,14 +661,15 @@ impl App {
         self.conversation_visual_total = paragraph.line_count(inner_width) as u16;
         self.clamp_conversation_scroll();
 
-        let paragraph = paragraph
-            .block(
-                Block::default()
-                    .title(title)
-                    .borders(Borders::ALL)
-                    .border_style(border_style),
-            )
-            .scroll((self.conversation_scroll, 0));
+        let mut block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(border_style);
+        if self.focused_panel == Panel::Conversation {
+            block =
+                block.title_bottom(Line::from(HINT_COMMENT).alignment(HorizontalAlignment::Right));
+        }
+        let paragraph = paragraph.block(block).scroll((self.conversation_scroll, 0));
         frame.render_widget(paragraph, area);
 
         Self::render_scrollbar(
@@ -759,6 +773,16 @@ impl App {
             .border_style(border_style);
         if !right_title.is_empty() {
             block = block.title_top(Line::from(right_title).alignment(HorizontalAlignment::Right));
+        }
+        if self.focused_panel == Panel::DiffView
+            && !matches!(self.mode, AppMode::CommentInput | AppMode::CommentView)
+        {
+            let hint = if self.mode == AppMode::LineSelect {
+                HINT_COMMENT
+            } else {
+                HINT_SELECT_COMMENT
+            };
+            block = block.title_bottom(Line::from(hint).alignment(HorizontalAlignment::Right));
         }
 
         // バイナリファイルまたは diff がない場合
