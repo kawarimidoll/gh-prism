@@ -411,6 +411,7 @@ impl App {
             }
             KeyCode::Char('?') => {
                 self.help_scroll = 0;
+                self.help_context_panel = self.focused_panel;
                 self.mode = AppMode::Help;
             }
             KeyCode::Char(ch @ (']' | '[')) => {

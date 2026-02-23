@@ -24,6 +24,19 @@ pub enum Panel {
     Conversation,
 }
 
+impl std::fmt::Display for Panel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Panel::PrDescription => write!(f, "PR Description"),
+            Panel::CommitList => write!(f, "Commit List"),
+            Panel::FileTree => write!(f, "File Tree"),
+            Panel::CommitMessage => write!(f, "Commit Message"),
+            Panel::DiffView => write!(f, "Diff View"),
+            Panel::Conversation => write!(f, "Conversation"),
+        }
+    }
+}
+
 /// アプリケーションのモード
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum AppMode {

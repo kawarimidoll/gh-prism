@@ -72,6 +72,8 @@ pub struct App {
     pending_key: Option<char>,
     /// ヘルプ画面のスクロール位置
     help_scroll: u16,
+    /// ヘルプ画面のコンテキスト（`?` 押下時のフォーカスパネルで上書きされる。初期値は未使用）
+    help_context_panel: Panel,
     /// Zoom モード（フォーカスペインのみ全画面表示）
     zoomed: bool,
     /// viewed 済みファイルのマップ（コミット SHA → ファイル名の Set）
@@ -191,6 +193,7 @@ impl App {
             status_message: None,
             pending_key: None,
             help_scroll: 0,
+            help_context_panel: Panel::PrDescription,
             zoomed: false,
             viewed_files: HashMap::new(),
             pr_desc_rendered: None,

@@ -1402,43 +1402,90 @@ impl App {
         let sep_width = (HELP_DIALOG_WIDTH as usize).saturating_sub(6);
         let sep: String = format!("  {}", "─".repeat(sep_width));
 
-        // (key, desc) のペアか、セクションヘッダーを表す enum 的タプル配列
-        let entries: Vec<(&str, &str)> = vec![
+        let panel = self.help_context_panel;
+
+        // --- 共通セクション (Global) ---
+        let mut entries: Vec<(&str, &str)> = vec![
             ("", "Navigation"),
             ("j / ↓", "Move down"),
             ("k / ↑", "Move up"),
             ("l / → / Tab", "Next pane"),
             ("h / ← / BackTab", "Previous pane"),
             ("1 / 2 / 3 / 4", "Jump to pane"),
-            ("Enter", "Open diff / conversation / comment"),
-            ("o", "Open media viewer (PR Desc)"),
             ("Esc", "Back to parent pane"),
-            ("", "Scroll (Desc / Diff)"),
-            ("Ctrl+d / Ctrl+u", "Half page down / up"),
-            ("Ctrl+f / Ctrl+b", "Full page down / up"),
-            ("g / G", "Top / Bottom"),
-            ("", "Diff Jump"),
-            ("]c / [c", "Next / prev change block"),
-            ("]h / [h", "Next / prev hunk"),
-            ("]n / [n", "Next / prev comment"),
-            ("", "Selection & Comment"),
-            ("v", "Enter line select mode"),
-            ("c", "Comment on line (Diff) / PR (Conv.)"),
-            ("r", "Resolve/unresolve thread (Comment)"),
-            ("Ctrl+G", "Insert suggestion (comment)"),
-            ("Ctrl+S", "Submit (in comment/review)"),
-            ("S", "Submit review"),
-            ("", "Copy"),
-            ("y", "Copy SHA / file path"),
-            ("Y", "Copy commit message"),
-            ("", "Other"),
-            ("n", "Toggle line numbers (Diff)"),
-            ("w", "Toggle line wrap (Diff)"),
             ("z", "Toggle zoom"),
-            ("x", "Toggle viewed (Files/Commits)"),
+            ("S", "Submit review"),
             ("?", "This help"),
             ("q", "Quit"),
         ];
+
+        // --- Scroll セクション (PrDescription, CommitMessage, Conversation, DiffView) ---
+        if matches!(
+            panel,
+            Panel::PrDescription | Panel::CommitMessage | Panel::Conversation | Panel::DiffView
+        ) {
+            entries.extend_from_slice(&[
+                ("", "Scroll"),
+                ("Ctrl+d / Ctrl+u", "Half page down / up"),
+                ("Ctrl+f / Ctrl+b", "Full page down / up"),
+                ("g / G", "Top / Bottom"),
+            ]);
+        }
+
+        // --- ペイン固有セクション ---
+        match panel {
+            Panel::PrDescription => {
+                entries.extend_from_slice(&[
+                    ("", "PR Description"),
+                    ("Enter", "Open conversation"),
+                    ("o", "Open media viewer"),
+                ]);
+            }
+            Panel::CommitList => {
+                entries.extend_from_slice(&[
+                    ("", "Commit List"),
+                    ("x", "Toggle viewed"),
+                    ("y", "Copy SHA"),
+                    ("Y", "Copy commit message"),
+                ]);
+            }
+            Panel::FileTree => {
+                entries.extend_from_slice(&[
+                    ("", "File Tree"),
+                    ("Enter", "Open diff"),
+                    ("x", "Toggle viewed"),
+                    ("y", "Copy file path"),
+                ]);
+            }
+            Panel::CommitMessage => {
+                entries
+                    .extend_from_slice(&[("", "Commit Message"), ("Esc", "Back to commit list")]);
+            }
+            Panel::DiffView => {
+                entries.extend_from_slice(&[
+                    ("", "Diff View"),
+                    ("n", "Toggle line numbers"),
+                    ("w", "Toggle line wrap"),
+                    ("]c / [c", "Next / prev change block"),
+                    ("]h / [h", "Next / prev hunk"),
+                    ("]n / [n", "Next / prev comment"),
+                    ("v", "Enter line select mode"),
+                    ("c", "Comment on line"),
+                    ("Enter", "View comment on line"),
+                    ("r", "Resolve/unresolve thread"),
+                    ("Ctrl+G", "Insert suggestion"),
+                    ("Ctrl+S", "Submit comment"),
+                ]);
+            }
+            Panel::Conversation => {
+                entries.extend_from_slice(&[
+                    ("", "Conversation"),
+                    ("c", "Comment on PR"),
+                    ("Ctrl+S", "Submit comment"),
+                    ("Esc", "Back to PR description"),
+                ]);
+            }
+        }
 
         let mut lines: Vec<Line> = vec![];
         for (key, desc) in &entries {
@@ -1464,17 +1511,18 @@ impl App {
         let content_height = lines.len() as u16;
         let inner_height = dialog_height.saturating_sub(2); // ボーダー上下分
         let max_scroll = content_height.saturating_sub(inner_height);
+        let scroll = self.help_scroll.min(max_scroll);
         // 内部状態も同期して、スクロールアップ時のラグを防ぐ
-        self.help_scroll = self.help_scroll.min(max_scroll);
+        self.help_scroll = scroll;
 
         let paragraph = Paragraph::new(lines)
             .block(
                 Block::default()
-                    .title(" Help ")
+                    .title(format!(" Help ({panel}) "))
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::DarkGray)),
             )
-            .scroll((self.help_scroll, 0));
+            .scroll((scroll, 0));
         frame.render_widget(paragraph, dialog);
     }
 
