@@ -12,10 +12,51 @@ use github::commits::CommitInfo;
 use github::files::DiffFile;
 use github::review::ReviewSummary;
 use octocrab::Octocrab;
+use octocrab::models::pulls::PullRequest;
 use std::collections::HashMap;
 
 const SHORT_SHA_LEN: usize = 7;
 const THEME_DETECT_TIMEOUT_MS: u64 = 100;
+
+struct PrMetadata {
+    pr_title: String,
+    pr_body: String,
+    pr_author: String,
+    pr_base_branch: String,
+    pr_head_branch: String,
+    pr_created_at: String,
+    pr_state: String,
+}
+
+fn extract_pr_metadata(pr: &PullRequest) -> PrMetadata {
+    PrMetadata {
+        pr_title: pr.title.clone().unwrap_or_default(),
+        pr_body: pr.body.clone().unwrap_or_default(),
+        pr_author: pr
+            .user
+            .as_ref()
+            .map(|u| u.login.clone())
+            .unwrap_or_default(),
+        pr_base_branch: pr.base.ref_field.clone(),
+        pr_head_branch: pr.head.ref_field.clone(),
+        pr_created_at: pr
+            .created_at
+            .map(|dt| {
+                dt.with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M %z")
+                    .to_string()
+            })
+            .unwrap_or_default(),
+        pr_state: if pr.merged_at.is_some() {
+            "Merged".to_string()
+        } else {
+            match pr.state {
+                Some(octocrab::models::IssueState::Open) => "Open".to_string(),
+                _ => "Closed".to_string(),
+            }
+        },
+    }
+}
 
 struct FetchedPrData {
     pr_title: String,
@@ -111,42 +152,14 @@ fn fetch_current_user() -> String {
         .unwrap_or_default()
 }
 
-/// PR情報とコミットごとのファイルをAPI経由で全取得する
+/// コミットごとのファイルをAPI経由で全取得し、PRメタデータと合わせて返す
 async fn fetch_all(
     client: &Octocrab,
     owner: &str,
     repo: &str,
-    pr_number: u64,
+    metadata: PrMetadata,
     commits: &[CommitInfo],
 ) -> Result<FetchedPrData> {
-    // PR情報を取得
-    let pr = github::pr::fetch_pr(client, owner, repo, pr_number).await?;
-    let pr_title = pr.title.unwrap_or_default();
-    let pr_body = pr.body.unwrap_or_default();
-    let pr_author = pr
-        .user
-        .as_ref()
-        .map(|u| u.login.clone())
-        .unwrap_or_default();
-    let pr_base = pr.base.ref_field.clone();
-    let pr_head = pr.head.ref_field.clone();
-    let pr_date = pr
-        .created_at
-        .map(|dt| {
-            dt.with_timezone(&chrono::Local)
-                .format("%Y-%m-%d %H:%M %z")
-                .to_string()
-        })
-        .unwrap_or_default();
-    let pr_state = if pr.merged_at.is_some() {
-        "Merged".to_string()
-    } else {
-        match pr.state {
-            Some(octocrab::models::IssueState::Open) => "Open".to_string(),
-            _ => "Closed".to_string(),
-        }
-    };
-
     // 全コミットのファイルを並列取得
     let total = commits.len();
     eprintln!("Fetching files for {} commits...", total);
@@ -191,13 +204,13 @@ async fn fetch_all(
     }
 
     Ok(FetchedPrData {
-        pr_title,
-        pr_body,
-        pr_author,
-        pr_base_branch: pr_base,
-        pr_head_branch: pr_head,
-        pr_created_at: pr_date,
-        pr_state,
+        pr_title: metadata.pr_title,
+        pr_body: metadata.pr_body,
+        pr_author: metadata.pr_author,
+        pr_base_branch: metadata.pr_base_branch,
+        pr_head_branch: metadata.pr_head_branch,
+        pr_created_at: metadata.pr_created_at,
+        pr_state: metadata.pr_state,
         files_map,
     })
 }
@@ -322,8 +335,13 @@ async fn run() -> Result<()> {
     let client = github::client::create_client()?;
     eprintln!("Fetching PR #{}...", cli.pr_number);
 
-    // コミット一覧を常にAPI取得（HEAD SHA判定に必要）
-    let commits = github::commits::fetch_commits(&client, &owner, &repo, cli.pr_number).await?;
+    // コミット一覧とPR情報を常にAPI取得
+    // （HEAD SHA判定 + キャッシュヒット時もPR状態の最新性を保証するため）
+    let (commits, pr) = tokio::try_join!(
+        github::commits::fetch_commits(&client, &owner, &repo, cli.pr_number),
+        github::pr::fetch_pr(&client, &owner, &repo, cli.pr_number),
+    )?;
+    let metadata = extract_pr_metadata(&pr);
     let head_sha = commits.last().map(|c| c.sha.as_str()).unwrap_or("");
 
     // キャッシュ判定 + レビューコメント取得 + Issue コメント + Reviews を並列実行
@@ -337,13 +355,13 @@ async fn run() -> Result<()> {
                     );
                     return Ok((
                         FetchedPrData {
-                            pr_title: cached.pr_title,
-                            pr_body: cached.pr_body,
-                            pr_author: cached.pr_author,
-                            pr_base_branch: cached.pr_base_branch,
-                            pr_head_branch: cached.pr_head_branch,
-                            pr_created_at: cached.pr_created_at,
-                            pr_state: cached.pr_state,
+                            pr_title: metadata.pr_title,
+                            pr_body: metadata.pr_body,
+                            pr_author: metadata.pr_author,
+                            pr_base_branch: metadata.pr_base_branch,
+                            pr_head_branch: metadata.pr_head_branch,
+                            pr_created_at: metadata.pr_created_at,
+                            pr_state: metadata.pr_state,
                             files_map: cached.files_map,
                         },
                         cached.review_threads,
@@ -374,7 +392,7 @@ async fn run() -> Result<()> {
                 )
             })
         };
-        let data = fetch_all(&client, &owner, &repo, cli.pr_number, &commits).await?;
+        let data = fetch_all(&client, &owner, &repo, metadata, &commits).await?;
         let review_threads = match threads_handle.await {
             Ok(threads) => threads,
             Err(e) => {
