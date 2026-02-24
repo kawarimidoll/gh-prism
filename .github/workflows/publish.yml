@@ -1,0 +1,116 @@
+name: Publish
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.TAG }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Generate calver tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DATE=$(date -u +%y.%m.%d)
+          COUNT=$(gh release list --json tagName --jq "[.[] | select(.tagName | startswith(\"${DATE}\"))] | length")
+          if [ "$COUNT" -eq 0 ]; then
+            TAG="$DATE"
+          else
+            TAG="${DATE}-${COUNT}"
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Generated tag: $TAG"
+
+  build-linux:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            asset_name: linux-amd64
+          - target: aarch64-unknown-linux-gnu
+            asset_name: linux-arm64
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - uses: taiki-e/setup-cross-toolchain-action@v1
+        with:
+          target: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          GH_PRISM_VERSION: ${{ needs.prepare.outputs.tag }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: target/${{ matrix.target }}/release/gh-prism
+
+  build-macos:
+    needs: prepare
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            asset_name: darwin-amd64
+          - target: aarch64-apple-darwin
+            asset_name: darwin-arm64
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          GH_PRISM_VERSION: ${{ needs.prepare.outputs.tag }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: target/${{ matrix.target }}/release/gh-prism
+
+  release:
+    needs: [prepare, build-linux, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare binaries
+        run: |
+          for dir in artifacts/*/; do
+            name=$(basename "$dir")
+            mv "$dir/gh-prism" "artifacts/$name"
+            rm -rf "$dir"
+          done
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ needs.prepare.outputs.tag }}" \
+            --title "${{ needs.prepare.outputs.tag }}" \
+            --generate-notes \
+            --latest \
+            artifacts/linux-amd64 \
+            artifacts/linux-arm64 \
+            artifacts/darwin-amd64 \
+            artifacts/darwin-arm64

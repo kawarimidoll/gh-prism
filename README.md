@@ -125,3 +125,13 @@ nix build
 ```
 
 The binary will be at `./result/bin/gh-prism`.
+
+## Release
+
+Releases use [CalVer](https://calver.org/) (`YY.MM.DD`). To create a new release:
+
+```bash
+gh workflow run publish.yml
+```
+
+Or use the "Run workflow" button on the [Actions tab](https://github.com/kawarimidoll/gh-prism/actions/workflows/publish.yml).

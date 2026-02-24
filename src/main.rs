@@ -69,8 +69,13 @@ struct FetchedPrData {
     files_map: HashMap<String, Vec<DiffFile>>,
 }
 
+const VERSION: &str = match option_env!("GH_PRISM_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 #[derive(Parser)]
-#[command(name = "prism")]
+#[command(name = "prism", version = VERSION)]
 #[command(about = "A TUI tool for reviewing GitHub Pull Requests")]
 struct Cli {
     /// Pull Request number
