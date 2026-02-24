@@ -94,14 +94,6 @@ jobs:
         with:
           path: artifacts
 
-      - name: Prepare binaries
-        run: |
-          for dir in artifacts/*/; do
-            name=$(basename "$dir")
-            mv "$dir/gh-prism" "artifacts/$name"
-            rm -rf "$dir"
-          done
-
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -110,7 +102,7 @@ jobs:
             --title "${{ needs.prepare.outputs.tag }}" \
             --generate-notes \
             --latest \
-            artifacts/linux-amd64 \
-            artifacts/linux-arm64 \
-            artifacts/darwin-amd64 \
-            artifacts/darwin-arm64
+            artifacts/linux-amd64/gh-prism#linux-amd64 \
+            artifacts/linux-arm64/gh-prism#linux-arm64 \
+            artifacts/darwin-amd64/gh-prism#darwin-amd64 \
+            artifacts/darwin-arm64/gh-prism#darwin-arm64
