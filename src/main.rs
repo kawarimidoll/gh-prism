@@ -71,7 +71,7 @@ struct FetchedPrData {
 
 const VERSION: &str = match option_env!("GH_PRISM_VERSION") {
     Some(v) => v,
-    None => env!("CARGO_PKG_VERSION"),
+    None => env!("DEV_VERSION"),
 };
 
 #[derive(Parser)]
