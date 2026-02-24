@@ -108,7 +108,22 @@
               nixfmt-rfc-style.enable = true;
 
               # Conventional Commits (commit-msg stage)
-              convco.enable = true;
+              convco = {
+                enable = true;
+                entry =
+                  let
+                    script = pkgs.writeShellScript "convco-check" ''
+                      msg=$(head -1 "$1")
+                      # Skip git-generated messages (fixup/squash/amend/revert)
+                      re='^(fixup|squash|amend)! |^Revert "'
+                      if [[ "$msg" =~ $re ]]; then
+                        exit 0
+                      fi
+                      ${pkgs.lib.getExe pkgs.convco} check --from-stdin < "$1"
+                    '';
+                  in
+                  builtins.toString script;
+              };
 
               # Markdown / YAML (fast alternative to prettier)
               dprint = {
