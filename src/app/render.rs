@@ -34,7 +34,7 @@ const HINT_SELECT_COMMENT: &str = " v: select | c: comment ";
 
 // --- ダイアログサイズ ---
 const REVIEW_DIALOG_WIDTH: u16 = 36;
-const REVIEW_DIALOG_HEIGHT: u16 = 10;
+const REVIEW_DIALOG_HEIGHT: u16 = 7;
 const QUIT_DIALOG_WIDTH: u16 = 38;
 const QUIT_DIALOG_HEIGHT: u16 = 9;
 const HELP_DIALOG_WIDTH: u16 = 60;
@@ -1121,14 +1121,14 @@ impl App {
                 };
                 (
                     title,
-                    " Ctrl+G: suggestion | Ctrl+S: submit | Esc: cancel ",
+                    " Ctrl+G: suggestion | Ctrl+S: submit ",
                     &mut self.review.comment_editor,
                     true,
                 )
             }
             AppMode::IssueCommentInput => (
                 " Comment (PR) ".to_string(),
-                " Ctrl+S: submit | Esc: cancel ",
+                " Ctrl+S: submit ",
                 &mut self.review.comment_editor,
                 true,
             ),
@@ -1136,7 +1136,7 @@ impl App {
                 let event = self.available_events()[self.review.review_event_cursor];
                 (
                     format!(" Review Body ({}) ", event.label()),
-                    " Ctrl+S: submit | Esc: back ",
+                    " Ctrl+S: submit ",
                     &mut self.review.review_body_editor,
                     true,
                 )
@@ -1244,18 +1244,17 @@ impl App {
             } else {
                 "r: resolve"
             };
-            (
-                format!(" j/k: scroll | {resolve_label} | Esc: back "),
-                Color::Yellow,
-            )
+            (format!(" {resolve_label} "), Color::Yellow)
         } else {
-            (" Enter: focus ".to_string(), Color::DarkGray)
+            (String::new(), Color::DarkGray)
         };
-        let block = Block::default()
+        let mut block = Block::default()
             .title(title)
-            .title_bottom(Line::from(help_text).alignment(HorizontalAlignment::Right))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));
+        if !help_text.is_empty() {
+            block = block.title_bottom(Line::from(help_text).alignment(HorizontalAlignment::Right));
+        }
 
         // block なしで line_count を計算（block 付きだとボーダー行が加算されてしまう）
         let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
@@ -1337,15 +1336,6 @@ impl App {
         lines.push(Line::raw(""));
         lines.push(Line::styled(
             format!("  {}", comments_info),
-            Style::default().fg(Color::DarkGray),
-        ));
-        lines.push(Line::raw(""));
-        lines.push(Line::styled(
-            "  j/k: select  Enter: next",
-            Style::default().fg(Color::DarkGray),
-        ));
-        lines.push(Line::styled(
-            "  Esc: cancel",
             Style::default().fg(Color::DarkGray),
         ));
 
