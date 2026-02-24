@@ -89,6 +89,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog
+        run: .github/scripts/generate-changelog.sh > changelog.md
 
       - uses: actions/download-artifact@v4
         with:
@@ -108,7 +113,7 @@ jobs:
         run: |
           gh release create "${{ needs.prepare.outputs.tag }}" \
             --title "${{ needs.prepare.outputs.tag }}" \
-            --generate-notes \
+            --notes-file changelog.md \
             --latest \
             dist/linux-amd64 \
             dist/linux-arm64 \
