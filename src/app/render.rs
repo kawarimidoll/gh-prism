@@ -1292,6 +1292,20 @@ impl App {
         if total_rows <= view_height {
             return;
         }
+        // Clear the last content column (inner rows only) to break any wide
+        // character that spans into the border/scrollbar column.
+        // We intentionally skip the border column itself to preserve its style;
+        // the scrollbar renders with Style::default() (all None) which keeps
+        // the existing cell style intact.
+        if area.width >= 2 && area.height >= 2 {
+            let clear_area = Rect::new(
+                area.x + area.width - 2,
+                area.y + 1,
+                1,
+                area.height.saturating_sub(2),
+            );
+            frame.render_widget(Clear, clear_area);
+        }
         let scroll_range = total_rows.saturating_sub(view_height) + 1;
         let mut sb_state = ScrollbarState::new(scroll_range)
             .position(position)
@@ -1307,9 +1321,18 @@ impl App {
         Rect::new(x, y, width.min(area.width), height.min(area.height))
     }
 
+    /// Wide character-safe clear: pad 1 cell on left/right to avoid
+    /// half-cleared CJK characters at the dialog boundary.
+    fn clear_wide_safe(frame: &mut Frame, rect: Rect, bounds: Rect) {
+        let x = rect.x.saturating_sub(1).max(bounds.x);
+        let right = (rect.x + rect.width + 1).min(bounds.x + bounds.width);
+        let padded = Rect::new(x, rect.y, right - x, rect.height);
+        frame.render_widget(Clear, padded);
+    }
+
     fn render_review_submit_dialog(&self, frame: &mut Frame, area: Rect) {
         let dialog = Self::centered_rect(REVIEW_DIALOG_WIDTH, REVIEW_DIALOG_HEIGHT, area);
-        frame.render_widget(Clear, dialog);
+        Self::clear_wide_safe(frame, dialog, area);
 
         let comments_info = if self.review.pending_comments.is_empty() {
             "No pending comments".to_string()
@@ -1350,7 +1373,7 @@ impl App {
 
     fn render_quit_confirm_dialog(&self, frame: &mut Frame, area: Rect) {
         let dialog = Self::centered_rect(QUIT_DIALOG_WIDTH, QUIT_DIALOG_HEIGHT, area);
-        frame.render_widget(Clear, dialog);
+        Self::clear_wide_safe(frame, dialog, area);
 
         let lines = vec![
             Line::raw(""),
@@ -1383,7 +1406,7 @@ impl App {
             .min(area.height.saturating_sub(4));
         let dialog_width = HELP_DIALOG_WIDTH.min(area.width.saturating_sub(4));
         let dialog = Self::centered_rect(dialog_width, dialog_height, area);
-        frame.render_widget(Clear, dialog);
+        Self::clear_wide_safe(frame, dialog, area);
 
         let s = Style::default().fg(Color::Yellow); // section header
         let k = Style::default().fg(Color::Cyan); // key
@@ -1521,7 +1544,7 @@ impl App {
         // 未キャッシュの画像ならバックグラウンドワーカーを起動
         self.prepare_media_protocol();
 
-        frame.render_widget(Clear, area);
+        Self::clear_wide_safe(frame, area, area);
 
         let total = self.media_count();
         let current = self.media_ref_at(self.media_viewer_index);
