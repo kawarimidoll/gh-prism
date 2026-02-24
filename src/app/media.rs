@@ -269,6 +269,59 @@ fn extract_html_attr(tag: &str, attr_name: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
+impl App {
+    /// メディアビューアモードに入る（メディアがある場合のみ）
+    pub(super) fn enter_media_viewer(&mut self) {
+        self.ensure_pr_desc_rendered();
+        if self.media_refs.is_empty() {
+            self.status_message =
+                Some(StatusMessage::info("No images or videos in PR description"));
+            return;
+        }
+        self.media_viewer_index = 0;
+        self.prepare_media_protocol();
+        self.mode = AppMode::MediaViewer;
+    }
+
+    /// 完了したバックグラウンドワーカーの結果をキャッシュに回収する。
+    pub(super) fn poll_media_protocol_worker(&mut self) {
+        if self
+            .media_protocol_worker
+            .as_ref()
+            .is_some_and(|h| h.is_finished())
+            && let Some(handle) = self.media_protocol_worker.take()
+            && let Ok((url, protocol)) = handle.join()
+        {
+            self.media_protocol_cache.insert(url, protocol);
+        }
+    }
+
+    /// 現在の media_viewer_index に対応するメディアのレンダリングプロトコルを準備する。
+    /// 既にキャッシュ済みの画像はスキップし、未キャッシュの画像はバックグラウンドで生成する。
+    /// 動画の場合はプロトコルを作成しない（サムネイル未対応）。
+    /// 別画像のワーカーが実行中でも、現在の画像のためのワーカーを新たに起動する
+    /// （古いワーカーは完了時にキャッシュへ回収される）。
+    pub(super) fn prepare_media_protocol(&mut self) {
+        let info = self
+            .media_ref_at(self.media_viewer_index)
+            .map(|r| (r.media_type.clone(), r.url.clone()));
+        if let Some((media_type, url)) = info {
+            if media_type == MediaType::Video || self.media_protocol_cache.contains_key(&url) {
+                return;
+            }
+            if let Some(picker) = self.picker.clone()
+                && let Some(img) = self.media_cache.get(&url).cloned()
+            {
+                // 代入により前のワーカーの JoinHandle が drop → detach される
+                self.media_protocol_worker = Some(std::thread::spawn(move || {
+                    let protocol = picker.new_resize_protocol(img);
+                    (url, protocol)
+                }));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,58 +396,5 @@ mod tests {
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].media_type, MediaType::Video);
         assert!(result.contains("[🎬 Video]"));
-    }
-}
-
-impl App {
-    /// メディアビューアモードに入る（メディアがある場合のみ）
-    pub(super) fn enter_media_viewer(&mut self) {
-        self.ensure_pr_desc_rendered();
-        if self.media_refs.is_empty() {
-            self.status_message =
-                Some(StatusMessage::info("No images or videos in PR description"));
-            return;
-        }
-        self.media_viewer_index = 0;
-        self.prepare_media_protocol();
-        self.mode = AppMode::MediaViewer;
-    }
-
-    /// 完了したバックグラウンドワーカーの結果をキャッシュに回収する。
-    pub(super) fn poll_media_protocol_worker(&mut self) {
-        if self
-            .media_protocol_worker
-            .as_ref()
-            .is_some_and(|h| h.is_finished())
-            && let Some(handle) = self.media_protocol_worker.take()
-            && let Ok((url, protocol)) = handle.join()
-        {
-            self.media_protocol_cache.insert(url, protocol);
-        }
-    }
-
-    /// 現在の media_viewer_index に対応するメディアのレンダリングプロトコルを準備する。
-    /// 既にキャッシュ済みの画像はスキップし、未キャッシュの画像はバックグラウンドで生成する。
-    /// 動画の場合はプロトコルを作成しない（サムネイル未対応）。
-    /// 別画像のワーカーが実行中でも、現在の画像のためのワーカーを新たに起動する
-    /// （古いワーカーは完了時にキャッシュへ回収される）。
-    pub(super) fn prepare_media_protocol(&mut self) {
-        let info = self
-            .media_ref_at(self.media_viewer_index)
-            .map(|r| (r.media_type.clone(), r.url.clone()));
-        if let Some((media_type, url)) = info {
-            if media_type == MediaType::Video || self.media_protocol_cache.contains_key(&url) {
-                return;
-            }
-            if let Some(picker) = self.picker.clone()
-                && let Some(img) = self.media_cache.get(&url).cloned()
-            {
-                // 代入により前のワーカーの JoinHandle が drop → detach される
-                self.media_protocol_worker = Some(std::thread::spawn(move || {
-                    let protocol = picker.new_resize_protocol(img);
-                    (url, protocol)
-                }));
-            }
-        }
     }
 }
