@@ -190,6 +190,28 @@ pub struct IssueComment {
     pub created_at: String,
 }
 
+/// Pull Request Review Comments API で既存コメントスレッドに返信を投稿
+pub async fn post_reply_comment(
+    client: &Octocrab,
+    owner: &str,
+    repo: &str,
+    pr_number: u64,
+    body: &str,
+    in_reply_to: u64,
+) -> Result<ReviewComment> {
+    let url = format!("/repos/{}/{}/pulls/{}/comments", owner, repo, pr_number);
+    let comment: ReviewComment = client
+        .post(
+            url,
+            Some(&serde_json::json!({
+                "body": body,
+                "in_reply_to": in_reply_to,
+            })),
+        )
+        .await?;
+    Ok(comment)
+}
+
 /// Issue Comments API で PR に一般コメントを投稿
 pub async fn post_issue_comment(
     client: &Octocrab,

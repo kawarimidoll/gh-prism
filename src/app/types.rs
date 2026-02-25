@@ -46,6 +46,7 @@ pub enum AppMode {
     CommentInput,
     IssueCommentInput,
     CommentView,
+    ReplyInput,
     ReviewSubmit,
     ReviewBodyInput,
     QuitConfirm,
@@ -183,6 +184,7 @@ pub struct ReviewState {
     pub quit_after_submit: bool,
     pub thread_map: std::collections::HashMap<u64, crate::github::comments::ReviewThread>,
     pub needs_resolve_toggle: Option<ResolveToggleRequest>,
+    pub reply_to_comment_id: Option<u64>,
 }
 
 /// DiffView パネルの表示状態
@@ -231,6 +233,7 @@ pub enum ConversationKind {
         replies: Vec<CodeCommentReply>,
         is_resolved: bool,
         thread_node_id: Option<String>,
+        root_comment_id: u64,
     },
 }
 

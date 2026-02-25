@@ -299,6 +299,7 @@ fn build_conversation(
                 replies,
                 is_resolved: thread_info.is_some_and(|t| t.is_resolved),
                 thread_node_id: thread_info.map(|t| t.node_id.clone()),
+                root_comment_id: root.id,
             },
         });
     }

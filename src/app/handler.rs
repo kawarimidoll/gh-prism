@@ -110,8 +110,10 @@ impl App {
                 if down {
                     self.conversation_scroll = self.conversation_scroll.saturating_add(1);
                     self.clamp_conversation_scroll();
+                    self.derive_conversation_cursor();
                 } else {
                     self.conversation_scroll = self.conversation_scroll.saturating_sub(1);
+                    self.derive_conversation_cursor();
                 }
             }
             Panel::DiffView => {
@@ -169,6 +171,7 @@ impl App {
                 AppMode::IssueCommentInput => {
                     self.handle_issue_comment_input_mode(key.code, key.modifiers)
                 }
+                AppMode::ReplyInput => self.handle_reply_input_mode(key.code, key.modifiers),
                 AppMode::CommentView => self.handle_comment_view_mode(key.code),
                 AppMode::ReviewSubmit => self.handle_review_submit_mode(key.code),
                 AppMode::ReviewBodyInput => {
@@ -280,6 +283,7 @@ impl App {
                         let half = self.conversation_view_height / 2;
                         self.conversation_scroll = self.conversation_scroll.saturating_add(half);
                         self.clamp_conversation_scroll();
+                        self.derive_conversation_cursor();
                     }
                     _ => self.scroll_diff_down(),
                 }
@@ -297,6 +301,7 @@ impl App {
                     Panel::Conversation => {
                         let half = self.conversation_view_height / 2;
                         self.conversation_scroll = self.conversation_scroll.saturating_sub(half);
+                        self.derive_conversation_cursor();
                     }
                     _ => self.scroll_diff_up(),
                 }
@@ -319,6 +324,7 @@ impl App {
                             .conversation_scroll
                             .saturating_add(self.conversation_view_height);
                         self.clamp_conversation_scroll();
+                        self.derive_conversation_cursor();
                     }
                     _ => self.page_down(),
                 }
@@ -338,6 +344,7 @@ impl App {
                         self.conversation_scroll = self
                             .conversation_scroll
                             .saturating_sub(self.conversation_view_height);
+                        self.derive_conversation_cursor();
                     }
                     _ => self.page_up(),
                 }
@@ -350,6 +357,7 @@ impl App {
                     self.commit_msg_scroll = 0;
                 }
                 Panel::Conversation => {
+                    self.conversation_cursor = 0;
                     self.conversation_scroll = 0;
                 }
                 Panel::DiffView => {
@@ -369,6 +377,7 @@ impl App {
                     self.commit_msg_scroll = self.commit_msg_max_scroll();
                 }
                 Panel::Conversation => {
+                    self.conversation_cursor = self.conversation.len().saturating_sub(1);
                     self.conversation_scroll = self.conversation_max_scroll();
                 }
                 Panel::DiffView => {
@@ -521,11 +530,57 @@ impl App {
                 self.focused_panel = Panel::PrDescription;
             }
             KeyCode::Char('c') => {
+                // カーソル位置のエントリが CodeComment なら返信、それ以外なら新規 issue comment
+                if let Some(entry) = self.conversation.get(self.conversation_cursor) {
+                    if let ConversationKind::CodeComment {
+                        root_comment_id, ..
+                    } = entry.kind
+                    {
+                        self.review.reply_to_comment_id = Some(root_comment_id);
+                        self.review.comment_editor.clear();
+                        self.mode = AppMode::ReplyInput;
+                        return;
+                    }
+                }
                 self.review.comment_editor.clear();
                 self.mode = AppMode::IssueCommentInput;
             }
             _ => {}
         }
+    }
+
+    /// 返信入力モードのキー処理
+    pub(super) fn handle_reply_input_mode(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        match code {
+            KeyCode::Esc => {
+                self.review.comment_editor.clear();
+                self.review.reply_to_comment_id = None;
+                // CommentView から入った場合（viewing_comments が残っている）は CommentView に戻る
+                if !self.review.viewing_comments.is_empty() {
+                    self.mode = AppMode::CommentView;
+                } else {
+                    self.mode = AppMode::Normal;
+                }
+                return;
+            }
+            KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
+                let text = self.review.comment_editor.text();
+                if text.trim().is_empty() {
+                    self.status_message = Some(StatusMessage::error("Reply is empty"));
+                    return;
+                }
+                self.needs_reply_submit = true;
+                self.status_message = Some(StatusMessage::info("Submitting reply..."));
+                self.mode = AppMode::Normal;
+                return;
+            }
+            _ => {
+                self.review.comment_editor.handle_key(code, modifiers);
+            }
+        }
+        self.review
+            .comment_editor
+            .ensure_visible(editor::EDITOR_VISIBLE_HEIGHT);
     }
 
     /// 行選択モードのキー処理
@@ -611,6 +666,16 @@ impl App {
             }
             KeyCode::Char('r') => {
                 self.toggle_resolve_thread();
+            }
+            KeyCode::Char('c') => {
+                // viewing_comments からルートコメント ID を取得して返信モードへ
+                if let Some(root_id) =
+                    crate::github::comments::root_comment_id(&self.review.viewing_comments)
+                {
+                    self.review.reply_to_comment_id = Some(root_id);
+                    self.review.comment_editor.clear();
+                    self.mode = AppMode::ReplyInput;
+                }
             }
             _ => {}
         }

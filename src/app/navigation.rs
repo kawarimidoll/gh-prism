@@ -93,8 +93,7 @@ impl App {
                 self.move_cursor_down();
             }
             Panel::Conversation => {
-                self.conversation_scroll = self.conversation_scroll.saturating_add(1);
-                self.clamp_conversation_scroll();
+                self.conversation_move_next();
             }
             _ => {}
         }
@@ -131,10 +130,113 @@ impl App {
                 self.move_cursor_up();
             }
             Panel::Conversation => {
-                self.conversation_scroll = self.conversation_scroll.saturating_sub(1);
+                self.conversation_move_prev();
             }
             _ => {}
         }
+    }
+
+    // ── Conversation エントリカーソル ──────────────────────────
+
+    /// j: 長いエントリ内では1行スクロール、末尾まで見えたら次のエントリに移動
+    fn conversation_move_next(&mut self) {
+        let offsets = &self.conversation_visual_offsets;
+        if self.conversation.is_empty() || offsets.len() <= 1 {
+            return;
+        }
+        let cursor = self.conversation_cursor;
+        let entry_end = offsets.get(cursor + 1).copied().unwrap_or(0);
+        let viewport_bottom = self.conversation_scroll + self.conversation_view_height;
+
+        if entry_end > viewport_bottom {
+            // 現在のエントリが画面下に続いている → 1行スクロール
+            self.conversation_scroll = self.conversation_scroll.saturating_add(1);
+            self.clamp_conversation_scroll();
+        } else if cursor + 1 < self.conversation.len() {
+            // 次のエントリに移動＋中央配置
+            self.conversation_cursor = cursor + 1;
+            self.center_conversation_on_cursor();
+        }
+    }
+
+    /// k: 長いエントリ内では1行スクロール、先頭まで見えたら前のエントリに移動
+    fn conversation_move_prev(&mut self) {
+        let offsets = &self.conversation_visual_offsets;
+        if self.conversation.is_empty() || offsets.len() <= 1 {
+            return;
+        }
+        let cursor = self.conversation_cursor;
+        let entry_start = offsets.get(cursor).copied().unwrap_or(0);
+
+        if entry_start < self.conversation_scroll {
+            // 現在のエントリが画面上に続いている → 1行スクロール
+            self.conversation_scroll = self.conversation_scroll.saturating_sub(1);
+        } else if cursor > 0 {
+            // 前のエントリに移動＋末尾寄せで中央配置
+            self.conversation_cursor = cursor - 1;
+            self.center_conversation_on_cursor_bottom();
+        }
+    }
+
+    /// カーソルエントリを画面中央に配置（j で入った時 = 先頭から表示）
+    /// 先頭/末尾エントリは clamp により自然にエリア端にフィットする
+    fn center_conversation_on_cursor(&mut self) {
+        let offsets = &self.conversation_visual_offsets;
+        let cursor = self.conversation_cursor;
+        if offsets.len() <= cursor + 1 {
+            return;
+        }
+        let entry_start = offsets[cursor];
+        let entry_end = offsets[cursor + 1];
+        let entry_height = entry_end - entry_start;
+        let vh = self.conversation_view_height;
+
+        self.conversation_scroll = if entry_height >= vh {
+            // 長いエントリ: 先頭から表示
+            entry_start
+        } else {
+            // 中央配置
+            entry_start.saturating_sub((vh - entry_height) / 2)
+        };
+        self.clamp_conversation_scroll();
+    }
+
+    /// カーソルエントリを画面中央に配置（k で入った時 = 末尾から表示）
+    fn center_conversation_on_cursor_bottom(&mut self) {
+        let offsets = &self.conversation_visual_offsets;
+        let cursor = self.conversation_cursor;
+        if offsets.len() <= cursor + 1 {
+            return;
+        }
+        let entry_start = offsets[cursor];
+        let entry_end = offsets[cursor + 1];
+        let entry_height = entry_end - entry_start;
+        let vh = self.conversation_view_height;
+
+        self.conversation_scroll = if entry_height >= vh {
+            // 長いエントリ: 末尾が見えるように配置
+            entry_end.saturating_sub(vh)
+        } else {
+            // 中央配置
+            entry_start.saturating_sub((vh - entry_height) / 2)
+        };
+        self.clamp_conversation_scroll();
+    }
+
+    /// Ctrl+d/u 等でスクロール後、画面中央のエントリにカーソルを合わせる
+    pub(super) fn derive_conversation_cursor(&mut self) {
+        let offsets = &self.conversation_visual_offsets;
+        if offsets.len() <= 1 || self.conversation.is_empty() {
+            return;
+        }
+        let center = self.conversation_scroll + self.conversation_view_height / 2;
+        let mut cursor = 0;
+        for i in 0..self.conversation.len() {
+            if offsets[i] <= center {
+                cursor = i;
+            }
+        }
+        self.conversation_cursor = cursor;
     }
 
     /// カーソルをリセット（先頭の @@ 行をスキップ）

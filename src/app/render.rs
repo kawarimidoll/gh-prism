@@ -77,6 +77,7 @@ impl App {
             AppMode::Normal => "",
             AppMode::LineSelect => " [LINE SELECT] ",
             AppMode::CommentInput | AppMode::IssueCommentInput => " [COMMENT] ",
+            AppMode::ReplyInput => " [REPLY] ",
             AppMode::CommentView => " [VIEWING] ",
             AppMode::ReviewSubmit => " [REVIEW] ",
             AppMode::ReviewBodyInput => " [REVIEW] ",
@@ -94,7 +95,9 @@ impl App {
         let header_bg = match self.mode {
             AppMode::Normal => Color::Blue,
             AppMode::LineSelect => Color::Magenta,
-            AppMode::CommentInput | AppMode::IssueCommentInput => Color::Green,
+            AppMode::CommentInput | AppMode::IssueCommentInput | AppMode::ReplyInput => {
+                Color::Green
+            }
             AppMode::CommentView => Color::Yellow,
             AppMode::ReviewSubmit => Color::Cyan,
             AppMode::ReviewBodyInput => Color::Green,
@@ -655,7 +658,43 @@ impl App {
         self.ensure_conversation_rendered();
         let lines = self.conversation_rendered.as_ref().unwrap().clone();
 
-        let title = format!(" Conversation ({}) ", self.conversation.len());
+        // 論理行オフセットから Wrap 考慮の視覚行オフセットを計算し、navigation 用にキャッシュ
+        {
+            let logical_offsets = &self.conversation_entry_offsets;
+            let mut visual_offsets: Vec<u16> = Vec::new();
+            if inner_width > 0 && !logical_offsets.is_empty() {
+                let mut visual_line = 0u16;
+                let mut offset_idx = 0;
+                for (i, line) in lines.iter().enumerate() {
+                    while offset_idx < logical_offsets.len() && logical_offsets[offset_idx] == i {
+                        visual_offsets.push(visual_line);
+                        offset_idx += 1;
+                    }
+                    let count = Paragraph::new(line.clone())
+                        .wrap(Wrap { trim: false })
+                        .line_count(inner_width);
+                    visual_line += count.max(1) as u16;
+                }
+                while offset_idx < logical_offsets.len() {
+                    visual_offsets.push(visual_line);
+                    offset_idx += 1;
+                }
+            }
+            self.conversation_visual_offsets = visual_offsets;
+        }
+
+        let cursor_idx = self
+            .conversation_cursor
+            .min(self.conversation.len().saturating_sub(1));
+        let title = if self.conversation.is_empty() {
+            " Conversation (0) ".to_string()
+        } else {
+            format!(
+                " Conversation ({}/{}) ",
+                cursor_idx + 1,
+                self.conversation.len()
+            )
+        };
 
         let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
         self.conversation_visual_total = paragraph.line_count(inner_width) as u16;
@@ -671,6 +710,37 @@ impl App {
         }
         let paragraph = paragraph.block(block).scroll((self.conversation_scroll, 0));
         frame.render_widget(paragraph, area);
+
+        // カーソルエントリのハイライト（フォーカス時のみ、視覚行ベース）
+        let visual_offsets = &self.conversation_visual_offsets;
+        if self.focused_panel == Panel::Conversation
+            && visual_offsets.len() > 1
+            && cursor_idx < self.conversation.len()
+        {
+            let entry_start = visual_offsets[cursor_idx];
+            let entry_end = visual_offsets[cursor_idx + 1];
+            let scroll = self.conversation_scroll;
+            let view_height = self.conversation_view_height;
+            let inner_y = area.y + 1;
+            let cursor_bg = match self.theme {
+                ThemeMode::Dark => CURSOR_BG_DARK,
+                ThemeMode::Light => CURSOR_BG_LIGHT,
+            };
+            let buf = frame.buffer_mut();
+            for row in entry_start..entry_end {
+                if row < scroll || row >= scroll + view_height {
+                    continue;
+                }
+                let screen_y = inner_y + (row - scroll);
+                let row_rect = Rect {
+                    x: area.x + 1,
+                    y: screen_y,
+                    width: inner_width,
+                    height: 1,
+                };
+                buf.set_style(row_rect, Style::default().bg(cursor_bg));
+            }
+        }
 
         Self::render_scrollbar(
             frame,
@@ -775,7 +845,10 @@ impl App {
             block = block.title_top(Line::from(right_title).alignment(HorizontalAlignment::Right));
         }
         if self.focused_panel == Panel::DiffView
-            && !matches!(self.mode, AppMode::CommentInput | AppMode::CommentView)
+            && !matches!(
+                self.mode,
+                AppMode::CommentInput | AppMode::CommentView | AppMode::ReplyInput
+            )
         {
             let hint = if self.mode == AppMode::LineSelect {
                 HINT_COMMENT
@@ -1101,7 +1174,10 @@ impl App {
         // 編集モードでなく Diff が表示中なら、カーソル行のレビューコメントを自動表示
         if !matches!(
             self.mode,
-            AppMode::CommentInput | AppMode::IssueCommentInput | AppMode::ReviewBodyInput
+            AppMode::CommentInput
+                | AppMode::IssueCommentInput
+                | AppMode::ReplyInput
+                | AppMode::ReviewBodyInput
         ) && self.layout.diff_view_rect.width > 0
         {
             let comments = self.comments_at_diff_line(self.diff.cursor_line);
@@ -1128,6 +1204,12 @@ impl App {
             }
             AppMode::IssueCommentInput => (
                 " Comment (PR) ".to_string(),
+                " Ctrl+S: submit ",
+                &mut self.review.comment_editor,
+                true,
+            ),
+            AppMode::ReplyInput => (
+                " Reply ".to_string(),
                 " Ctrl+S: submit ",
                 &mut self.review.comment_editor,
                 true,
@@ -1244,7 +1326,7 @@ impl App {
             } else {
                 "r: resolve"
             };
-            (format!(" {resolve_label} "), Color::Yellow)
+            (format!(" c: reply | {resolve_label} "), Color::Yellow)
         } else {
             (String::new(), Color::DarkGray)
         };
@@ -1485,6 +1567,7 @@ impl App {
                     ("v", "Enter line select mode"),
                     ("c", "Comment on line"),
                     ("Enter", "View comment on line"),
+                    ("c (in view)", "Reply to thread"),
                     ("r", "Resolve/unresolve thread"),
                     ("Ctrl+G", "Insert suggestion"),
                     ("Ctrl+S", "Submit comment"),
@@ -1493,7 +1576,8 @@ impl App {
             Panel::Conversation => {
                 entries.extend_from_slice(&[
                     ("", "Conversation"),
-                    ("c", "Comment on PR"),
+                    ("j / k", "Next / prev entry"),
+                    ("c", "Reply / comment on PR"),
                     ("Ctrl+S", "Submit comment"),
                     ("Esc", "Back to PR description"),
                 ]);

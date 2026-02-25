@@ -112,6 +112,14 @@ pub struct App {
     conversation_visual_total: u16,
     /// Issue Comment 送信フラグ（draw 後に実行）
     needs_issue_comment_submit: bool,
+    /// Reply Comment 送信フラグ（draw 後に実行）
+    needs_reply_submit: bool,
+    /// Conversation ペインのエントリカーソル位置
+    conversation_cursor: usize,
+    /// Conversation エントリごとの論理行オフセット（ensure_conversation_rendered で計算）
+    conversation_entry_offsets: Vec<usize>,
+    /// Conversation エントリごとの Wrap 考慮済み視覚行オフセット（render 時に計算、navigation で参照）
+    conversation_visual_offsets: Vec<u16>,
 }
 
 impl App {
@@ -213,6 +221,10 @@ impl App {
             conversation_view_height: 10, // 初期値、render で更新される
             conversation_visual_total: 0, // 初期値、render で更新される
             needs_issue_comment_submit: false,
+            needs_reply_submit: false,
+            conversation_cursor: 0,
+            conversation_entry_offsets: Vec::new(),
+            conversation_visual_offsets: Vec::new(),
         }
     }
 
@@ -556,6 +568,11 @@ impl App {
                 self.submit_issue_comment();
             }
 
+            if self.needs_reply_submit {
+                self.needs_reply_submit = false;
+                self.submit_reply_comment();
+            }
+
             if self.review.needs_resolve_toggle.is_some() {
                 self.execute_resolve_toggle();
             }
@@ -604,6 +621,7 @@ impl App {
         }
 
         let mut lines: Vec<Line<'static>> = Vec::new();
+        let mut entry_offsets: Vec<usize> = Vec::new();
 
         if self.conversation.is_empty() {
             lines.push(Line::styled(
@@ -612,6 +630,7 @@ impl App {
             ));
         } else {
             for entry in &self.conversation {
+                entry_offsets.push(lines.len());
                 // ヘッダー行: @author (date) [STATE]
                 let date_display = format_datetime(&entry.created_at);
                 let mut header_spans = vec![
@@ -694,8 +713,15 @@ impl App {
                 // 空行（エントリ間セパレータ）
                 lines.push(Line::raw(""));
             }
+            // 末尾のセンチネル（最後のエントリの終了位置）
+            entry_offsets.push(lines.len());
         }
 
+        self.conversation_entry_offsets = entry_offsets;
+        // カーソル位置をクランプ
+        if !self.conversation.is_empty() {
+            self.conversation_cursor = self.conversation_cursor.min(self.conversation.len() - 1);
+        }
         self.conversation_rendered = Some(lines);
     }
 
@@ -1000,6 +1026,80 @@ impl App {
                 self.status_message = Some(StatusMessage::info("✓ Comment posted"));
             }
             Err(e) => {
+                self.status_message = Some(StatusMessage::error(format!("✗ Failed: {}", e)));
+            }
+        }
+    }
+
+    /// Reply Comment を GitHub API に送信
+    fn submit_reply_comment(&mut self) {
+        let body = self.review.comment_editor.text();
+        if body.trim().is_empty() {
+            self.review.reply_to_comment_id = None;
+            return;
+        }
+
+        let Some(in_reply_to) = self.review.reply_to_comment_id.take() else {
+            return;
+        };
+
+        let Some(client) = &self.client else {
+            self.status_message = Some(StatusMessage::error("✗ No API client available"));
+            return;
+        };
+
+        let Some((owner, repo)) = self.parse_repo() else {
+            self.status_message = Some(StatusMessage::error("✗ Invalid repo format"));
+            return;
+        };
+
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(comments::post_reply_comment(
+                client,
+                owner,
+                repo,
+                self.pr_number,
+                &body,
+                in_reply_to,
+            ))
+        });
+
+        match result {
+            Ok(comment) => {
+                // review_comments に追加
+                self.review.review_comments.push(comment.clone());
+
+                // viewing_comments が表示中なら追加（CommentView 経由時）
+                if !self.review.viewing_comments.is_empty() {
+                    self.review.viewing_comments.push(comment.clone());
+                }
+
+                // conversation 内の該当 CodeComment エントリに reply を追加
+                for entry in &mut self.conversation {
+                    if let ConversationKind::CodeComment {
+                        root_comment_id,
+                        ref mut replies,
+                        ..
+                    } = entry.kind
+                    {
+                        if root_comment_id == in_reply_to {
+                            replies.push(CodeCommentReply {
+                                author: comment.user.login.clone(),
+                                body: comment.body.clone(),
+                                created_at: comment.created_at.clone(),
+                            });
+                            break;
+                        }
+                    }
+                }
+
+                self.conversation_rendered = None; // キャッシュ無効化
+                self.review.comment_editor.clear();
+                self.status_message = Some(StatusMessage::info("✓ Reply posted"));
+            }
+            Err(e) => {
+                // 失敗時は reply_to_comment_id を復元して再試行可能に
+                self.review.reply_to_comment_id = Some(in_reply_to);
                 self.status_message = Some(StatusMessage::error(format!("✗ Failed: {}", e)));
             }
         }
