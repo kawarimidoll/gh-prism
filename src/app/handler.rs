@@ -542,16 +542,15 @@ impl App {
             }
             KeyCode::Char('c') => {
                 // カーソル位置のエントリが CodeComment なら返信、それ以外なら新規 issue comment
-                if let Some(entry) = self.conversation.get(self.conversation_cursor) {
-                    if let ConversationKind::CodeComment {
+                if let Some(entry) = self.conversation.get(self.conversation_cursor)
+                    && let ConversationKind::CodeComment {
                         root_comment_id, ..
                     } = entry.kind
-                    {
-                        self.review.reply_to_comment_id = Some(root_comment_id);
-                        self.review.comment_editor.clear();
-                        self.mode = AppMode::ReplyInput;
-                        return;
-                    }
+                {
+                    self.review.reply_to_comment_id = Some(root_comment_id);
+                    self.review.comment_editor.clear();
+                    self.mode = AppMode::ReplyInput;
+                    return;
                 }
                 self.review.comment_editor.clear();
                 self.mode = AppMode::IssueCommentInput;

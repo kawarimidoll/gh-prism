@@ -231,8 +231,8 @@ impl App {
         }
         let center = self.conversation_scroll + self.conversation_view_height / 2;
         let mut cursor = 0;
-        for i in 0..self.conversation.len() {
-            if offsets[i] <= center {
+        for (i, &offset) in offsets.iter().enumerate().take(self.conversation.len()) {
+            if offset <= center {
                 cursor = i;
             }
         }

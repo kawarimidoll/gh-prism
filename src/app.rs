@@ -1093,15 +1093,14 @@ impl App {
                         ref mut replies,
                         ..
                     } = entry.kind
+                        && root_comment_id == in_reply_to
                     {
-                        if root_comment_id == in_reply_to {
-                            replies.push(CodeCommentReply {
-                                author: comment.user.login.clone(),
-                                body: comment.body.clone(),
-                                created_at: comment.created_at.clone(),
-                            });
-                            break;
-                        }
+                        replies.push(CodeCommentReply {
+                            author: comment.user.login.clone(),
+                            body: comment.body.clone(),
+                            created_at: comment.created_at.clone(),
+                        });
+                        break;
                     }
                 }
 
