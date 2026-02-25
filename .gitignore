@@ -23,6 +23,9 @@ target
 /target
 /dist
 
+# CI-generated version file (read by flake.nix for Cachix builds)
+/VERSION
+
 # Nix
 /result
 .pre-commit-config.yaml

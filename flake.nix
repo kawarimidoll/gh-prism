@@ -1,6 +1,13 @@
 {
   description = "gh extension TUI for reviewing GitHub Pull Requests";
 
+  nixConfig = {
+    extra-substituters = [ "https://kawarimidoll.cachix.org" ];
+    extra-trusted-public-keys = [
+      "kawarimidoll.cachix.org-1:43W5G98mVTyDaMeG7ZGzx4h/be5u4ULUGV/9svLjKJY="
+    ];
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     git-hooks = {
@@ -30,15 +37,23 @@
         let
           pkgs = nixpkgs.legacyPackages.${system};
           cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
+          versionFile = ./VERSION;
+          ghPrismVersion =
+            if builtins.pathExists versionFile then
+              builtins.replaceStrings [ "\n" ] [ "" ] (builtins.readFile versionFile)
+            else
+              "${cargoToml.package.version}-${self.dirtyShortRev or self.shortRev or "dirty"}";
         in
         {
           default = pkgs.rustPlatform.buildRustPackage {
             pname = cargoToml.package.name;
-            version = cargoToml.package.version;
+            version = ghPrismVersion;
             src = ./.;
             cargoLock = {
               lockFile = ./Cargo.lock;
             };
+
+            env.GH_PRISM_VERSION = ghPrismVersion;
 
             nativeBuildInputs = [ pkgs.makeWrapper ];
 
