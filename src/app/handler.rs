@@ -581,7 +581,6 @@ impl App {
                     return;
                 }
                 self.needs_reply_submit = true;
-                self.status_message = Some(StatusMessage::info("Submitting reply..."));
                 self.mode = AppMode::Normal;
                 return;
             }
@@ -644,7 +643,6 @@ impl App {
                     return;
                 }
                 self.needs_issue_comment_submit = true;
-                self.status_message = Some(StatusMessage::info("Submitting comment..."));
                 self.mode = AppMode::Normal;
                 self.focused_panel = Panel::Conversation;
                 return;
@@ -735,10 +733,6 @@ impl App {
             }
             KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
                 let event = self.available_events()[self.review.review_event_cursor];
-                self.status_message = Some(StatusMessage::info(format!(
-                    "Submitting ({})...",
-                    event.label()
-                )));
                 self.review.needs_submit = Some(event);
                 self.mode = AppMode::Normal;
             }

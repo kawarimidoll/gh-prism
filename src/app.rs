@@ -1129,12 +1129,6 @@ impl App {
         };
 
         let should_resolve = !thread.is_resolved;
-        let action = if should_resolve {
-            "Resolving..."
-        } else {
-            "Unresolving..."
-        };
-        self.status_message = Some(StatusMessage::info(action));
         self.review.needs_resolve_toggle = Some(ResolveToggleRequest {
             thread_node_id: thread.node_id.clone(),
             should_resolve,
@@ -3763,7 +3757,6 @@ mod tests {
         app.handle_review_body_input_mode(KeyCode::Char('s'), KeyModifiers::CONTROL);
         assert_eq!(app.mode, AppMode::Normal);
         assert_eq!(app.review.needs_submit, Some(ReviewEvent::Approve));
-        assert!(app.status_message.is_some());
     }
 
     #[test]
@@ -3945,10 +3938,6 @@ mod tests {
         assert!(app.needs_issue_comment_submit);
         assert_eq!(app.mode, AppMode::Normal);
         assert_eq!(app.focused_panel, Panel::Conversation);
-        assert_eq!(
-            app.status_message.as_ref().unwrap().level,
-            StatusLevel::Info
-        );
     }
 
     #[test]
@@ -3981,5 +3970,62 @@ mod tests {
             app.status_message.as_ref().unwrap().level,
             StatusLevel::Error
         );
+    }
+
+    #[test]
+    fn test_blocking_operation_message_none_by_default() {
+        let app = TestAppBuilder::new().build();
+        assert!(app.blocking_operation_message().is_none());
+    }
+
+    #[test]
+    fn test_blocking_operation_message_reload() {
+        let mut app = TestAppBuilder::new().build();
+        app.needs_reload = true;
+        assert_eq!(
+            app.blocking_operation_message(),
+            Some("Reloading PR data...")
+        );
+    }
+
+    #[test]
+    fn test_blocking_operation_message_submit_review() {
+        let mut app = TestAppBuilder::new().build();
+        app.review.needs_submit = Some(ReviewEvent::Comment);
+        assert_eq!(
+            app.blocking_operation_message(),
+            Some("Submitting review...")
+        );
+    }
+
+    #[test]
+    fn test_blocking_operation_message_issue_comment() {
+        let mut app = TestAppBuilder::new().build();
+        app.needs_issue_comment_submit = true;
+        assert_eq!(
+            app.blocking_operation_message(),
+            Some("Submitting comment...")
+        );
+    }
+
+    #[test]
+    fn test_blocking_operation_message_reply() {
+        let mut app = TestAppBuilder::new().build();
+        app.needs_reply_submit = true;
+        assert_eq!(
+            app.blocking_operation_message(),
+            Some("Submitting reply...")
+        );
+    }
+
+    #[test]
+    fn test_blocking_operation_message_resolve_toggle() {
+        let mut app = TestAppBuilder::new().build();
+        app.review.needs_resolve_toggle = Some(ResolveToggleRequest {
+            thread_node_id: "test".to_string(),
+            should_resolve: true,
+            root_comment_id: 1,
+        });
+        assert_eq!(app.blocking_operation_message(), Some("Updating thread..."));
     }
 }
