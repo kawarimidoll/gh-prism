@@ -117,6 +117,7 @@
               clippy = {
                 enable = true;
                 stages = [ "pre-push" ]; # Heavy check - run on push only
+                settings.denyWarnings = true;
               };
 
               # Nix
