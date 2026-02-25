@@ -123,6 +123,12 @@ impl App {
         if !mode_indicator.is_empty() {
             right_spans.push(Span::styled(mode_indicator, header_style));
         }
+        if self.needs_reload {
+            right_spans.push(Span::styled(
+                " [RELOADING...] ",
+                Style::default().bg(Color::Yellow).fg(Color::Black),
+            ));
+        }
         if !zoom_indicator.is_empty() {
             right_spans.push(Span::styled(zoom_indicator, header_style));
         }
@@ -141,7 +147,7 @@ impl App {
         // 左セクション: PR 情報（残り幅で truncate）
         let total_width = main_layout[0].width as usize;
         let left_full = format!(
-            " prism - {}#{} | z: zoom | ?: help",
+            " prism - {}#{} | R: reload | z: zoom | ?: help",
             self.repo, self.pr_number,
         );
         let left_max = total_width.saturating_sub(right_width);
@@ -1509,6 +1515,7 @@ impl App {
             ("1 / 2 / 3 / 4", "Jump to pane"),
             ("Esc", "Back to parent pane"),
             ("z", "Toggle zoom"),
+            ("R", "Reload PR data"),
             ("S", "Submit review"),
             ("?", "This help"),
             ("q", "Quit"),

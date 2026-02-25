@@ -102,6 +102,8 @@ pub struct App {
     visible_review_comment_cache: HashMap<(String, String), usize>,
     /// 自分のPRかどうか（Approve/Request Changesを非表示にする）
     is_own_pr: bool,
+    /// 現在の認証ユーザー名（リロード時の is_own_pr 再判定に使用）
+    current_user: String,
     /// Conversation エントリ（Issue Comment + Review を時系列マージ）
     conversation: Vec<ConversationEntry>,
     /// Conversation ペインのスクロール位置
@@ -114,6 +116,8 @@ pub struct App {
     needs_issue_comment_submit: bool,
     /// Reply Comment 送信フラグ（draw 後に実行）
     needs_reply_submit: bool,
+    /// PR データリロードフラグ（draw 後に実行）
+    needs_reload: bool,
     /// Conversation ペインのエントリカーソル位置
     conversation_cursor: usize,
     /// Conversation エントリごとの論理行オフセット（ensure_conversation_rendered で計算）
@@ -141,6 +145,7 @@ impl App {
         client: Option<Octocrab>,
         theme: ThemeMode,
         is_own_pr: bool,
+        current_user: String,
         review_threads: Vec<ReviewThread>,
     ) -> Self {
         let mut commit_list_state = ListState::default();
@@ -216,12 +221,14 @@ impl App {
             media_protocol_worker: None,
             visible_review_comment_cache,
             is_own_pr,
+            current_user,
             conversation,
             conversation_scroll: 0,
             conversation_view_height: 10, // 初期値、render で更新される
             conversation_visual_total: 0, // 初期値、render で更新される
             needs_issue_comment_submit: false,
             needs_reply_submit: false,
+            needs_reload: false,
             conversation_cursor: 0,
             conversation_entry_offsets: Vec::new(),
             conversation_visual_offsets: Vec::new(),
@@ -571,6 +578,11 @@ impl App {
             if self.needs_reply_submit {
                 self.needs_reply_submit = false;
                 self.submit_reply_comment();
+            }
+
+            if self.needs_reload {
+                self.needs_reload = false;
+                self.execute_reload();
             }
 
             if self.review.needs_resolve_toggle.is_some() {
@@ -1179,6 +1191,147 @@ impl App {
         }
     }
 
+    /// PR データをリロードして App 状態を更新する
+    fn execute_reload(&mut self) {
+        let Some(client) = &self.client else {
+            self.status_message = Some(StatusMessage::error("✗ No API client available"));
+            return;
+        };
+
+        let Some((owner, repo)) = self.parse_repo() else {
+            self.status_message = Some(StatusMessage::error("✗ Invalid repo format"));
+            return;
+        };
+
+        let client = client.clone();
+        let owner = owner.to_string();
+        let repo = repo.to_string();
+        let pr_number = self.pr_number;
+
+        // 状態の保存: 選択中のコミットSHA、ファイル名、パネル状態
+        let saved_commit_sha = self.current_commit_sha();
+        let saved_filename = self.current_file().map(|f| f.filename.clone());
+        let saved_focused_panel = self.focused_panel;
+        let saved_zoomed = self.zoomed;
+        let saved_viewed_files = self.viewed_files.clone();
+        let saved_pending_comments = self.review.pending_comments.clone();
+
+        // block_in_place + block_on で async を呼ぶ（既存パターン踏襲）
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(crate::reload_pr_data(&client, &owner, &repo, pr_number))
+        });
+
+        match result {
+            Ok(data) => {
+                // PR メタデータを更新
+                self.pr_title = data.metadata.pr_title;
+                self.pr_body = data.metadata.pr_body;
+                self.pr_author = data.metadata.pr_author;
+                self.pr_base_branch = data.metadata.pr_base_branch;
+                self.pr_head_branch = data.metadata.pr_head_branch;
+                self.pr_created_at = data.metadata.pr_created_at;
+                self.pr_state = data.metadata.pr_state;
+
+                // コミット・ファイル・コメントを差し替え
+                self.commits = data.commits;
+                self.files_map = data.files_map;
+                self.review.review_comments = data.review_comments.clone();
+
+                // thread_map を再構築
+                self.review.thread_map = data
+                    .review_threads
+                    .into_iter()
+                    .map(|t| (t.root_comment_database_id, t))
+                    .collect();
+
+                // visible_review_comment_cache を再計算
+                self.visible_review_comment_cache = Self::build_visible_comment_cache(
+                    &self.review.review_comments,
+                    &self.files_map,
+                );
+
+                // conversation を再構築
+                self.conversation = crate::build_conversation(
+                    data.issue_comments,
+                    data.reviews,
+                    data.review_comments,
+                    &self.review.thread_map.values().cloned().collect::<Vec<_>>(),
+                );
+
+                // is_own_pr を再判定
+                self.is_own_pr =
+                    !self.current_user.is_empty() && self.current_user == self.pr_author;
+
+                // キャッシュ無効化
+                self.pr_desc_rendered = None;
+                self.conversation_rendered = None;
+                self.diff.highlight_cache = None;
+
+                // メディア状態リセット（pr_body 更新に追従）
+                self.media_refs = Vec::new();
+                self.media_protocol_cache.clear();
+                self.media_protocol_worker = None;
+
+                // 状態の復元
+                self.focused_panel = saved_focused_panel;
+                self.zoomed = saved_zoomed;
+                self.viewed_files = saved_viewed_files;
+                self.review.pending_comments = saved_pending_comments;
+
+                // コミット選択の復元: SHA で再検索
+                if let Some(ref sha) = saved_commit_sha {
+                    if let Some(idx) = self.commits.iter().position(|c| c.sha == *sha) {
+                        self.commit_list_state.select(Some(idx));
+                    } else if !self.commits.is_empty() {
+                        // 見つからなければ末尾（最新コミット）
+                        self.commit_list_state.select(Some(self.commits.len() - 1));
+                    } else {
+                        self.commit_list_state.select(None);
+                    }
+                } else if !self.commits.is_empty() {
+                    self.commit_list_state.select(Some(0));
+                }
+
+                // ファイル選択の復元: ファイル名で再検索
+                let files = self.current_files();
+                if let Some(ref name) = saved_filename {
+                    if let Some(idx) = files.iter().position(|f| f.filename == *name) {
+                        self.file_list_state.select(Some(idx));
+                    } else if !files.is_empty() {
+                        self.file_list_state.select(Some(0));
+                    } else {
+                        self.file_list_state.select(None);
+                    }
+                } else if !files.is_empty() {
+                    self.file_list_state.select(Some(0));
+                } else {
+                    self.file_list_state.select(None);
+                }
+
+                // Diff 状態をリセット
+                self.diff.cursor_line = 0;
+                self.diff.scroll = 0;
+                let max = self.current_diff_line_count();
+                self.diff.cursor_line = self.skip_hunk_header_forward(0, max);
+                self.diff.visual_offsets = None;
+
+                // スクロール位置のリセット
+                self.pr_desc_scroll = 0;
+                self.pr_desc_visual_total = 0;
+                self.commit_msg_scroll = 0;
+                self.commit_msg_visual_total = 0;
+                self.conversation_scroll = 0;
+                self.conversation_visual_total = 0;
+                self.conversation_cursor = 0;
+
+                self.status_message = Some(StatusMessage::info("✓ Reloaded"));
+            }
+            Err(e) => {
+                self.status_message = Some(StatusMessage::error(format!("✗ Reload failed: {}", e)));
+            }
+        }
+    }
+
     /// 選択範囲を下に拡張（カーソルを下に移動）
     fn extend_selection_down(&mut self) {
         let line_count = self.current_diff_line_count();
@@ -1399,6 +1552,7 @@ mod tests {
                 self.client,
                 self.theme,
                 self.is_own_pr,
+                String::new(),
                 Vec::new(),
             )
         }

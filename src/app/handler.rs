@@ -418,6 +418,17 @@ impl App {
                 self.commit_msg_visual_total = 0;
                 self.conversation_visual_total = 0;
             }
+            KeyCode::Char('R') => {
+                if self.needs_reload {
+                    // リロード中は無視
+                } else if !self.review.pending_comments.is_empty() {
+                    self.status_message = Some(StatusMessage::error(
+                        "✗ Cannot reload with pending comments. Submit or discard first.",
+                    ));
+                } else {
+                    self.needs_reload = true;
+                }
+            }
             KeyCode::Char('?') => {
                 self.help_scroll = 0;
                 self.help_context_panel = self.focused_panel;
