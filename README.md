@@ -40,7 +40,25 @@ Add the input to your `flake.nix`:
 }
 ```
 
-Then add it to `programs.gh.extensions`:
+#### Recommended: Using the home-manager module
+
+Import the module and enable it. This automatically configures the
+[Cachix](https://kawarimidoll.cachix.org) binary cache so you get prebuilt
+binaries without compiling from source.
+
+```nix
+{ inputs, ... }:
+{
+  imports = [ inputs.gh-prism.homeManagerModules.default ];
+
+  programs.gh-prism.enable = true;
+
+  # The module adds gh-prism to programs.gh.extensions automatically
+  programs.gh.enable = true;
+}
+```
+
+#### Alternative: Manual package reference
 
 ```nix
 { inputs, pkgs, ... }:
@@ -53,6 +71,18 @@ Then add it to `programs.gh.extensions`:
   };
 }
 ```
+
+> **Note:** With this method, you need to manually add the Cachix substituter
+> to your `nix.conf` or nix-darwin/NixOS configuration to get prebuilt binaries:
+>
+> ```nix
+> nix.settings = {
+>   extra-substituters = [ "https://kawarimidoll.cachix.org" ];
+>   extra-trusted-public-keys = [
+>     "kawarimidoll.cachix.org-1:43W5G98mVTyDaMeG7ZGzx4h/be5u4ULUGV/9svLjKJY="
+>   ];
+> };
+> ```
 
 ## Usage
 

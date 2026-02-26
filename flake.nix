@@ -99,7 +99,14 @@
           };
 
           config = lib.mkIf cfg.enable {
-            home.packages = [ cfg.package ];
+            programs.gh.extensions = [ cfg.package ];
+
+            nix.settings = {
+              extra-substituters = [ "https://kawarimidoll.cachix.org" ];
+              extra-trusted-public-keys = [
+                "kawarimidoll.cachix.org-1:43W5G98mVTyDaMeG7ZGzx4h/be5u4ULUGV/9svLjKJY="
+              ];
+            };
           };
         };
 
