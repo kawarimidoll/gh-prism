@@ -387,8 +387,14 @@ impl App {
                 _ => {}
             },
             KeyCode::Char('S') => {
-                self.review.review_event_cursor = 0;
-                self.mode = AppMode::ReviewSubmit;
+                // レビュー送信は conversation データに依存 → 個別フェーズチェック
+                if self.loading.conversation == LoadPhase::Loading {
+                    self.status_message =
+                        Some(StatusMessage::error("✗ Conversation loading. Please wait."));
+                } else {
+                    self.review.review_event_cursor = 0;
+                    self.mode = AppMode::ReviewSubmit;
+                }
             }
             KeyCode::Char('w') => {
                 if self.diff.wrap {
@@ -419,7 +425,12 @@ impl App {
                 self.conversation_visual_total = 0;
             }
             KeyCode::Char('R') => {
-                if self.needs_reload {
+                // リロードは全データに依存 → いずれかの Phase が Loading なら拒否
+                if self.is_async_loading() {
+                    self.status_message = Some(StatusMessage::error(
+                        "✗ Initial loading in progress. Please wait.",
+                    ));
+                } else if self.needs_reload {
                     // リロード中は無視
                 } else if !self.review.pending_comments.is_empty() {
                     self.status_message = Some(StatusMessage::error(
@@ -514,6 +525,12 @@ impl App {
                 self.enter_line_select_mode();
             }
             KeyCode::Char('c') => {
+                // conversation 未ロード時はコメント不可
+                if self.loading.conversation == LoadPhase::Loading {
+                    self.status_message =
+                        Some(StatusMessage::error("✗ Conversation loading. Please wait."));
+                    return;
+                }
                 // DiffView で直接 c: カーソル行のみで単一行コメント（hunk header 上は不可）
                 if !self.is_hunk_header(self.diff.cursor_line) {
                     self.line_selection = Some(LineSelection {
@@ -541,6 +558,12 @@ impl App {
                 self.focused_panel = Panel::PrDescription;
             }
             KeyCode::Char('c') => {
+                // conversation 未ロード時はコメント不可
+                if self.loading.conversation == LoadPhase::Loading {
+                    self.status_message =
+                        Some(StatusMessage::error("✗ Conversation loading. Please wait."));
+                    return;
+                }
                 // カーソル位置のエントリが CodeComment なら返信、それ以外なら新規 issue comment
                 if let Some(entry) = self.conversation.get(self.conversation_cursor)
                     && let ConversationKind::CodeComment {
