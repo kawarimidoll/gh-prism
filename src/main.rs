@@ -6,10 +6,10 @@ use app::{App, CodeCommentReply, ConversationEntry, ConversationKind, ThemeMode}
 use clap::Parser;
 use color_eyre::Result;
 use futures::stream::{FuturesUnordered, StreamExt};
-use github::cache::PrCache;
 use github::comments::{IssueComment, ReviewComment, ReviewThread};
 use github::commits::CommitInfo;
 use github::files::DiffFile;
+use github::media::MediaCache;
 use github::review::ReviewSummary;
 use octocrab::Octocrab;
 use octocrab::models::pulls::PullRequest;
@@ -58,15 +58,24 @@ pub fn extract_pr_metadata(pr: &PullRequest) -> PrMetadata {
     }
 }
 
-pub struct FetchedPrData {
-    pub pr_title: String,
-    pub pr_body: String,
-    pub pr_author: String,
-    pub pr_base_branch: String,
-    pub pr_head_branch: String,
-    pub pr_created_at: String,
-    pub pr_state: String,
-    pub files_map: HashMap<String, Vec<DiffFile>>,
+/// 非同期エラーの発生元
+pub enum AsyncErrorKind {
+    Files,
+    Conversation,
+    Media,
+}
+
+/// バックグラウンド非同期タスクから App に送信するデータ
+pub enum AsyncData {
+    FilesMap(HashMap<String, Vec<DiffFile>>),
+    ConversationData {
+        review_comments: Vec<ReviewComment>,
+        issue_comments: Vec<IssueComment>,
+        reviews: Vec<ReviewSummary>,
+        review_threads: Vec<ReviewThread>,
+    },
+    MediaData(MediaCache),
+    Error(AsyncErrorKind, String),
 }
 
 const VERSION: &str = match option_env!("GH_PRISM_VERSION") {
@@ -157,16 +166,15 @@ pub fn fetch_current_user() -> String {
         .unwrap_or_default()
 }
 
-/// コミットごとのファイルをAPI経由で全取得し、PRメタデータと合わせて返す
+/// コミットごとのファイルをAPI経由で全取得して返す
 /// `quiet` が true の場合は進捗表示を抑制する（TUI リロード時に使用）
 pub async fn fetch_all(
     client: &Octocrab,
     owner: &str,
     repo: &str,
-    metadata: PrMetadata,
     commits: &[CommitInfo],
     quiet: bool,
-) -> Result<FetchedPrData> {
+) -> Result<HashMap<String, Vec<DiffFile>>> {
     // 全コミットのファイルを並列取得
     let total = commits.len();
     if !quiet {
@@ -213,16 +221,7 @@ pub async fn fetch_all(
         }
     }
 
-    Ok(FetchedPrData {
-        pr_title: metadata.pr_title,
-        pr_body: metadata.pr_body,
-        pr_author: metadata.pr_author,
-        pr_base_branch: metadata.pr_base_branch,
-        pr_head_branch: metadata.pr_head_branch,
-        pr_created_at: metadata.pr_created_at,
-        pr_state: metadata.pr_state,
-        files_map,
-    })
+    Ok(files_map)
 }
 
 /// IssueComment, ReviewSummary, ReviewComment を ConversationEntry にマージして時系列ソート
@@ -349,13 +348,13 @@ pub async fn reload_pr_data(
     };
 
     // ファイル取得とレビューコメント・Issue コメント・Reviews を並列実行
-    let data_future = fetch_all(client, owner, repo, metadata, &commits, true);
+    let data_future = fetch_all(client, owner, repo, &commits, true);
     let comments_future = github::comments::fetch_review_comments(client, owner, repo, pr_number);
     let issue_comments_future =
         github::comments::fetch_issue_comments(client, owner, repo, pr_number);
     let reviews_future = github::review::fetch_reviews(client, owner, repo, pr_number);
 
-    let (data, review_comments, issue_comments, reviews) = tokio::try_join!(
+    let (files_map, review_comments, issue_comments, reviews) = tokio::try_join!(
         data_future,
         comments_future,
         issue_comments_future,
@@ -372,23 +371,15 @@ pub async fn reload_pr_data(
         &github::cache::PrCache {
             version: github::cache::CACHE_VERSION,
             head_sha: head_sha.to_string(),
-            files_map: data.files_map.clone(),
+            files_map: files_map.clone(),
             review_threads: review_threads.clone(),
         },
     );
 
     Ok(ReloadedData {
-        metadata: PrMetadata {
-            pr_title: data.pr_title,
-            pr_body: data.pr_body,
-            pr_author: data.pr_author,
-            pr_base_branch: data.pr_base_branch,
-            pr_head_branch: data.pr_head_branch,
-            pr_created_at: data.pr_created_at,
-            pr_state: data.pr_state,
-        },
+        metadata,
         commits,
-        files_map: data.files_map,
+        files_map,
         review_comments,
         issue_comments,
         reviews,
@@ -417,6 +408,9 @@ async fn main() {
 }
 
 async fn run() -> Result<()> {
+    use app::LoadPhase;
+    use tokio::sync::mpsc;
+
     let cli = Cli::parse();
 
     // リポジトリ情報を解決
@@ -428,6 +422,7 @@ async fn run() -> Result<()> {
     let client = github::client::create_client()?;
     eprintln!("Fetching PR #{}...", cli.pr_number);
 
+    // ── Phase A: ブロッキング ──
     // コミット一覧とPR情報を常にAPI取得
     // （HEAD SHA判定 + キャッシュヒット時もPR状態の最新性を保証するため）
     let (commits, pr) = tokio::try_join!(
@@ -435,107 +430,32 @@ async fn run() -> Result<()> {
         github::pr::fetch_pr(&client, &owner, &repo, cli.pr_number),
     )?;
     let metadata = extract_pr_metadata(&pr);
-    let head_sha = commits.last().map(|c| c.sha.as_str()).unwrap_or("");
+    let head_sha = commits.last().map(|c| c.sha.clone()).unwrap_or_default();
 
-    // キャッシュ判定 + レビューコメント取得 + Issue コメント + Reviews を並列実行
-    let data_future = async {
-        if !cli.no_cache {
-            if let Some(cached) = github::cache::read_cache(&owner, &repo, cli.pr_number) {
-                if cached.head_sha == head_sha {
-                    eprintln!(
-                        "Using cached data (HEAD: {})",
-                        &head_sha[..SHORT_SHA_LEN.min(head_sha.len())]
-                    );
-                    return Ok((
-                        FetchedPrData {
-                            pr_title: metadata.pr_title,
-                            pr_body: metadata.pr_body,
-                            pr_author: metadata.pr_author,
-                            pr_base_branch: metadata.pr_base_branch,
-                            pr_head_branch: metadata.pr_head_branch,
-                            pr_created_at: metadata.pr_created_at,
-                            pr_state: metadata.pr_state,
-                            files_map: cached.files_map,
-                        },
-                        cached.review_threads,
-                    ));
-                }
+    // キャッシュ判定
+    let (files_map, cached_review_threads, cache_hit) = if !cli.no_cache {
+        if let Some(cached) = github::cache::read_cache(&owner, &repo, cli.pr_number) {
+            if cached.head_sha == head_sha {
+                eprintln!(
+                    "Using cached data (HEAD: {})",
+                    &head_sha[..SHORT_SHA_LEN.min(head_sha.len())]
+                );
+                (cached.files_map, cached.review_threads, true)
+            } else {
                 eprintln!(
                     "Cache stale (expected {}, got {})",
                     &cached.head_sha[..SHORT_SHA_LEN.min(cached.head_sha.len())],
                     &head_sha[..SHORT_SHA_LEN.min(head_sha.len())]
                 );
-            } else {
-                eprintln!("No cache found, fetching from API...");
+                (HashMap::new(), Vec::new(), false)
             }
         } else {
-            eprintln!("Cache disabled, fetching from API...");
+            eprintln!("No cache found, fetching from API...");
+            (HashMap::new(), Vec::new(), false)
         }
-        // threads_handle を fetch_all の前にスポーン → 並列実行維持
-        let threads_handle = {
-            let owner = owner.clone();
-            let repo = repo.clone();
-            let pr_number = cli.pr_number;
-            tokio::task::spawn_blocking(move || {
-                github::comments::fetch_review_threads(&owner, &repo, pr_number).unwrap_or_else(
-                    |e| {
-                        eprintln!("Warning: Could not fetch review threads: {e}");
-                        Vec::new()
-                    },
-                )
-            })
-        };
-        let data = fetch_all(&client, &owner, &repo, metadata, &commits, false).await?;
-        let review_threads = match threads_handle.await {
-            Ok(threads) => threads,
-            Err(e) => {
-                eprintln!("Warning: review threads task failed: {e}");
-                Vec::new()
-            }
-        };
-        github::cache::write_cache(
-            &owner,
-            &repo,
-            cli.pr_number,
-            &PrCache {
-                version: github::cache::CACHE_VERSION,
-                head_sha: head_sha.to_string(),
-                files_map: data.files_map.clone(),
-                review_threads: review_threads.clone(),
-            },
-        );
-        Ok((data, review_threads))
-    };
-
-    let comments_future =
-        github::comments::fetch_review_comments(&client, &owner, &repo, cli.pr_number);
-    let issue_comments_future =
-        github::comments::fetch_issue_comments(&client, &owner, &repo, cli.pr_number);
-    let reviews_future = github::review::fetch_reviews(&client, &owner, &repo, cli.pr_number);
-
-    let ((data, review_threads), review_comments, issue_comments, reviews) = tokio::try_join!(
-        data_future,
-        comments_future,
-        issue_comments_future,
-        reviews_future
-    )?;
-
-    let conversation = build_conversation(
-        issue_comments,
-        reviews,
-        review_comments.clone(),
-        &review_threads,
-    );
-
-    let is_own_pr = !current_user.is_empty() && current_user == data.pr_author;
-
-    // PR body から画像 URL を収集してダウンロード
-    let image_urls = app::collect_image_urls(&data.pr_body);
-    let media_cache = if image_urls.is_empty() {
-        github::media::MediaCache::new()
     } else {
-        eprintln!("Downloading {} image(s)...", image_urls.len());
-        github::media::download_media(image_urls).await
+        eprintln!("Cache disabled, fetching from API...");
+        (HashMap::new(), Vec::new(), false)
     };
 
     // テーマ検出（ratatui::init() の前に実行 — raw mode では OSC クエリが動かない）
@@ -550,30 +470,135 @@ async fn run() -> Result<()> {
     // 画像プロトコル検出（ratatui::init() の前に実行 — raw mode では OSC クエリが動かない）
     let picker = ratatui_image::picker::Picker::from_query_stdio().ok();
 
+    let is_own_pr = !current_user.is_empty() && current_user == metadata.pr_author;
+
+    // ── チャネル作成 ──
+    let (tx, rx) = mpsc::unbounded_channel::<AsyncData>();
+
+    // ── Phase B: バックグラウンド非同期タスク ──
+    // ロード状態の初期化
+    let loading = app::LoadingState {
+        files: if cache_hit {
+            LoadPhase::Done
+        } else {
+            LoadPhase::Loading
+        },
+        conversation: LoadPhase::Loading,
+        media: LoadPhase::Loading,
+    };
+
+    // B1: Conversation データ（4 API を try_join! → ConversationData 送信）
+    {
+        let tx = tx.clone();
+        let client = client.clone();
+        let owner = owner.clone();
+        let repo = repo.clone();
+        let pr_number = cli.pr_number;
+        tokio::spawn(async move {
+            let threads_handle = {
+                let owner = owner.clone();
+                let repo = repo.clone();
+                tokio::task::spawn_blocking(move || {
+                    github::comments::fetch_review_threads(&owner, &repo, pr_number)
+                        .unwrap_or_default()
+                })
+            };
+
+            let result = tokio::try_join!(
+                github::comments::fetch_review_comments(&client, &owner, &repo, pr_number),
+                github::comments::fetch_issue_comments(&client, &owner, &repo, pr_number),
+                github::review::fetch_reviews(&client, &owner, &repo, pr_number),
+            );
+
+            match result {
+                Ok((review_comments, issue_comments, reviews)) => {
+                    let review_threads = threads_handle.await.unwrap_or_default();
+                    let _ = tx.send(AsyncData::ConversationData {
+                        review_comments,
+                        issue_comments,
+                        reviews,
+                        review_threads,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(AsyncData::Error(
+                        AsyncErrorKind::Conversation,
+                        format!("Failed to load conversation: {e}"),
+                    ));
+                }
+            }
+        });
+    }
+
+    // B2: ファイル差分（キャッシュミス時のみ）
+    if !cache_hit {
+        let tx = tx.clone();
+        let client = client.clone();
+        let owner = owner.clone();
+        let repo = repo.clone();
+        let commits = commits.clone();
+        tokio::spawn(async move {
+            match fetch_all(&client, &owner, &repo, &commits, true).await {
+                Ok(files_map) => {
+                    let _ = tx.send(AsyncData::FilesMap(files_map));
+                }
+                Err(e) => {
+                    let _ = tx.send(AsyncData::Error(
+                        AsyncErrorKind::Files,
+                        format!("Failed to load files: {e}"),
+                    ));
+                }
+            }
+        });
+    }
+
+    // B3: 画像（PR body からURL収集 → ダウンロード）
+    {
+        let tx = tx.clone();
+        let pr_body = metadata.pr_body.clone();
+        tokio::spawn(async move {
+            let image_urls = app::collect_image_urls(&pr_body);
+            let media_cache = if image_urls.is_empty() {
+                github::media::MediaCache::new()
+            } else {
+                github::media::download_media(image_urls).await
+            };
+            let _ = tx.send(AsyncData::MediaData(media_cache));
+        });
+    }
+
+    // sender を全 spawn に clone 済みなので元の tx を drop
+    drop(tx);
+
+    // ── TUI 起動 ──
     let terminal = ratatui::init();
     crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
 
     let mut app = App::new(
         cli.pr_number,
         format!("{}/{}", owner, repo),
-        data.pr_title,
-        data.pr_body,
-        data.pr_author,
-        data.pr_base_branch,
-        data.pr_head_branch,
-        data.pr_created_at,
-        data.pr_state,
+        metadata.pr_title,
+        metadata.pr_body,
+        metadata.pr_author,
+        metadata.pr_base_branch,
+        metadata.pr_head_branch,
+        metadata.pr_created_at,
+        metadata.pr_state,
         commits,
-        data.files_map,
-        review_comments,
-        conversation,
+        files_map,
+        Vec::new(), // review_comments: Phase B で到着
+        Vec::new(), // conversation: Phase B で到着
         Some(client),
         theme,
         is_own_pr,
         current_user,
-        review_threads,
+        cached_review_threads,
+        Some(rx),
+        loading,
+        head_sha,
+        cache_hit, // キャッシュヒット = 既に書き込み済み → 再書き込みスキップ
     );
-    app.set_media(picker, media_cache);
+    app.set_media(picker, MediaCache::new());
     let result = app.run(terminal);
 
     crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture)?;

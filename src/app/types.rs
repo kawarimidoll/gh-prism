@@ -246,6 +246,39 @@ pub struct ConversationEntry {
     pub kind: ConversationKind,
 }
 
+/// 非同期データ取得の進行状態
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum LoadPhase {
+    #[default]
+    Loading,
+    Done,
+    Error,
+}
+
+/// 各データの非同期ロード状態
+#[derive(Clone, Debug, Default)]
+pub struct LoadingState {
+    pub files: LoadPhase,
+    pub conversation: LoadPhase,
+    pub media: LoadPhase,
+}
+
+impl LoadingState {
+    /// 全データのロードが完了しているか
+    pub fn all_done(&self) -> bool {
+        self.files != LoadPhase::Loading
+            && self.conversation != LoadPhase::Loading
+            && self.media != LoadPhase::Loading
+    }
+
+    /// ロード中のデータがあるか
+    pub fn any_loading(&self) -> bool {
+        self.files == LoadPhase::Loading
+            || self.conversation == LoadPhase::Loading
+            || self.media == LoadPhase::Loading
+    }
+}
+
 impl Default for DiffViewState {
     fn default() -> Self {
         Self {

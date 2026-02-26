@@ -29,6 +29,7 @@ use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
 use std::collections::{HashMap, HashSet};
 use tokio::runtime::Handle;
+use tokio::sync::mpsc;
 
 pub struct App {
     should_quit: bool,
@@ -118,6 +119,14 @@ pub struct App {
     needs_reply_submit: bool,
     /// PR データリロードフラグ（draw 後に実行）
     needs_reload: bool,
+    /// バックグラウンド非同期データ受信チャネル
+    async_rx: Option<mpsc::UnboundedReceiver<crate::AsyncData>>,
+    /// 非同期データのロード状態
+    pub loading: LoadingState,
+    /// HEAD SHA（キャッシュ書き込み用）
+    head_sha: String,
+    /// キャッシュ書き込み済みフラグ
+    cache_written: bool,
     /// Conversation ペインのエントリカーソル位置
     conversation_cursor: usize,
     /// Conversation エントリごとの論理行オフセット（ensure_conversation_rendered で計算）
@@ -147,6 +156,10 @@ impl App {
         is_own_pr: bool,
         current_user: String,
         review_threads: Vec<ReviewThread>,
+        async_rx: Option<mpsc::UnboundedReceiver<crate::AsyncData>>,
+        loading: LoadingState,
+        head_sha: String,
+        cache_written: bool,
     ) -> Self {
         let mut commit_list_state = ListState::default();
         if !commits.is_empty() {
@@ -229,6 +242,10 @@ impl App {
             needs_issue_comment_submit: false,
             needs_reply_submit: false,
             needs_reload: false,
+            async_rx,
+            loading,
+            head_sha,
+            cache_written,
             conversation_cursor: 0,
             conversation_entry_offsets: Vec::new(),
             conversation_visual_offsets: Vec::new(),
@@ -558,6 +575,7 @@ impl App {
 
             // バックグラウンドワーカーの完了チェック
             self.poll_media_protocol_worker();
+            self.poll_async_data();
 
             terminal.draw(|frame| self.render(frame))?;
 
@@ -1325,6 +1343,165 @@ impl App {
         }
     }
 
+    /// バックグラウンド非同期データの受信・適用
+    fn poll_async_data(&mut self) {
+        // borrow checker 対策: Option::take() で一時的に取り出す
+        let Some(mut rx) = self.async_rx.take() else {
+            return;
+        };
+
+        let mut disconnected = false;
+
+        // try_recv() ループで全メッセージを処理
+        loop {
+            match rx.try_recv() {
+                Ok(data) => match data {
+                    crate::AsyncData::FilesMap(files_map) => {
+                        self.apply_files_map(files_map);
+                    }
+                    crate::AsyncData::ConversationData {
+                        review_comments,
+                        issue_comments,
+                        reviews,
+                        review_threads,
+                    } => {
+                        self.apply_conversation_data(
+                            review_comments,
+                            issue_comments,
+                            reviews,
+                            review_threads,
+                        );
+                    }
+                    crate::AsyncData::MediaData(media_cache) => {
+                        self.media_cache = media_cache;
+                        self.loading.media = LoadPhase::Done;
+                    }
+                    crate::AsyncData::Error(kind, msg) => {
+                        self.status_message =
+                            Some(StatusMessage::error(format!("✗ {msg} — press R to retry")));
+                        match kind {
+                            crate::AsyncErrorKind::Files => {
+                                self.loading.files = LoadPhase::Error;
+                            }
+                            crate::AsyncErrorKind::Conversation => {
+                                self.loading.conversation = LoadPhase::Error;
+                            }
+                            crate::AsyncErrorKind::Media => {
+                                self.loading.media = LoadPhase::Error;
+                            }
+                        }
+                    }
+                },
+                Err(mpsc::error::TryRecvError::Empty) => break,
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+
+        if disconnected || self.loading.all_done() {
+            // 全タスク完了 → rx を返却せずに破棄
+            // チャネル切断時に Loading のままのフェーズがあればエラーに強制遷移
+            if self.loading.files == LoadPhase::Loading {
+                self.loading.files = LoadPhase::Error;
+            }
+            if self.loading.conversation == LoadPhase::Loading {
+                self.loading.conversation = LoadPhase::Error;
+            }
+            if self.loading.media == LoadPhase::Loading {
+                self.loading.media = LoadPhase::Error;
+            }
+            self.try_write_cache();
+        } else {
+            // まだ受信中 → rx を戻す
+            self.async_rx = Some(rx);
+        }
+    }
+
+    /// files_map をバックグラウンドデータで更新
+    fn apply_files_map(&mut self, files_map: HashMap<String, Vec<DiffFile>>) {
+        self.files_map = files_map;
+        self.loading.files = LoadPhase::Done;
+
+        // visible_review_comment_cache を再計算
+        self.visible_review_comment_cache =
+            Self::build_visible_comment_cache(&self.review.review_comments, &self.files_map);
+
+        // ファイル選択を初期化
+        self.reset_file_selection();
+
+        // diff キャッシュ無効化
+        self.diff.highlight_cache = None;
+    }
+
+    /// conversation データをバックグラウンドデータで更新
+    fn apply_conversation_data(
+        &mut self,
+        review_comments: Vec<ReviewComment>,
+        issue_comments: Vec<crate::github::comments::IssueComment>,
+        reviews: Vec<crate::github::review::ReviewSummary>,
+        review_threads: Vec<ReviewThread>,
+    ) {
+        // thread_map を再構築
+        self.review.thread_map = review_threads
+            .iter()
+            .cloned()
+            .map(|t| (t.root_comment_database_id, t))
+            .collect();
+
+        // visible_review_comment_cache を事前計算（review_comments の参照のみ必要）
+        self.visible_review_comment_cache =
+            Self::build_visible_comment_cache(&review_comments, &self.files_map);
+
+        // conversation を構築（review_comments の所有権を渡す）
+        // build_conversation が所有権を要求するため、self.review.review_comments 用に先に clone
+        self.review.review_comments = review_comments.clone();
+        self.conversation =
+            crate::build_conversation(issue_comments, reviews, review_comments, &review_threads);
+
+        // レンダリングキャッシュ無効化
+        self.conversation_rendered = None;
+
+        self.loading.conversation = LoadPhase::Done;
+    }
+
+    /// キャッシュ書き込みを試行（files + conversation 両方 Done かつ未書き込みの場合）
+    fn try_write_cache(&mut self) {
+        if self.cache_written {
+            return;
+        }
+        if self.loading.files != LoadPhase::Done || self.loading.conversation != LoadPhase::Done {
+            return;
+        }
+
+        let Some((owner, repo)) = self.parse_repo() else {
+            return;
+        };
+        let owner = owner.to_string();
+        let repo = repo.to_string();
+
+        let review_threads: Vec<ReviewThread> = self.review.thread_map.values().cloned().collect();
+
+        crate::github::cache::write_cache(
+            &owner,
+            &repo,
+            self.pr_number,
+            &crate::github::cache::PrCache {
+                version: crate::github::cache::CACHE_VERSION,
+                head_sha: self.head_sha.clone(),
+                files_map: self.files_map.clone(),
+                review_threads,
+            },
+        );
+        self.cache_written = true;
+    }
+
+    /// 非同期ロード中かどうかを返す（いずれかのフェーズが Loading）
+    pub fn is_async_loading(&self) -> bool {
+        self.loading.any_loading()
+    }
+
     /// 選択範囲を下に拡張（カーソルを下に移動）
     fn extend_selection_down(&mut self) {
         let line_count = self.current_diff_line_count();
@@ -1547,6 +1724,14 @@ mod tests {
                 self.is_own_pr,
                 String::new(),
                 Vec::new(),
+                None, // async_rx
+                LoadingState {
+                    files: LoadPhase::Done,
+                    conversation: LoadPhase::Done,
+                    media: LoadPhase::Done,
+                }, // loading: テストでは全データロード済み
+                String::new(), // head_sha
+                true, // cache_written (テスト時は書き込みスキップ)
             )
         }
     }

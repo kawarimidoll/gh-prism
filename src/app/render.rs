@@ -52,6 +52,48 @@ const CURSOR_BG_LIGHT: Color = Color::Indexed(254);
 const PENDING_BG_DARK: Color = Color::Indexed(22);
 const PENDING_BG_LIGHT: Color = Color::Indexed(151);
 
+/// ローディング中 / エラー時のプレースホルダー描画
+/// `LoadPhase::Loading` なら "Loading..." 表示、`Error` なら "Failed to load" 表示
+/// 描画した場合は `true` を返す（呼び出し元は early return に使用）
+fn render_load_phase(
+    frame: &mut Frame,
+    area: Rect,
+    phase: LoadPhase,
+    title: &str,
+    loading_msg: &str,
+    border_style: Style,
+) -> bool {
+    match phase {
+        LoadPhase::Loading => {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" {title} "))
+                .border_style(border_style);
+            let text = Paragraph::new(Line::styled(
+                format!(" {loading_msg}"),
+                Style::default().fg(Color::DarkGray),
+            ))
+            .block(block);
+            frame.render_widget(text, area);
+            true
+        }
+        LoadPhase::Error => {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" {title} "))
+                .border_style(border_style);
+            let text = Paragraph::new(Line::styled(
+                " Failed to load — press R to retry",
+                Style::default().fg(Color::Red),
+            ))
+            .block(block);
+            frame.render_widget(text, area);
+            true
+        }
+        LoadPhase::Done => false,
+    }
+}
+
 impl App {
     pub(super) fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
@@ -118,8 +160,11 @@ impl App {
 
         let zoom_indicator = if self.zoomed { " [ZOOM]" } else { "" };
 
-        // 右セクション: モード / ステータス / ズーム / コメントバッジ（固定幅、右端に配置）
+        // 右セクション: モード / ステータス / ズーム / コメントバッジ / ロードインジケーター（固定幅、右端に配置）
         let mut right_spans: Vec<Span> = Vec::new();
+        if self.loading.any_loading() {
+            right_spans.push(Span::styled(" ⏳ ", header_style));
+        }
         if !mode_indicator.is_empty() {
             right_spans.push(Span::styled(mode_indicator, header_style));
         }
@@ -493,6 +538,17 @@ impl App {
             Style::default()
         };
 
+        if render_load_phase(
+            frame,
+            area,
+            self.loading.files,
+            "Files",
+            "Loading files...",
+            style,
+        ) {
+            return;
+        }
+
         let files = self.current_files();
         let current_sha = self.current_commit_sha();
         let viewed_count = files
@@ -702,6 +758,17 @@ impl App {
         self.conversation_view_height = area.height.saturating_sub(2);
         let inner_width = area.width.saturating_sub(2);
 
+        if render_load_phase(
+            frame,
+            area,
+            self.loading.conversation,
+            "Conversation",
+            "Loading conversation...",
+            border_style,
+        ) {
+            return;
+        }
+
         self.ensure_conversation_rendered();
         let lines = self.conversation_rendered.as_ref().unwrap().clone();
 
@@ -808,6 +875,17 @@ impl App {
         // DiffView の表示可能サイズを更新（ボーダー分を引く）
         self.diff.view_height = area.height.saturating_sub(2);
         self.diff.view_width = area.width.saturating_sub(2);
+
+        if render_load_phase(
+            frame,
+            area,
+            self.loading.files,
+            "Diff",
+            "Loading files...",
+            border_style,
+        ) {
+            return;
+        }
 
         // 選択中ファイルを取得し、所有型にクローンして self の借用を解放
         let (has_file, has_patch, patch, filename, file_status, additions, deletions) = {

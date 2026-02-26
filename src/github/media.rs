@@ -2,6 +2,7 @@ use image::DynamicImage;
 use std::collections::HashMap;
 
 /// ダウンロード済み画像のキャッシュ（URL → デコード済み画像）
+#[derive(Default)]
 pub struct MediaCache {
     images: HashMap<String, DynamicImage>,
 }
