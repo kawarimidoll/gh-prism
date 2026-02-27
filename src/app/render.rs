@@ -1528,13 +1528,44 @@ impl App {
         Rect::new(x, y, width.min(area.width), height.min(area.height))
     }
 
-    /// Wide character-safe clear: pad 1 cell on left/right to avoid
-    /// half-cleared CJK characters at the dialog boundary.
+    /// Wide character-safe clear: clear the dialog area and fix orphaned
+    /// wide characters at the boundaries by replacing their symbol with a
+    /// space while **preserving the original cell style** (including
+    /// highlight background).  This avoids both the "gap" caused by
+    /// fixed-width padding and the "uneven edge" caused by resetting cells.
     fn clear_wide_safe(frame: &mut Frame, rect: Rect, bounds: Rect) {
-        let x = rect.x.saturating_sub(1).max(bounds.x);
-        let right = (rect.x + rect.width + 1).min(bounds.x + bounds.width);
-        let padded = Rect::new(x, rect.y, right - x, rect.height);
-        frame.render_widget(Clear, padded);
+        frame.render_widget(Clear, rect);
+
+        let buf = frame.buffer_mut();
+        for y in rect.y..rect.y + rect.height {
+            // Left boundary: if the cell just left of the cleared area is a
+            // wide character, its second half was destroyed by Clear.
+            // Replace the symbol with a space to avoid rendering artifacts,
+            // but keep the cell's style so highlight colours are preserved.
+            if rect.x > bounds.x {
+                let pos = Position::new(rect.x - 1, y);
+                let is_wide = buf.cell(pos).map_or(false, |c| c.symbol().width() > 1);
+                if is_wide {
+                    if let Some(c) = buf.cell_mut(pos) {
+                        c.set_symbol(" ");
+                    }
+                }
+            }
+
+            // Right boundary: if the cell just right of the cleared area is
+            // a zero-width continuation whose first half was cleared,
+            // replace it with a space while keeping its style.
+            let right_x = rect.x + rect.width;
+            if right_x < bounds.x + bounds.width {
+                let pos = Position::new(right_x, y);
+                let is_cont = buf.cell(pos).map_or(false, |c| c.symbol().is_empty());
+                if is_cont {
+                    if let Some(c) = buf.cell_mut(pos) {
+                        c.set_symbol(" ");
+                    }
+                }
+            }
+        }
     }
 
     fn render_review_submit_dialog(&self, frame: &mut Frame, area: Rect) {
