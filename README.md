@@ -40,11 +40,7 @@ Add the input to your `flake.nix`:
 }
 ```
 
-#### Recommended: Using the home-manager module
-
-Import the module and enable it. This automatically configures the
-[Cachix](https://kawarimidoll.cachix.org) binary cache so you get prebuilt
-binaries without compiling from source.
+#### Using the home-manager module
 
 ```nix
 { inputs, ... }:
@@ -58,7 +54,7 @@ binaries without compiling from source.
 }
 ```
 
-#### Alternative: Manual package reference
+#### Using the package directly
 
 ```nix
 { inputs, pkgs, ... }:
@@ -67,22 +63,30 @@ binaries without compiling from source.
     enable = true;
     extensions = [
       inputs.gh-prism.packages.${pkgs.stdenv.hostPlatform.system}.default
+      # other extensions...
     ];
   };
 }
 ```
 
-> **Note:** With this method, you need to manually add the Cachix substituter
-> to your `nix.conf` or nix-darwin/NixOS configuration to get prebuilt binaries:
->
-> ```nix
-> nix.settings = {
->   extra-substituters = [ "https://kawarimidoll.cachix.org" ];
->   extra-trusted-public-keys = [
->     "kawarimidoll.cachix.org-1:43W5G98mVTyDaMeG7ZGzx4h/be5u4ULUGV/9svLjKJY="
->   ];
-> };
-> ```
+#### Cachix binary cache (optional)
+
+Prebuilt binaries are available via [Cachix](https://kawarimidoll.cachix.org).
+To skip building from source, add the following to your nix-darwin / NixOS /
+home-manager configuration:
+
+```nix
+nix.settings = {
+  extra-substituters = [
+    "https://kawarimidoll.cachix.org"
+    # other substituters...
+  ];
+  extra-trusted-public-keys = [
+    "kawarimidoll.cachix.org-1:43W5G98mVTyDaMeG7ZGzx4h/be5u4ULUGV/9svLjKJY="
+    # other public keys...
+  ];
+};
+```
 
 ## Usage
 
