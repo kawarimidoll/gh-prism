@@ -267,13 +267,17 @@ impl App {
                     self.mode = AppMode::QuitConfirm;
                 }
             }
+            KeyCode::Tab | KeyCode::BackTab
+                if matches!(self.focused_panel, Panel::DiffView | Panel::CommitMessage) =>
+            {
+                return false; // パネル固有ハンドラに委譲
+            }
             KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right => self.next_panel(),
             KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => self.prev_panel(),
             // 数字キーでペイン直接ジャンプ
             KeyCode::Char('1') => self.focused_panel = Panel::PrDescription,
             KeyCode::Char('2') => self.focused_panel = Panel::CommitList,
             KeyCode::Char('3') => self.focused_panel = Panel::FileTree,
-            KeyCode::Char('4') => self.focused_panel = Panel::CommitMessage,
             KeyCode::Char('j') | KeyCode::Down => self.select_next(),
             KeyCode::Char('k') | KeyCode::Up => self.select_prev(),
             KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
@@ -587,14 +591,23 @@ impl App {
                     self.mode = AppMode::CommentInput;
                 }
             }
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.focused_panel = Panel::CommitMessage;
+            }
             _ => {}
         }
     }
 
     /// Commit Message パネルのキー処理
     fn handle_commit_msg_keys(&mut self, code: KeyCode) {
-        if code == KeyCode::Esc {
-            self.focused_panel = Panel::CommitList;
+        match code {
+            KeyCode::Esc => {
+                self.focused_panel = Panel::FileTree;
+            }
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.focused_panel = Panel::DiffView;
+            }
+            _ => {}
         }
     }
 

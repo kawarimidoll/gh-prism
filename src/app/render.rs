@@ -1835,7 +1835,7 @@ impl App {
             ("k / ↑", "Move up"),
             ("l / → / Tab", "Next pane"),
             ("h / ← / BackTab", "Previous pane"),
-            ("1 / 2 / 3 / 4", "Jump to pane"),
+            ("1 / 2 / 3", "Jump to pane"),
             ("Esc", "Back to parent pane"),
             ("z", "Toggle zoom"),
             ("R", "Reload PR data"),
@@ -1888,12 +1888,16 @@ impl App {
                 ]);
             }
             Panel::CommitMessage => {
-                entries
-                    .extend_from_slice(&[("", "Commit Message"), ("Esc", "Back to commit list")]);
+                entries.extend_from_slice(&[
+                    ("", "Commit Message"),
+                    ("Tab", "Switch to diff view"),
+                    ("Esc", "Back to file tree"),
+                ]);
             }
             Panel::DiffView => {
                 entries.extend_from_slice(&[
                     ("", "Diff View"),
+                    ("Tab", "Switch to commit message"),
                     ("n", "Toggle line numbers"),
                     ("w", "Toggle line wrap"),
                     ("]c / [c", "Next / prev change block"),
