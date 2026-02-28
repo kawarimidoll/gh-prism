@@ -1544,11 +1544,10 @@ impl App {
             // but keep the cell's style so highlight colours are preserved.
             if rect.x > bounds.x {
                 let pos = Position::new(rect.x - 1, y);
-                let is_wide = buf.cell(pos).map_or(false, |c| c.symbol().width() > 1);
-                if is_wide {
-                    if let Some(c) = buf.cell_mut(pos) {
-                        c.set_symbol(" ");
-                    }
+                if let Some(c) = buf.cell_mut(pos)
+                    && c.symbol().width() > 1
+                {
+                    c.set_symbol(" ");
                 }
             }
 
@@ -1558,11 +1557,10 @@ impl App {
             let right_x = rect.x + rect.width;
             if right_x < bounds.x + bounds.width {
                 let pos = Position::new(right_x, y);
-                let is_cont = buf.cell(pos).map_or(false, |c| c.symbol().is_empty());
-                if is_cont {
-                    if let Some(c) = buf.cell_mut(pos) {
-                        c.set_symbol(" ");
-                    }
+                if let Some(c) = buf.cell_mut(pos)
+                    && c.symbol().is_empty()
+                {
+                    c.set_symbol(" ");
                 }
             }
         }
