@@ -274,6 +274,12 @@ impl App {
                         self.pr_desc_scroll = self.pr_desc_scroll.saturating_add(half);
                         self.clamp_pr_desc_scroll();
                     }
+                    Panel::CommitList => {
+                        let half = self.commit_overview_view_height / 2;
+                        self.commit_overview_scroll =
+                            self.commit_overview_scroll.saturating_add(half);
+                        self.clamp_commit_overview_scroll();
+                    }
                     Panel::CommitMessage => {
                         let half = self.commit_msg_view_height / 2;
                         self.commit_msg_scroll = self.commit_msg_scroll.saturating_add(half);
@@ -294,6 +300,11 @@ impl App {
                         let half = self.pr_desc_view_height / 2;
                         self.pr_desc_scroll = self.pr_desc_scroll.saturating_sub(half);
                     }
+                    Panel::CommitList => {
+                        let half = self.commit_overview_view_height / 2;
+                        self.commit_overview_scroll =
+                            self.commit_overview_scroll.saturating_sub(half);
+                    }
                     Panel::CommitMessage => {
                         let half = self.commit_msg_view_height / 2;
                         self.commit_msg_scroll = self.commit_msg_scroll.saturating_sub(half);
@@ -312,6 +323,12 @@ impl App {
                         self.pr_desc_scroll =
                             self.pr_desc_scroll.saturating_add(self.pr_desc_view_height);
                         self.clamp_pr_desc_scroll();
+                    }
+                    Panel::CommitList => {
+                        self.commit_overview_scroll = self
+                            .commit_overview_scroll
+                            .saturating_add(self.commit_overview_view_height);
+                        self.clamp_commit_overview_scroll();
                     }
                     Panel::CommitMessage => {
                         self.commit_msg_scroll = self
@@ -335,6 +352,11 @@ impl App {
                         self.pr_desc_scroll =
                             self.pr_desc_scroll.saturating_sub(self.pr_desc_view_height);
                     }
+                    Panel::CommitList => {
+                        self.commit_overview_scroll = self
+                            .commit_overview_scroll
+                            .saturating_sub(self.commit_overview_view_height);
+                    }
                     Panel::CommitMessage => {
                         self.commit_msg_scroll = self
                             .commit_msg_scroll
@@ -352,6 +374,9 @@ impl App {
             KeyCode::Char('g') => match self.focused_panel {
                 Panel::PrDescription => {
                     self.pr_desc_scroll = 0;
+                }
+                Panel::CommitList => {
+                    self.commit_overview_scroll = 0;
                 }
                 Panel::CommitMessage => {
                     self.commit_msg_scroll = 0;
@@ -372,6 +397,9 @@ impl App {
             KeyCode::Char('G') => match self.focused_panel {
                 Panel::PrDescription => {
                     self.pr_desc_scroll = self.pr_desc_max_scroll();
+                }
+                Panel::CommitList => {
+                    self.commit_overview_scroll = self.commit_overview_max_scroll();
                 }
                 Panel::CommitMessage => {
                     self.commit_msg_scroll = self.commit_msg_max_scroll();

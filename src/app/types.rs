@@ -209,6 +209,7 @@ pub struct LayoutCache {
     pub commit_msg_rect: Rect,
     pub diff_view_rect: Rect,
     pub conversation_rect: Rect,
+    pub commit_overview_rect: Rect,
 }
 
 /// コード行コメントスレッドのリプライ
