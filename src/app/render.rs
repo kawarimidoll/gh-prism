@@ -308,30 +308,46 @@ impl App {
             self.render_commit_list_stateful(frame, sidebar_layout[1]);
             self.render_file_tree(frame, sidebar_layout[2]);
 
-            // 右カラム描画: PrDescription/Conversation フォーカス時は Info+Conversation に切替
+            // 右カラム描画: 3分岐
             let show_conversation = matches!(
                 self.focused_panel,
                 Panel::PrDescription | Panel::Conversation
             ) || self.mode == AppMode::IssueCommentInput;
 
             if show_conversation {
+                // PrDescription / Conversation → Info + Conversation + Comment
                 self.layout.commit_msg_rect = Rect::default();
                 self.layout.diff_view_rect = Rect::default();
+                self.layout.commit_overview_rect = Rect::default();
                 self.layout.conversation_rect = diff_area;
 
                 self.render_info_pane(frame, commit_msg_area);
                 self.render_conversation_pane(frame, diff_area);
+                // コメントペイン
+                if self.mode != AppMode::ReviewBodyInput {
+                    self.render_editor_panel(frame, comment_area);
+                }
+            } else if self.focused_panel == Panel::CommitList {
+                // CommitList → Commit Overview（右カラム全体）
+                self.layout.commit_msg_rect = Rect::default();
+                self.layout.diff_view_rect = Rect::default();
+                self.layout.conversation_rect = Rect::default();
+                self.layout.commit_overview_rect = body_layout[1];
+
+                self.render_commit_overview(frame, body_layout[1]);
             } else {
+                // FileTree / CommitMessage / DiffView → CommitMsg + Diff + Comment
                 self.layout.commit_msg_rect = commit_msg_area;
                 self.layout.diff_view_rect = diff_area;
                 self.layout.conversation_rect = Rect::default();
+                self.layout.commit_overview_rect = Rect::default();
 
                 self.render_commit_message(frame, commit_msg_area);
                 self.render_diff_view_widget(frame, diff_area);
-            }
-            // コメントペイン（ReviewBodyInput 時は全幅パネルで描画するためスキップ）
-            if self.mode != AppMode::ReviewBodyInput {
-                self.render_editor_panel(frame, comment_area);
+                // コメントペイン
+                if self.mode != AppMode::ReviewBodyInput {
+                    self.render_editor_panel(frame, comment_area);
+                }
             }
         }
 
@@ -745,6 +761,154 @@ impl App {
                 .border_style(Style::default()),
         );
         frame.render_widget(paragraph, area);
+    }
+
+    /// Commit Overview ペイン描画（CommitList フォーカス時に右カラム全体に表示）
+    fn render_commit_overview(&mut self, frame: &mut Frame, area: Rect) {
+        let border_style = Style::default().fg(Color::Yellow);
+
+        self.commit_overview_view_height = area.height.saturating_sub(2);
+        let inner_width = area.width.saturating_sub(2) as usize;
+
+        let commit = match self
+            .commit_list_state
+            .selected()
+            .and_then(|i| self.commits.get(i))
+        {
+            Some(c) => c.clone(),
+            None => {
+                let block = Block::default()
+                    .title(" Commit Overview ")
+                    .borders(Borders::ALL)
+                    .border_style(border_style);
+                frame.render_widget(Paragraph::new(" No commit selected").block(block), area);
+                return;
+            }
+        };
+
+        let mut lines: Vec<Line> = Vec::new();
+
+        // Full SHA
+        lines.push(Line::styled(
+            &commit.sha,
+            Style::default().fg(Color::Yellow),
+        ));
+
+        // Author: name <email>
+        lines.push(Line::from(vec![
+            Span::raw("Author: "),
+            Span::styled(commit.author_line(), Style::default().fg(Color::Cyan)),
+        ]));
+
+        // Date
+        let date_str = commit.author_date();
+        if !date_str.is_empty() {
+            lines.push(Line::from(vec![
+                Span::raw("Date:   "),
+                Span::raw(format_datetime(date_str)),
+            ]));
+        }
+
+        lines.push(Line::raw(""));
+
+        // Commit message: first line bold, rest plain
+        let mut msg_lines = commit.commit.message.lines();
+        if let Some(summary) = msg_lines.next() {
+            lines.push(Line::styled(
+                summary,
+                Style::default().add_modifier(Modifier::BOLD),
+            ));
+        }
+        for line in msg_lines {
+            lines.push(Line::raw(line.to_string()));
+        }
+
+        // Separator
+        let sep_width = inner_width.saturating_sub(2);
+        lines.push(Line::raw("─".repeat(sep_width)));
+
+        // File stats
+        let sha = &commit.sha;
+        if let Some(files) = self.files_map.get(sha) {
+            let total_files = files.len();
+            let total_add: usize = files.iter().map(|f| f.additions).sum();
+            let total_del: usize = files.iter().map(|f| f.deletions).sum();
+            lines.push(Line::from(vec![
+                Span::raw(format!(
+                    "{total_files} file{} changed",
+                    if total_files == 1 { "" } else { "s" }
+                )),
+                Span::styled(format!(", +{total_add}"), Style::default().fg(Color::Green)),
+                Span::styled(format!(" -{total_del}"), Style::default().fg(Color::Red)),
+            ]));
+            lines.push(Line::raw(""));
+
+            // Per-file listing: status + additions/deletions + filename
+            for file in files {
+                let status_char = file.status_char();
+                let status_color = match status_char {
+                    'A' => Color::Green,
+                    'D' => Color::Red,
+                    'R' => Color::Cyan,
+                    _ => Color::Yellow,
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{status_char}"), Style::default().fg(status_color)),
+                    Span::styled(
+                        format!(" +{}", file.additions),
+                        Style::default().fg(Color::Green),
+                    ),
+                    Span::styled(
+                        format!(" -{}", file.deletions),
+                        Style::default().fg(Color::Red),
+                    ),
+                    Span::raw(format!(" {}", file.filename)),
+                ]));
+            }
+        } else {
+            lines.push(Line::raw("Loading..."));
+        }
+
+        // Wrap 考慮の視覚行数を計算
+        let visual_total: u16 = lines
+            .iter()
+            .map(|line| {
+                let w: usize = line.spans.iter().map(|s| s.content.len()).sum();
+                if inner_width > 0 && w > inner_width {
+                    (w as u16).div_ceil(inner_width as u16)
+                } else {
+                    1
+                }
+            })
+            .sum();
+        self.commit_overview_visual_total = visual_total;
+        self.clamp_commit_overview_scroll();
+
+        let block = Block::default()
+            .title(" Commit Overview ")
+            .borders(Borders::ALL)
+            .border_style(border_style);
+
+        let paragraph = Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false })
+            .scroll((self.commit_overview_scroll, 0));
+
+        frame.render_widget(paragraph, area);
+
+        // Scrollbar
+        if self.commit_overview_visual_total > self.commit_overview_view_height {
+            let mut scrollbar_state = ScrollbarState::new(
+                self.commit_overview_visual_total
+                    .saturating_sub(self.commit_overview_view_height) as usize,
+            )
+            .position(self.commit_overview_scroll as usize);
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight),
+                area,
+                &mut scrollbar_state,
+            );
+        }
     }
 
     /// Conversation ペイン描画（PrDescription/Conversation フォーカス時に右中央に表示）
