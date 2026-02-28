@@ -59,6 +59,12 @@ pub struct App {
     commit_msg_view_height: u16,
     /// Commit Message の Wrap 考慮済み視覚行数（render 時に更新）
     commit_msg_visual_total: u16,
+    /// Commit Overview ペインのスクロール位置
+    commit_overview_scroll: u16,
+    /// Commit Overview ペインの表示可能行数（render 時に更新）
+    commit_overview_view_height: u16,
+    /// Commit Overview の Wrap 考慮済み視覚行数（render 時に更新）
+    commit_overview_visual_total: u16,
     /// DiffView パネルの表示状態
     pub diff: DiffViewState,
     /// 行選択モードでの選択状態
@@ -208,6 +214,9 @@ impl App {
             commit_msg_scroll: 0,
             commit_msg_view_height: 4,  // 初期値、render で更新される
             commit_msg_visual_total: 0, // 初期値、render で更新される
+            commit_overview_scroll: 0,
+            commit_overview_view_height: 10, // 初期値、render で更新される
+            commit_overview_visual_total: 0, // 初期値、render で更新される
             diff: DiffViewState::default(),
             line_selection: None,
             review: ReviewState {
@@ -299,6 +308,7 @@ impl App {
         self.diff.cursor_line = 0;
         self.diff.scroll = 0;
         self.commit_msg_scroll = 0;
+        self.commit_overview_scroll = 0;
         // 先頭の @@ 行をスキップ
         let max = self.current_diff_line_count();
         self.diff.cursor_line = self.skip_hunk_header_forward(0, max);
@@ -811,6 +821,20 @@ impl App {
         }
     }
 
+    /// Commit Overview のスクロール上限を返す
+    fn commit_overview_max_scroll(&self) -> u16 {
+        self.commit_overview_visual_total
+            .saturating_sub(self.commit_overview_view_height)
+    }
+
+    /// Commit Overview のスクロール位置を上限にクランプする
+    fn clamp_commit_overview_scroll(&mut self) {
+        let max = self.commit_overview_max_scroll();
+        if self.commit_overview_scroll > max {
+            self.commit_overview_scroll = max;
+        }
+    }
+
     /// 座標からペインを特定
     fn panel_at(&self, x: u16, y: u16) -> Option<Panel> {
         let pos = Position::new(x, y);
@@ -826,6 +850,8 @@ impl App {
             Some(Panel::CommitMessage)
         } else if self.layout.diff_view_rect.contains(pos) {
             Some(Panel::DiffView)
+        } else if self.layout.commit_overview_rect.contains(pos) {
+            Some(Panel::CommitOverview)
         } else {
             None
         }
@@ -1546,12 +1572,14 @@ mod tests {
                 sha: TEST_SHA_0.to_string(),
                 commit: CommitDetail {
                     message: "First commit".to_string(),
+                    author: None,
                 },
             },
             CommitInfo {
                 sha: TEST_SHA_1.to_string(),
                 commit: CommitDetail {
                     message: "Second commit".to_string(),
+                    author: None,
                 },
             },
         ]
@@ -2514,6 +2542,7 @@ mod tests {
             sha: TEST_SHA_0.to_string(),
             commit: CommitDetail {
                 message: "First line\n\nDetailed description\nMore details".to_string(),
+                author: None,
             },
         };
         assert_eq!(commit.message_summary(), "First line");

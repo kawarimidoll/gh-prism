@@ -22,6 +22,7 @@ pub enum Panel {
     CommitMessage,
     DiffView,
     Conversation,
+    CommitOverview,
 }
 
 impl std::fmt::Display for Panel {
@@ -33,6 +34,7 @@ impl std::fmt::Display for Panel {
             Panel::CommitMessage => write!(f, "Commit Message"),
             Panel::DiffView => write!(f, "Diff View"),
             Panel::Conversation => write!(f, "Conversation"),
+            Panel::CommitOverview => write!(f, "Commit Overview"),
         }
     }
 }
@@ -209,6 +211,7 @@ pub struct LayoutCache {
     pub commit_msg_rect: Rect,
     pub diff_view_rect: Rect,
     pub conversation_rect: Rect,
+    pub commit_overview_rect: Rect,
 }
 
 /// コード行コメントスレッドのリプライ

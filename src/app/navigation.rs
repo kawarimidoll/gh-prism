@@ -95,6 +95,10 @@ impl App {
             Panel::Conversation => {
                 self.conversation_move_next();
             }
+            Panel::CommitOverview => {
+                self.commit_overview_scroll = self.commit_overview_scroll.saturating_add(1);
+                self.clamp_commit_overview_scroll();
+            }
             _ => {}
         }
     }
@@ -131,6 +135,9 @@ impl App {
             }
             Panel::Conversation => {
                 self.conversation_move_prev();
+            }
+            Panel::CommitOverview => {
+                self.commit_overview_scroll = self.commit_overview_scroll.saturating_sub(1);
             }
             _ => {}
         }
@@ -640,10 +647,10 @@ impl App {
     }
 
     pub(super) fn next_panel(&mut self) {
-        // DiffView / CommitMessage / Conversation は Tab 巡回の対象外
+        // DiffView / CommitMessage / Conversation / CommitOverview は Tab 巡回の対象外
         if matches!(
             self.focused_panel,
-            Panel::DiffView | Panel::CommitMessage | Panel::Conversation
+            Panel::DiffView | Panel::CommitMessage | Panel::Conversation | Panel::CommitOverview
         ) {
             return;
         }
@@ -651,13 +658,16 @@ impl App {
             Panel::PrDescription => Panel::CommitList,
             Panel::CommitList => Panel::FileTree,
             Panel::FileTree => Panel::PrDescription,
-            Panel::CommitMessage | Panel::DiffView | Panel::Conversation => unreachable!(),
+            Panel::CommitMessage
+            | Panel::DiffView
+            | Panel::Conversation
+            | Panel::CommitOverview => unreachable!(),
         }
     }
     pub(super) fn prev_panel(&mut self) {
         if matches!(
             self.focused_panel,
-            Panel::DiffView | Panel::CommitMessage | Panel::Conversation
+            Panel::DiffView | Panel::CommitMessage | Panel::Conversation | Panel::CommitOverview
         ) {
             return;
         }
@@ -665,7 +675,10 @@ impl App {
             Panel::PrDescription => Panel::FileTree,
             Panel::CommitList => Panel::PrDescription,
             Panel::FileTree => Panel::CommitList,
-            Panel::CommitMessage | Panel::DiffView | Panel::Conversation => unreachable!(),
+            Panel::CommitMessage
+            | Panel::DiffView
+            | Panel::Conversation
+            | Panel::CommitOverview => unreachable!(),
         }
     }
 }
