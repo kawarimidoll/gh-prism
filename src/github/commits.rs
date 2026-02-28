@@ -9,8 +9,16 @@ pub struct CommitInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommitAuthor {
+    pub name: String,
+    pub email: String,
+    pub date: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitDetail {
     pub message: String,
+    pub author: Option<CommitAuthor>,
 }
 
 impl CommitInfo {
@@ -22,6 +30,23 @@ impl CommitInfo {
     /// コミットメッセージの1行目を返す
     pub fn message_summary(&self) -> &str {
         self.commit.message.lines().next().unwrap_or("")
+    }
+
+    /// コミットの author を `name <email>` 形式で返す
+    pub fn author_line(&self) -> String {
+        match &self.commit.author {
+            Some(a) => format!("{} <{}>", a.name, a.email),
+            None => "unknown".to_string(),
+        }
+    }
+
+    /// コミットの author date を返す
+    pub fn author_date(&self) -> &str {
+        self.commit
+            .author
+            .as_ref()
+            .map(|a| a.date.as_str())
+            .unwrap_or("")
     }
 }
 

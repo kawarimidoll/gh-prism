@@ -1546,12 +1546,14 @@ mod tests {
                 sha: TEST_SHA_0.to_string(),
                 commit: CommitDetail {
                     message: "First commit".to_string(),
+                    author: None,
                 },
             },
             CommitInfo {
                 sha: TEST_SHA_1.to_string(),
                 commit: CommitDetail {
                     message: "Second commit".to_string(),
+                    author: None,
                 },
             },
         ]
@@ -2514,6 +2516,7 @@ mod tests {
             sha: TEST_SHA_0.to_string(),
             commit: CommitDetail {
                 message: "First line\n\nDetailed description\nMore details".to_string(),
+                author: None,
             },
         };
         assert_eq!(commit.message_summary(), "First line");
