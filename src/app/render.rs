@@ -234,6 +234,10 @@ impl App {
                     self.layout.conversation_rect = full_area;
                     self.render_conversation_pane(frame, full_area);
                 }
+                Panel::CommitOverview => {
+                    self.layout.commit_overview_rect = full_area;
+                    self.render_commit_overview(frame, full_area);
+                }
                 Panel::DiffView => {
                     if self.mode == AppMode::ReviewBodyInput {
                         // ReviewBodyInput 時は全幅パネルで描画するため CommitMsg + DiffView のみ
@@ -327,7 +331,10 @@ impl App {
                 if self.mode != AppMode::ReviewBodyInput {
                     self.render_editor_panel(frame, comment_area);
                 }
-            } else if self.focused_panel == Panel::CommitList {
+            } else if matches!(
+                self.focused_panel,
+                Panel::CommitList | Panel::CommitOverview
+            ) {
                 // CommitList → Commit Overview（右カラム全体）
                 self.layout.commit_msg_rect = Rect::default();
                 self.layout.diff_view_rect = Rect::default();
@@ -763,9 +770,13 @@ impl App {
         frame.render_widget(paragraph, area);
     }
 
-    /// Commit Overview ペイン描画（CommitList フォーカス時に右カラム全体に表示）
+    /// Commit Overview ペイン描画（CommitList / CommitOverview フォーカス時に右カラム全体に表示）
     fn render_commit_overview(&mut self, frame: &mut Frame, area: Rect) {
-        let border_style = Style::default().fg(Color::Yellow);
+        let border_style = if self.focused_panel == Panel::CommitOverview {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default()
+        };
 
         self.commit_overview_view_height = area.height.saturating_sub(2);
         let inner_width = area.width.saturating_sub(2) as usize;
@@ -1833,10 +1844,15 @@ impl App {
             ("q", "Quit"),
         ];
 
-        // --- Scroll セクション (PrDescription, CommitMessage, Conversation, DiffView) ---
+        // --- Scroll セクション (PrDescription, CommitList, CommitMessage, Conversation, DiffView) ---
         if matches!(
             panel,
-            Panel::PrDescription | Panel::CommitMessage | Panel::Conversation | Panel::DiffView
+            Panel::PrDescription
+                | Panel::CommitList
+                | Panel::CommitMessage
+                | Panel::Conversation
+                | Panel::DiffView
+                | Panel::CommitOverview
         ) {
             entries.extend_from_slice(&[
                 ("", "Scroll"),
@@ -1899,6 +1915,13 @@ impl App {
                     ("c", "Reply / comment on PR"),
                     ("Ctrl+S", "Submit comment"),
                     ("Esc", "Back to PR description"),
+                ]);
+            }
+            Panel::CommitOverview => {
+                entries.extend_from_slice(&[
+                    ("", "Commit Overview"),
+                    ("j / k", "Scroll down / up"),
+                    ("Esc", "Back to commit list"),
                 ]);
             }
         }

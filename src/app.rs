@@ -851,7 +851,7 @@ impl App {
         } else if self.layout.diff_view_rect.contains(pos) {
             Some(Panel::DiffView)
         } else if self.layout.commit_overview_rect.contains(pos) {
-            Some(Panel::CommitList)
+            Some(Panel::CommitOverview)
         } else {
             None
         }
