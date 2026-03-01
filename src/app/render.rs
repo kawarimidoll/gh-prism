@@ -51,6 +51,14 @@ const CURSOR_BG_DARK: Color = Color::DarkGray;
 const CURSOR_BG_LIGHT: Color = Color::Indexed(254);
 const PENDING_BG_DARK: Color = Color::Indexed(22);
 const PENDING_BG_LIGHT: Color = Color::Indexed(151);
+const RAINBOW_COLORS: [Color; 6] = [
+    Color::Red,
+    Color::Yellow,
+    Color::Green,
+    Color::Cyan,
+    Color::Blue,
+    Color::Magenta,
+];
 
 /// ローディング中 / エラー時のプレースホルダー描画
 /// `LoadPhase::Loading` なら "Loading..." 表示、`Error` なら "Failed to load" 表示
@@ -95,6 +103,35 @@ fn render_load_phase(
 }
 
 impl App {
+    /// rainbow_mode 時の虹色を返す（補助ペイン用）。通常時は None。
+    fn rainbow_color(&self, index: usize) -> Option<Color> {
+        if self.rainbow_mode {
+            Some(RAINBOW_COLORS[(self.rainbow_tick as usize + index) % RAINBOW_COLORS.len()])
+        } else {
+            None
+        }
+    }
+
+    /// パネルのボーダースタイルを返す（rainbow_mode 時は虹色）
+    fn panel_border_style(&self, panel: Panel) -> Style {
+        // CommitMessage と CommitOverview は同一スロットに排他表示されるため同じ index
+        let panel_index = match panel {
+            Panel::PrDescription => 0,
+            Panel::CommitList => 1,
+            Panel::FileTree => 2,
+            Panel::CommitMessage | Panel::CommitOverview => 3,
+            Panel::Conversation => 4,
+            Panel::DiffView => 5,
+        };
+        if let Some(color) = self.rainbow_color(panel_index) {
+            Style::default().fg(color)
+        } else if self.focused_panel == panel {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default()
+        }
+    }
+
     pub(super) fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
 
@@ -427,11 +464,7 @@ impl App {
         // ボーダー左右分を引いた内部幅
         let inner_width = area.width.saturating_sub(2);
 
-        let style = if self.focused_panel == Panel::PrDescription {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        };
+        let style = self.panel_border_style(Panel::PrDescription);
 
         self.ensure_pr_desc_rendered();
 
@@ -466,11 +499,7 @@ impl App {
     }
 
     fn render_commit_list_stateful(&mut self, frame: &mut Frame, area: Rect) {
-        let style = if self.focused_panel == Panel::CommitList {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        };
+        let style = self.panel_border_style(Panel::CommitList);
 
         let items: Vec<ListItem> = self
             .commits
@@ -556,11 +585,7 @@ impl App {
     }
 
     fn render_file_tree(&mut self, frame: &mut Frame, area: Rect) {
-        let style = if self.focused_panel == Panel::FileTree {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        };
+        let style = self.panel_border_style(Panel::FileTree);
 
         if render_load_phase(
             frame,
@@ -677,11 +702,7 @@ impl App {
     }
 
     fn render_commit_message(&mut self, frame: &mut Frame, area: Rect) {
-        let border_style = if self.focused_panel == Panel::CommitMessage {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        };
+        let border_style = self.panel_border_style(Panel::CommitMessage);
 
         // ボーダー分を引いた表示可能行数を記録
         self.commit_msg_view_height = area.height.saturating_sub(2);
@@ -762,22 +783,24 @@ impl App {
             ]));
         }
 
+        // Info ペインはフォーカス不可だが rainbow_mode 時は虹色（index 3: CommitMsg スロット）
+        let info_border = if let Some(color) = self.rainbow_color(3) {
+            Style::default().fg(color)
+        } else {
+            Style::default()
+        };
         let paragraph = Paragraph::new(lines).block(
             Block::default()
                 .title(" Info ")
                 .borders(Borders::ALL)
-                .border_style(Style::default()),
+                .border_style(info_border),
         );
         frame.render_widget(paragraph, area);
     }
 
     /// Commit Overview ペイン描画（CommitList / CommitOverview フォーカス時に右カラム全体に表示）
     fn render_commit_overview(&mut self, frame: &mut Frame, area: Rect) {
-        let border_style = if self.focused_panel == Panel::CommitOverview {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        };
+        let border_style = self.panel_border_style(Panel::CommitOverview);
 
         self.commit_overview_view_height = area.height.saturating_sub(2);
         let inner_width = area.width.saturating_sub(2) as usize;
@@ -925,11 +948,7 @@ impl App {
 
     /// Conversation ペイン描画（PrDescription/Conversation フォーカス時に右中央に表示）
     fn render_conversation_pane(&mut self, frame: &mut Frame, area: Rect) {
-        let border_style = if self.focused_panel == Panel::Conversation {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        };
+        let border_style = self.panel_border_style(Panel::Conversation);
 
         self.conversation_view_height = area.height.saturating_sub(2);
         let inner_width = area.width.saturating_sub(2);
@@ -1042,11 +1061,7 @@ impl App {
     }
 
     fn render_diff_view_widget(&mut self, frame: &mut Frame, area: Rect) {
-        let border_style = if self.focused_panel == Panel::DiffView {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        };
+        let border_style = self.panel_border_style(Panel::DiffView);
 
         // DiffView の表示可能サイズを更新（ボーダー分を引く）
         self.diff.view_height = area.height.saturating_sub(2);
@@ -1488,6 +1503,9 @@ impl App {
             }
         }
 
+        // rainbow_color は self の不変借用なので、editor の可変借用より前に取得
+        let rainbow = self.rainbow_color(6);
+
         let (title, help_text, editor, show_cursor) = match self.mode {
             AppMode::CommentInput => {
                 let title = if let Some(selection) = self.line_selection {
@@ -1540,7 +1558,10 @@ impl App {
 
         let scrollbar_state = editor.scrollbar_state(visible_height);
 
-        let border_style = if show_cursor {
+        // Comment ペインは rainbow_mode 時は虹色（index 6: DiffView(5) と区別）
+        let border_style = if let Some(color) = rainbow {
+            Style::default().fg(color)
+        } else if show_cursor {
             Style::default().fg(Color::Green)
         } else {
             Style::default().fg(Color::DarkGray)
@@ -1621,15 +1642,23 @@ impl App {
         } else {
             format!(" 💬 Review Comments ({}) ", comments.len())
         };
-        let (help_text, border_color) = if focused {
+        let help_text = if focused {
             let resolve_label = if is_resolved {
                 "r: unresolve"
             } else {
                 "r: resolve"
             };
-            (format!(" c: reply | {resolve_label} "), Color::Yellow)
+            format!(" c: reply | {resolve_label} ")
         } else {
-            (String::new(), Color::DarkGray)
+            String::new()
+        };
+        // rainbow_mode 時は虹色（index 5: DiffView 系列）、通常時は focused で Yellow/DarkGray
+        let border_color = if let Some(color) = self.rainbow_color(6) {
+            color
+        } else if focused {
+            Color::Yellow
+        } else {
+            Color::DarkGray
         };
         let mut block = Block::default()
             .title(title)

@@ -17,6 +17,7 @@ use crate::github::files::DiffFile;
 use crate::github::media::MediaCache;
 use crate::github::review::{self, PendingComment};
 use color_eyre::Result;
+use crossterm::event::KeyCode;
 use octocrab::Octocrab;
 use ratatui::{
     DefaultTerminal,
@@ -139,6 +140,12 @@ pub struct App {
     conversation_entry_offsets: Vec<usize>,
     /// Conversation エントリごとの Wrap 考慮済み視覚行オフセット（render 時に計算、navigation で参照）
     conversation_visual_offsets: Vec<u16>,
+    /// コナミコマンド入力バッファ（最大10要素のリングバッファ）
+    konami_buffer: Vec<KeyCode>,
+    /// 虹色ボーダーモード（コナミコマンド発動で true）
+    rainbow_mode: bool,
+    /// 虹色アニメーションの tick カウンター
+    rainbow_tick: u16,
 }
 
 impl App {
@@ -258,6 +265,9 @@ impl App {
             conversation_cursor: 0,
             conversation_entry_offsets: Vec::new(),
             conversation_visual_offsets: Vec::new(),
+            konami_buffer: Vec::new(),
+            rainbow_mode: false,
+            rainbow_tick: 0,
         }
     }
 
@@ -581,6 +591,10 @@ impl App {
             // 期限切れのステータスメッセージを自動クリア
             if self.status_message.as_ref().is_some_and(|m| m.is_expired()) {
                 self.status_message = None;
+            }
+            // 虹色ボーダーアニメーションの tick 更新
+            if self.rainbow_mode {
+                self.rainbow_tick = self.rainbow_tick.wrapping_add(1);
             }
 
             // バックグラウンドワーカーの完了チェック

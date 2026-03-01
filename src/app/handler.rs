@@ -9,6 +9,19 @@ use std::time::Duration;
 const EVENT_POLL_MS: u64 = 250;
 const HELP_MOUSE_SCROLL_LINES: u16 = 3;
 
+const KONAMI_CODE: [KeyCode; 10] = [
+    KeyCode::Up,
+    KeyCode::Up,
+    KeyCode::Down,
+    KeyCode::Down,
+    KeyCode::Left,
+    KeyCode::Right,
+    KeyCode::Left,
+    KeyCode::Right,
+    KeyCode::Char('b'),
+    KeyCode::Char('a'),
+];
+
 impl App {
     /// マウスクリック処理
     pub(super) fn handle_mouse_click(&mut self, x: u16, y: u16) {
@@ -267,6 +280,17 @@ impl App {
                 }
             }
             return;
+        }
+
+        // コナミコマンド検知: キー入力をリングバッファに追加して判定
+        self.konami_buffer.push(code);
+        if self.konami_buffer.len() > KONAMI_CODE.len() {
+            self.konami_buffer
+                .drain(..self.konami_buffer.len() - KONAMI_CODE.len());
+        }
+        if self.konami_buffer == KONAMI_CODE {
+            self.rainbow_mode = !self.rainbow_mode;
+            self.konami_buffer.clear();
         }
 
         if self.handle_global_keys(code, modifiers) {
