@@ -160,20 +160,8 @@ impl App {
 
         let zoom_indicator = if self.zoomed { " [ZOOM]" } else { "" };
 
-        // 右セクション: モード / ステータス / ズーム / コメントバッジ / ロードインジケーター（固定幅、右端に配置）
+        // 右セクション（左から順に）: ステータス | コメント数 | ズーム | モード | ロード | バージョン
         let mut right_spans: Vec<Span> = Vec::new();
-        if self.loading.any_loading() {
-            right_spans.push(Span::styled(" ⏳ ", header_style));
-        }
-        if !mode_indicator.is_empty() {
-            right_spans.push(Span::styled(mode_indicator, header_style));
-        }
-        if !zoom_indicator.is_empty() {
-            right_spans.push(Span::styled(zoom_indicator, header_style));
-        }
-        if !comments_badge.is_empty() {
-            right_spans.push(Span::styled(&comments_badge, header_style));
-        }
         if let Some(ref msg) = self.status_message {
             let status_style = match msg.level {
                 StatusLevel::Info => Style::default().bg(Color::Green).fg(Color::Black),
@@ -181,13 +169,26 @@ impl App {
             };
             right_spans.push(Span::styled(format!(" {} ", msg.body), status_style));
         }
+        if !comments_badge.is_empty() {
+            right_spans.push(Span::styled(&comments_badge, header_style));
+        }
+        if !zoom_indicator.is_empty() {
+            right_spans.push(Span::styled(zoom_indicator, header_style));
+        }
+        if !mode_indicator.is_empty() {
+            right_spans.push(Span::styled(mode_indicator, header_style));
+        }
+        if self.loading.any_loading() {
+            right_spans.push(Span::styled(" ⏳ ", header_style));
+        }
+        right_spans.push(Span::styled(format!(" {} ", crate::VERSION), header_style));
         let right_width: usize = right_spans.iter().map(|s| s.width()).sum();
 
         // 左セクション: PR 情報（残り幅で truncate）
         let total_width = main_layout[0].width as usize;
         let left_full = format!(
-            " prism - {}#{} | ?: help | Tab: switch | Enter: open | Esc: back | R: reload | z: zoom",
-            self.repo, self.pr_number,
+            " {} | ?: help | ⇥: switch | ↵: open | ⎋: back | R: reload | z: zoom",
+            self.repo,
         );
         let left_max = total_width.saturating_sub(right_width);
         let left_text = truncate_str(&left_full, left_max);
@@ -444,7 +445,7 @@ impl App {
         self.clamp_pr_desc_scroll();
 
         let mut block = Block::default()
-            .title(" PR Description ")
+            .title(format!(" PR #{} ", self.pr_number))
             .borders(Borders::ALL)
             .border_style(style);
         if self.focused_panel == Panel::PrDescription {

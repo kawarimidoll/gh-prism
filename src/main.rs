@@ -78,7 +78,7 @@ pub enum AsyncData {
     Error(AsyncErrorKind, String),
 }
 
-const VERSION: &str = match option_env!("GH_PRISM_VERSION") {
+pub(crate) const VERSION: &str = match option_env!("GH_PRISM_VERSION") {
     Some(v) => v,
     None => env!("DEV_VERSION"),
 };
