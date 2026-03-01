@@ -84,12 +84,39 @@ impl App {
         }
     }
 
-    /// マウススクロール処理（PR Description と DiffView のみ）
+    /// マウススクロール処理（フォーカスは移動しない）
     pub(super) fn handle_mouse_scroll(&mut self, x: u16, y: u16, down: bool) {
         let Some(panel) = self.panel_at(x, y) else {
             return;
         };
         match panel {
+            Panel::CommitList if !self.commits.is_empty() => {
+                let current = self.commit_list_state.selected().unwrap_or(0);
+                let next = if down {
+                    (current + 1).min(self.commits.len() - 1)
+                } else {
+                    current.saturating_sub(1)
+                };
+                if next != current {
+                    self.commit_list_state.select(Some(next));
+                    self.reset_file_selection();
+                }
+            }
+            Panel::FileTree => {
+                let files_len = self.current_files().len();
+                if files_len > 0 {
+                    let current = self.file_list_state.selected().unwrap_or(0);
+                    let next = if down {
+                        (current + 1).min(files_len - 1)
+                    } else {
+                        current.saturating_sub(1)
+                    };
+                    if next != current {
+                        self.file_list_state.select(Some(next));
+                        self.reset_cursor();
+                    }
+                }
+            }
             Panel::PrDescription => {
                 if down {
                     self.pr_desc_scroll = self.pr_desc_scroll.saturating_add(1);

@@ -2873,12 +2873,22 @@ mod tests {
     }
 
     #[test]
-    fn test_mouse_scroll_on_commit_list_ignored() {
+    fn test_mouse_scroll_on_commit_list() {
         let mut app = TestAppBuilder::new().with_test_data().build();
         app.layout.commit_list_rect = Rect::new(0, 11, 30, 10);
 
-        // CommitList 上でスクロールしても選択は変わらない
+        assert_eq!(app.commit_list_state.selected(), Some(0));
+
+        // CommitList 上で下スクロール → 次のコミットに移動
         app.handle_mouse_scroll(5, 15, true);
+        assert_eq!(app.commit_list_state.selected(), Some(1));
+
+        // 上スクロール → 元に戻る
+        app.handle_mouse_scroll(5, 15, false);
+        assert_eq!(app.commit_list_state.selected(), Some(0));
+
+        // 先頭で上スクロール → 動かない
+        app.handle_mouse_scroll(5, 15, false);
         assert_eq!(app.commit_list_state.selected(), Some(0));
     }
 
