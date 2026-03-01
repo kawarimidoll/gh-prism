@@ -27,7 +27,7 @@ const COMMIT_LIST_HEIGHT_PCT: u16 = 30;
 const FILE_TREE_HEIGHT_PCT: u16 = 30;
 
 // --- パネルキーヒント ---
-const HINT_MEDIA: &str = " o: media ";
+const HINT_MEDIA: &str = " m: media ";
 const HINT_VIEWED: &str = " x: viewed ";
 const HINT_COMMENT: &str = " c: comment ";
 const HINT_SELECT_COMMENT: &str = " v: select | c: comment ";
@@ -448,7 +448,7 @@ impl App {
             .title(format!(" PR #{} ", self.pr_number))
             .borders(Borders::ALL)
             .border_style(style);
-        if self.focused_panel == Panel::PrDescription {
+        if self.focused_panel == Panel::PrDescription && !self.media_refs.is_empty() {
             block =
                 block.title_bottom(Line::from(HINT_MEDIA).alignment(HorizontalAlignment::Right));
         }
@@ -1866,11 +1866,11 @@ impl App {
         // --- ペイン固有セクション ---
         match panel {
             Panel::PrDescription => {
-                entries.extend_from_slice(&[
-                    ("", "PR Description"),
-                    ("Enter", "Open conversation"),
-                    ("o", "Open media viewer"),
-                ]);
+                entries
+                    .extend_from_slice(&[("", "PR Description"), ("Enter", "Open conversation")]);
+                if !self.media_refs.is_empty() {
+                    entries.push(("m", "Open media viewer"));
+                }
             }
             Panel::CommitList => {
                 entries.extend_from_slice(&[

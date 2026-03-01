@@ -527,7 +527,7 @@ impl App {
             KeyCode::Enter => {
                 self.focused_panel = Panel::Conversation;
             }
-            KeyCode::Char('o') => {
+            KeyCode::Char('m') => {
                 self.enter_media_viewer();
             }
             _ => {}
