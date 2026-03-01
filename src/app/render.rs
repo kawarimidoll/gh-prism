@@ -1983,37 +1983,26 @@ impl App {
         let alt = current.map(|r| r.alt.as_str()).unwrap_or("Media");
         let title = format!(" {icon} {alt} ({}/{total}) ", self.media_viewer_index + 1);
 
+        let k = Style::default().fg(Color::Cyan);
+        let hint = Line::from(vec![
+            Span::styled(" j/k ", k),
+            Span::raw("Navigate  "),
+            Span::styled("o ", k),
+            Span::raw("Open in browser  "),
+            Span::styled("Esc ", k),
+            Span::raw("Close "),
+        ])
+        .alignment(HorizontalAlignment::Right);
+
         let block = Block::default()
             .title(title)
+            .title_bottom(hint)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan));
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        // フッターナビゲーションヒント（inner の最下行）
-        let footer_area = Rect::new(
-            inner.x,
-            inner.y + inner.height.saturating_sub(1),
-            inner.width,
-            1,
-        );
-        let content_area = Rect::new(
-            inner.x,
-            inner.y,
-            inner.width,
-            inner.height.saturating_sub(1),
-        );
-
-        let k = Style::default().fg(Color::Cyan);
-        let footer = Line::from(vec![
-            Span::styled(" ← → ", k),
-            Span::raw("Navigate  "),
-            Span::styled("o ", k),
-            Span::raw("Open in browser  "),
-            Span::styled("Esc ", k),
-            Span::raw("Close"),
-        ]);
-        frame.render_widget(Paragraph::new(footer), footer_area);
+        let content_area = inner;
 
         if is_video {
             let msg = Paragraph::new(

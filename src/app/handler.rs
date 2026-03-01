@@ -872,13 +872,13 @@ impl App {
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.mode = AppMode::Normal;
             }
-            KeyCode::Char('l') | KeyCode::Right => {
+            KeyCode::Char('l') | KeyCode::Right | KeyCode::Char('j') | KeyCode::Down => {
                 if count > 0 {
                     self.media_viewer_index = (self.media_viewer_index + 1) % count;
                     self.prepare_media_protocol();
                 }
             }
-            KeyCode::Char('h') | KeyCode::Left => {
+            KeyCode::Char('h') | KeyCode::Left | KeyCode::Char('k') | KeyCode::Up => {
                 if count > 0 {
                     self.media_viewer_index = if self.media_viewer_index == 0 {
                         count - 1
