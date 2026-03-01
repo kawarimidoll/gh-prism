@@ -74,7 +74,7 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
         env:
           GH_PRISM_VERSION: ${{ needs.prepare.outputs.tag }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset_name }}
           path: target/${{ matrix.target }}/release/gh-prism
@@ -101,7 +101,7 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
         env:
           GH_PRISM_VERSION: ${{ needs.prepare.outputs.tag }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset_name }}
           path: target/${{ matrix.target }}/release/gh-prism
@@ -117,7 +117,7 @@ jobs:
       - name: Generate changelog
         run: .github/scripts/generate-changelog.sh > changelog.md
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
 
