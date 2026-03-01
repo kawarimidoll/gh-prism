@@ -1,6 +1,6 @@
 [package]
 name = "gh-prism"
-version = "0.0.0"
+version = "26.2.28"
 edition = "2024"
 authors = ["kawarimidoll"]
 description = "gh extension TUI for reviewing GitHub Pull Requests"

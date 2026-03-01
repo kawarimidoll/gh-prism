@@ -11,6 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.tag.outputs.TAG }}
+      sha: ${{ steps.version.outputs.SHA }}
     steps:
       - uses: actions/checkout@v6
 
@@ -19,7 +20,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          DATE=$(date -u +%y.%m.%d)
+          DATE=$(date -u +%y.%-m.%-d)
           COUNT=$(gh release list --json tagName --jq "[.[] | select(.tagName | startswith(\"${DATE}\"))] | length")
           if [ "$COUNT" -eq 0 ]; then
             TAG="$DATE"
@@ -29,6 +30,19 @@ jobs:
           echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
           echo "Generated tag: $TAG"
 
+      - name: Update Cargo.toml version
+        id: version
+        run: |
+          TAG="${{ steps.tag.outputs.TAG }}"
+          sed -i '0,/^version = ".*"/{s/^version = ".*"/version = "'"$TAG"'"/}' Cargo.toml
+          sed -i '/^name = "gh-prism"/{n;s/^version = ".*"/version = "'"$TAG"'"/}' Cargo.lock
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore(release): $TAG"
+          git push
+          echo "SHA=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   release-nix:
     needs: prepare
     runs-on: ${{ matrix.os }}
@@ -37,17 +51,13 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
       - uses: nixbuild/nix-quick-install-action@v34
       - uses: cachix/cachix-action@v16
         with:
           name: kawarimidoll
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
-      - name: Write version file
-        # Nix flakes only include git-tracked files in source;
-        # `git add -f` stages VERSION so builtins.pathExists sees it
-        run: |
-          echo "${{ needs.prepare.outputs.tag }}" > VERSION
-          git add -f VERSION
       - name: Build and push to Cachix
         run: nix build
 
@@ -63,6 +73,8 @@ jobs:
             asset_name: linux-arm64
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -91,6 +103,8 @@ jobs:
             asset_name: darwin-arm64
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -112,6 +126,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ needs.prepare.outputs.sha }}
           fetch-depth: 0
 
       - name: Generate changelog

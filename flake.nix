@@ -37,23 +37,15 @@
         let
           pkgs = nixpkgs.legacyPackages.${system};
           cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
-          versionFile = ./VERSION;
-          ghPrismVersion =
-            if builtins.pathExists versionFile then
-              builtins.replaceStrings [ "\n" ] [ "" ] (builtins.readFile versionFile)
-            else
-              "${cargoToml.package.version}-${self.dirtyShortRev or self.shortRev or "dirty"}";
         in
         {
           default = pkgs.rustPlatform.buildRustPackage {
             pname = cargoToml.package.name;
-            version = ghPrismVersion;
+            version = cargoToml.package.version;
             src = ./.;
             cargoLock = {
               lockFile = ./Cargo.lock;
             };
-
-            env.GH_PRISM_VERSION = ghPrismVersion;
 
             nativeBuildInputs = [ pkgs.makeWrapper ];
 
