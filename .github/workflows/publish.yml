@@ -130,7 +130,7 @@ jobs:
           fetch-depth: 0
 
       - name: Generate changelog
-        run: .github/scripts/generate-changelog.sh > changelog.md
+        run: .github/scripts/generate-changelog.sh "" "${{ needs.prepare.outputs.tag }}" > changelog.md
 
       - uses: actions/download-artifact@v8
         with:

@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: generate-changelog.sh [base-ref]
+# Usage: generate-changelog.sh [base-ref] [new-tag]
 # Generate changelog from conventional commits since the previous tag.
 # If base-ref is given, use it instead of auto-detecting the previous tag.
+# If new-tag is given, use it instead of HEAD in the Full Changelog link.
 
 BASE_REF="${1:-$(git tag --sort=-creatordate | head -n 1)}"
+NEW_TAG="${2:-HEAD}"
 
 if [ -z "$BASE_REF" ]; then
   echo "No previous tag found. Listing all commits."
@@ -26,5 +28,5 @@ done
 
 REPO_URL=$(git remote get-url origin | sed 's/\.git$//' | sed 's|git@github.com:|https://github.com/|')
 if [ -n "$BASE_REF" ]; then
-  echo "**Full Changelog**: $REPO_URL/compare/$BASE_REF...HEAD"
+  echo "**Full Changelog**: $REPO_URL/compare/$BASE_REF...$NEW_TAG"
 fi
