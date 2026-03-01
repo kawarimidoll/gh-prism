@@ -132,6 +132,16 @@ impl App {
         }
     }
 
+    /// フォーカス中のパネルのタイトルを太字にして返す
+    fn panel_title<'a>(&self, panel: Panel, title: impl Into<String>) -> Line<'a> {
+        let s = title.into();
+        if self.focused_panel == panel {
+            Line::styled(s, Style::default().add_modifier(Modifier::BOLD))
+        } else {
+            Line::raw(s)
+        }
+    }
+
     pub(super) fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
 
@@ -478,7 +488,7 @@ impl App {
         self.clamp_pr_desc_scroll();
 
         let mut block = Block::default()
-            .title(format!(" PR #{} ", self.pr_number))
+            .title(self.panel_title(Panel::PrDescription, format!(" PR #{} ", self.pr_number)))
             .borders(Borders::ALL)
             .border_style(style);
         if self.focused_panel == Panel::PrDescription && !self.media_refs.is_empty() {
@@ -565,7 +575,7 @@ impl App {
             viewed_count
         );
         let mut block = Block::default()
-            .title(title)
+            .title(self.panel_title(Panel::CommitList, title))
             .borders(Borders::ALL)
             .border_style(style);
         if self.focused_panel == Panel::CommitList {
@@ -683,7 +693,7 @@ impl App {
         let total = items.len();
         let title = format!(" Files {}/{} ✓{} ", selected, files.len(), viewed_count);
         let mut block = Block::default()
-            .title(title)
+            .title(self.panel_title(Panel::FileTree, title))
             .borders(Borders::ALL)
             .border_style(style);
         if self.focused_panel == Panel::FileTree {
@@ -722,7 +732,7 @@ impl App {
         self.clamp_commit_msg_scroll();
 
         let block = Block::default()
-            .title(" Commit ")
+            .title(self.panel_title(Panel::CommitMessage, " Commit "))
             .borders(Borders::ALL)
             .border_style(border_style);
         let paragraph = paragraph.block(block).scroll((self.commit_msg_scroll, 0));
@@ -813,7 +823,7 @@ impl App {
             Some(c) => c.clone(),
             None => {
                 let block = Block::default()
-                    .title(" Commit Overview ")
+                    .title(self.panel_title(Panel::CommitOverview, " Commit Overview "))
                     .borders(Borders::ALL)
                     .border_style(border_style);
                 frame.render_widget(Paragraph::new(" No commit selected").block(block), area);
@@ -920,7 +930,7 @@ impl App {
         self.clamp_commit_overview_scroll();
 
         let block = Block::default()
-            .title(" Commit Overview ")
+            .title(self.panel_title(Panel::CommitOverview, " Commit Overview "))
             .borders(Borders::ALL)
             .border_style(border_style);
 
@@ -1010,7 +1020,7 @@ impl App {
         self.clamp_conversation_scroll();
 
         let mut block = Block::default()
-            .title(title)
+            .title(self.panel_title(Panel::Conversation, title))
             .borders(Borders::ALL)
             .border_style(border_style);
         if self.focused_panel == Panel::Conversation {
@@ -1154,7 +1164,7 @@ impl App {
         };
 
         let mut block = Block::default()
-            .title(left_title)
+            .title(self.panel_title(Panel::DiffView, left_title))
             .borders(Borders::ALL)
             .border_style(border_style);
         if !right_title.is_empty() {
