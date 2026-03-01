@@ -186,7 +186,7 @@ impl App {
         // 左セクション: PR 情報（残り幅で truncate）
         let total_width = main_layout[0].width as usize;
         let left_full = format!(
-            " prism - {}#{} | R: reload | z: zoom | ?: help",
+            " prism - {}#{} | ?: help | Tab: switch | Enter: open | Esc: back | R: reload | z: zoom",
             self.repo, self.pr_number,
         );
         let left_max = total_width.saturating_sub(right_width);
