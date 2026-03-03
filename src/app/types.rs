@@ -118,6 +118,24 @@ impl MergeMethod {
     }
 }
 
+/// PR の状態
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PrState {
+    Open,
+    Merged,
+    Closed,
+}
+
+impl std::fmt::Display for PrState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PrState::Open => write!(f, "Open"),
+            PrState::Merged => write!(f, "Merged"),
+            PrState::Closed => write!(f, "Closed"),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StatusLevel {
     Info,

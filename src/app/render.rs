@@ -760,16 +760,15 @@ impl App {
         let mut lines: Vec<Line> = Vec::new();
 
         // Status (Open/Merged/Closed)
-        if !self.pr_state.is_empty() {
-            let state_color = match self.pr_state.as_str() {
-                "Open" => Color::Green,
-                "Merged" => Color::Magenta,
-                "Closed" => Color::Red,
-                _ => Color::White,
+        {
+            let state_color = match self.pr_state {
+                PrState::Open => Color::Green,
+                PrState::Merged => Color::Magenta,
+                PrState::Closed => Color::Red,
             };
             lines.push(Line::from(vec![
                 Span::raw(" Status:  "),
-                Span::styled(&self.pr_state, Style::default().fg(state_color)),
+                Span::styled(self.pr_state.to_string(), Style::default().fg(state_color)),
             ]));
         }
 

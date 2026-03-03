@@ -25,7 +25,7 @@ pub struct PrMetadata {
     pub pr_base_branch: String,
     pub pr_head_branch: String,
     pub pr_created_at: String,
-    pub pr_state: String,
+    pub pr_state: app::PrState,
 }
 
 pub fn extract_pr_metadata(pr: &PullRequest) -> PrMetadata {
@@ -48,11 +48,11 @@ pub fn extract_pr_metadata(pr: &PullRequest) -> PrMetadata {
             })
             .unwrap_or_default(),
         pr_state: if pr.merged_at.is_some() {
-            "Merged".to_string()
+            app::PrState::Merged
         } else {
             match pr.state {
-                Some(octocrab::models::IssueState::Open) => "Open".to_string(),
-                _ => "Closed".to_string(),
+                Some(octocrab::models::IssueState::Open) => app::PrState::Open,
+                _ => app::PrState::Closed,
             }
         },
     }

@@ -492,7 +492,7 @@ impl App {
             KeyCode::Char('M') => {
                 if !self.can_merge {
                     self.status_message = Some(StatusMessage::error("✗ No merge permission"));
-                } else if self.pr_state != "Open" {
+                } else if self.pr_state != PrState::Open {
                     self.status_message = Some(StatusMessage::error(format!(
                         "✗ Cannot merge: PR is {}",
                         self.pr_state

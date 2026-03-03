@@ -44,7 +44,7 @@ pub struct App {
     pr_base_branch: String,
     pr_head_branch: String,
     pr_created_at: String,
-    pr_state: String,
+    pr_state: PrState,
     commits: Vec<CommitInfo>,
     commit_list_state: ListState,
     files_map: HashMap<String, Vec<DiffFile>>,
@@ -167,7 +167,7 @@ impl App {
         pr_base_branch: String,
         pr_head_branch: String,
         pr_created_at: String,
-        pr_state: String,
+        pr_state: PrState,
         commits: Vec<CommitInfo>,
         files_map: HashMap<String, Vec<DiffFile>>,
         review_comments: Vec<ReviewComment>,
@@ -1101,7 +1101,7 @@ impl App {
 
         match result {
             Ok(_msg) => {
-                self.pr_state = "Merged".to_string();
+                self.pr_state = PrState::Merged;
                 self.status_message = Some(StatusMessage::info(format!(
                     "✓ Merged via {}",
                     method.label()
@@ -1815,7 +1815,7 @@ mod tests {
                 String::new(),
                 String::new(),
                 String::new(),
-                String::new(),
+                PrState::Open,
                 self.commits,
                 self.files_map,
                 self.review_comments,
