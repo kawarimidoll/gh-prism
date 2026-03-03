@@ -42,6 +42,8 @@ const QUIT_DIALOG_WIDTH: u16 = 38;
 const QUIT_DIALOG_HEIGHT: u16 = 9;
 const MERGE_DIALOG_WIDTH: u16 = 36;
 const MERGE_DIALOG_HEIGHT: u16 = 9;
+const CLOSE_DIALOG_WIDTH: u16 = 36;
+const CLOSE_DIALOG_HEIGHT: u16 = 5;
 const HELP_DIALOG_WIDTH: u16 = 60;
 const HELP_DIALOG_MIN_HEIGHT: u16 = 20;
 const HELP_KEY_COLUMN_WIDTH: usize = 20;
@@ -177,6 +179,7 @@ impl App {
             AppMode::ReviewBodyInput => " [REVIEW] ",
             AppMode::QuitConfirm => " [CONFIRM] ",
             AppMode::MergeConfirm => " [MERGE] ",
+            AppMode::CloseConfirm => " [CLOSE] ",
             AppMode::Help => " [HELP] ",
             AppMode::MediaViewer => " [MEDIA] ",
         };
@@ -196,7 +199,7 @@ impl App {
             AppMode::CommentView => Color::Yellow,
             AppMode::ReviewSubmit => Color::Cyan,
             AppMode::ReviewBodyInput => Color::Green,
-            AppMode::QuitConfirm | AppMode::MergeConfirm => Color::Red,
+            AppMode::QuitConfirm | AppMode::MergeConfirm | AppMode::CloseConfirm => Color::Red,
             AppMode::Help => Color::DarkGray,
             AppMode::MediaViewer => Color::DarkGray,
         };
@@ -422,6 +425,7 @@ impl App {
             AppMode::ReviewSubmit => self.render_review_submit_dialog(frame, area),
             AppMode::QuitConfirm => self.render_quit_confirm_dialog(frame, area),
             AppMode::MergeConfirm => self.render_merge_confirm_dialog(frame, area),
+            AppMode::CloseConfirm => self.render_close_confirm_dialog(frame, area),
             AppMode::Help => self.render_help_dialog(frame, area),
             AppMode::MediaViewer => self.render_media_viewer_overlay(frame, area),
             _ => {}
@@ -453,6 +457,11 @@ impl App {
         }
         if self.needs_merge.is_some() {
             return Some("Merging pull request...");
+        }
+        match self.needs_close_toggle {
+            Some(true) => return Some("Closing pull request..."),
+            Some(false) => return Some("Reopening pull request..."),
+            None => {}
         }
         None
     }
@@ -1929,6 +1938,35 @@ impl App {
         frame.render_widget(paragraph, dialog);
     }
 
+    fn render_close_confirm_dialog(&self, frame: &mut Frame, area: Rect) {
+        let dialog = Self::centered_rect(CLOSE_DIALOG_WIDTH, CLOSE_DIALOG_HEIGHT, area);
+        Self::clear_wide_safe(frame, dialog, area);
+
+        let (question, title) = if self.pr_state == PrState::Open {
+            ("Close this pull request?", " Close Pull Request ")
+        } else {
+            ("Reopen this pull request?", " Reopen Pull Request ")
+        };
+
+        let lines = vec![
+            Line::raw(""),
+            Line::styled(format!("  {question}"), Style::default()),
+            Line::raw(""),
+            Line::styled(
+                "  Enter: confirm | Esc: cancel",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ];
+
+        let paragraph = Paragraph::new(lines).block(
+            Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Red)),
+        );
+        frame.render_widget(paragraph, dialog);
+    }
+
     fn render_help_dialog(&mut self, frame: &mut Frame, area: Rect) {
         let dialog_height = (area.height * 2 / 3)
             .max(HELP_DIALOG_MIN_HEIGHT)
@@ -1959,6 +1997,7 @@ impl App {
             ("R", "Reload PR data"),
             ("S", "Submit review"),
             ("M", "Merge pull request"),
+            ("C", "Close/Reopen pull request"),
             ("?", "This help"),
             ("q", "Quit"),
         ];

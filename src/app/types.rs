@@ -53,6 +53,7 @@ pub enum AppMode {
     ReviewBodyInput,
     QuitConfirm,
     MergeConfirm,
+    CloseConfirm,
     Help,
     MediaViewer,
 }

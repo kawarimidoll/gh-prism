@@ -118,6 +118,8 @@ pub struct App {
     merge_method_cursor: usize,
     /// merge 実行フラグ（draw 後に実行）
     needs_merge: Option<MergeMethod>,
+    /// close/reopen 実行フラグ（Some(true) = close, Some(false) = reopen）
+    needs_close_toggle: Option<bool>,
     /// 現在の認証ユーザー名（リロード時の is_own_pr 再判定に使用）
     current_user: String,
     /// Conversation エントリ（Issue Comment + Review を時系列マージ）
@@ -264,6 +266,7 @@ impl App {
             allowed_merge_methods,
             merge_method_cursor: 0,
             needs_merge: None,
+            needs_close_toggle: None,
             current_user,
             conversation,
             conversation_scroll: 0,
@@ -652,6 +655,10 @@ impl App {
 
             if let Some(method) = self.needs_merge.take() {
                 self.execute_merge(method);
+            }
+
+            if let Some(should_close) = self.needs_close_toggle.take() {
+                self.execute_close_toggle(should_close);
             }
 
             self.handle_events()?;
@@ -1109,6 +1116,47 @@ impl App {
             }
             Err(e) => {
                 self.status_message = Some(StatusMessage::error(format!("✗ Merge failed: {}", e)));
+            }
+        }
+    }
+
+    /// PR を close/reopen する
+    fn execute_close_toggle(&mut self, should_close: bool) {
+        let Some(client) = &self.client else {
+            self.status_message = Some(StatusMessage::error("✗ No API client available"));
+            return;
+        };
+
+        let Some((owner, repo)) = self.parse_repo() else {
+            self.status_message = Some(StatusMessage::error("✗ Invalid repo format"));
+            return;
+        };
+
+        let state = if should_close { "closed" } else { "open" };
+
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(crate::github::pr::update_pr_state(
+                client,
+                owner,
+                repo,
+                self.pr_number,
+                state,
+            ))
+        });
+
+        match result {
+            Ok(()) => {
+                self.pr_state = if should_close {
+                    PrState::Closed
+                } else {
+                    PrState::Open
+                };
+                let action = if should_close { "Closed" } else { "Reopened" };
+                self.status_message = Some(StatusMessage::info(format!("✓ {action} pull request")));
+            }
+            Err(e) => {
+                let action = if should_close { "Close" } else { "Reopen" };
+                self.status_message = Some(StatusMessage::error(format!("✗ {action} failed: {e}")));
             }
         }
     }

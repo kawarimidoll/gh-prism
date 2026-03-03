@@ -227,6 +227,7 @@ impl App {
                 }
                 AppMode::QuitConfirm => self.handle_quit_confirm_mode(key.code),
                 AppMode::MergeConfirm => self.handle_merge_confirm_mode(key.code),
+                AppMode::CloseConfirm => self.handle_close_confirm_mode(key.code),
                 AppMode::Help => self.handle_help_mode(key.code),
                 AppMode::MediaViewer => self.handle_media_viewer_mode(key.code),
             },
@@ -504,6 +505,18 @@ impl App {
                 } else {
                     self.merge_method_cursor = 0;
                     self.mode = AppMode::MergeConfirm;
+                }
+            }
+            KeyCode::Char('C') => {
+                if self.pr_state == PrState::Merged {
+                    self.status_message =
+                        Some(StatusMessage::error("✗ Cannot close/reopen: PR is Merged"));
+                } else if self.is_async_loading() {
+                    self.status_message = Some(StatusMessage::error(
+                        "✗ Initial loading in progress. Please wait.",
+                    ));
+                } else {
+                    self.mode = AppMode::CloseConfirm;
                 }
             }
             KeyCode::Char('w') => {
@@ -950,6 +963,20 @@ impl App {
             KeyCode::Enter => {
                 let method = self.available_merge_methods()[self.merge_method_cursor];
                 self.needs_merge = Some(method);
+                self.mode = AppMode::Normal;
+            }
+            _ => {}
+        }
+    }
+
+    /// close/reopen 確認ダイアログのキー処理
+    pub(super) fn handle_close_confirm_mode(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.mode = AppMode::Normal;
+            }
+            KeyCode::Enter => {
+                self.needs_close_toggle = Some(self.pr_state == PrState::Open);
                 self.mode = AppMode::Normal;
             }
             _ => {}

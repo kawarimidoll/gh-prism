@@ -26,3 +26,17 @@ pub async fn merge_pr(
     let message = response["message"].as_str().unwrap_or("Merged").to_string();
     Ok(message)
 }
+
+/// PR の state を変更する（PATCH /repos/{owner}/{repo}/pulls/{number}）
+pub async fn update_pr_state(
+    client: &Octocrab,
+    owner: &str,
+    repo: &str,
+    pr_number: u64,
+    state: &str,
+) -> Result<()> {
+    let route = format!("/repos/{owner}/{repo}/pulls/{pr_number}");
+    let body = serde_json::json!({ "state": state });
+    let _response: serde_json::Value = client.patch(route, Some(&body)).await?;
+    Ok(())
+}
