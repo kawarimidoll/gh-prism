@@ -686,7 +686,7 @@ impl App {
             KeyCode::Esc => {
                 self.focused_panel = Panel::PrDescription;
             }
-            KeyCode::Char('r') => {
+            KeyCode::Char('x') => {
                 if self.loading.conversation == LoadPhase::Loading {
                     self.status_message =
                         Some(StatusMessage::error("✗ Conversation loading. Please wait."));
@@ -694,14 +694,12 @@ impl App {
                 }
                 self.toggle_resolve_from_conversation();
             }
-            KeyCode::Char('c') => {
-                // conversation 未ロード時はコメント不可
+            KeyCode::Char('r') => {
                 if self.loading.conversation == LoadPhase::Loading {
                     self.status_message =
                         Some(StatusMessage::error("✗ Conversation loading. Please wait."));
                     return;
                 }
-                // カーソル位置のエントリが CodeComment なら返信、それ以外なら新規 issue comment
                 if let Some(entry) = self.conversation.get(self.conversation_cursor)
                     && let ConversationKind::CodeComment {
                         root_comment_id, ..
@@ -710,6 +708,12 @@ impl App {
                     self.review.reply_to_comment_id = Some(root_comment_id);
                     self.review.comment_editor.clear();
                     self.mode = AppMode::ReplyInput;
+                }
+            }
+            KeyCode::Char('c') => {
+                if self.loading.conversation == LoadPhase::Loading {
+                    self.status_message =
+                        Some(StatusMessage::error("✗ Conversation loading. Please wait."));
                     return;
                 }
                 self.review.comment_editor.clear();

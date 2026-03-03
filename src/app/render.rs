@@ -31,8 +31,8 @@ const FILE_TREE_HEIGHT_PCT: u16 = 30;
 const HINT_MEDIA: &str = " m: media ";
 const HINT_VIEWED: &str = " x: viewed ";
 const HINT_COMMENT: &str = " c: comment ";
-const HINT_RESOLVE_COMMENT: &str = " r: resolve | c: comment ";
-const HINT_UNRESOLVE_COMMENT: &str = " r: unresolve | c: comment ";
+const HINT_RESOLVE_REPLY: &str = " x: resolve | r: reply | c: comment ";
+const HINT_UNRESOLVE_REPLY: &str = " x: unresolve | r: reply | c: comment ";
 const HINT_SELECT_COMMENT: &str = " v: select | c: comment ";
 
 // --- ダイアログサイズ ---
@@ -1043,7 +1043,7 @@ impl App {
                         }
                     ) =>
                 {
-                    HINT_UNRESOLVE_COMMENT
+                    HINT_UNRESOLVE_REPLY
                 }
                 Some(e)
                     if matches!(
@@ -1054,7 +1054,7 @@ impl App {
                         }
                     ) =>
                 {
-                    HINT_RESOLVE_COMMENT
+                    HINT_RESOLVE_REPLY
                 }
                 _ => HINT_COMMENT,
             };
