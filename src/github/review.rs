@@ -235,6 +235,7 @@ pub async fn submit_review(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::github::files::FileStatus;
 
     #[test]
     fn test_parse_hunk_header_basic() {
@@ -346,7 +347,7 @@ mod tests {
     fn test_build_review_comment_single_line() {
         let files = vec![DiffFile {
             filename: "src/main.rs".to_string(),
-            status: "modified".to_string(),
+            status: FileStatus::Modified,
             additions: 1,
             deletions: 1,
             patch: Some("@@ -1,2 +1,2 @@\n-old\n+new".to_string()),
@@ -373,7 +374,7 @@ mod tests {
     fn test_build_review_comment_multi_line() {
         let files = vec![DiffFile {
             filename: "src/main.rs".to_string(),
-            status: "added".to_string(),
+            status: FileStatus::Added,
             additions: 3,
             deletions: 0,
             patch: Some("@@ -0,0 +1,3 @@\n+line1\n+line2\n+line3".to_string()),
@@ -398,7 +399,7 @@ mod tests {
     fn test_build_review_comment_hunk_header_error() {
         let files = vec![DiffFile {
             filename: "src/main.rs".to_string(),
-            status: "modified".to_string(),
+            status: FileStatus::Modified,
             additions: 1,
             deletions: 0,
             patch: Some("@@ -1,1 +1,2 @@\n line1\n+line2".to_string()),
@@ -421,7 +422,7 @@ mod tests {
     fn test_build_review_comment_file_not_found() {
         let files = vec![DiffFile {
             filename: "src/main.rs".to_string(),
-            status: "modified".to_string(),
+            status: FileStatus::Modified,
             additions: 1,
             deletions: 0,
             patch: Some("@@ -1,1 +1,1 @@\n+line".to_string()),

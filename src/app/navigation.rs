@@ -281,10 +281,13 @@ impl App {
         if !self.diff.show_line_numbers {
             return 0;
         }
-        let file_status = self.current_file().map(|f| f.status.as_str()).unwrap_or("");
-        match file_status {
-            "added" | "removed" | "deleted" => LINE_NUM_PREFIX_SINGLE,
-            _ => LINE_NUM_PREFIX_DUAL,
+        let is_single_side = self
+            .current_file()
+            .is_some_and(|f| f.status.is_whole_file());
+        if is_single_side {
+            LINE_NUM_PREFIX_SINGLE
+        } else {
+            LINE_NUM_PREFIX_DUAL
         }
     }
 

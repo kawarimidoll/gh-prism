@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::git::diff::highlight_diff;
+use crate::github::files::FileStatus;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, HorizontalAlignment, Layout, Position, Rect},
@@ -1104,7 +1105,7 @@ impl App {
                 .unwrap_or("")
                 .to_string();
             let filename = file.map(|f| f.filename.as_str()).unwrap_or("").to_string();
-            let file_status = file.map(|f| f.status.as_str()).unwrap_or("").to_string();
+            let file_status = file.map(|f| f.status).unwrap_or(FileStatus::Unknown);
             let additions = file.map(|f| f.additions).unwrap_or(0);
             let deletions = file.map(|f| f.deletions).unwrap_or(0);
             (
@@ -1203,8 +1204,8 @@ impl App {
 
         let inner_width = area.width.saturating_sub(2);
 
-        self.update_diff_highlight_cache(&patch, &filename, &file_status);
-        let mut text = self.prepare_diff_text(&patch, &file_status, inner_width);
+        self.update_diff_highlight_cache(&patch, &filename, file_status);
+        let mut text = self.prepare_diff_text(&patch, file_status, inner_width);
         let bg_lines = self.collect_diff_bg_lines(&mut text, &filename);
 
         // Wrap 有効時、レンダリングに使う実テキストから視覚行オフセットを計算してキャッシュ。
@@ -1250,7 +1251,12 @@ impl App {
     }
 
     /// delta 出力をキャッシュ（ファイル選択が変わったときだけ再実行）
-    fn update_diff_highlight_cache(&mut self, patch: &str, filename: &str, file_status: &str) {
+    fn update_diff_highlight_cache(
+        &mut self,
+        patch: &str,
+        filename: &str,
+        file_status: FileStatus,
+    ) {
         let commit_idx = self.commit_list_state.selected().unwrap_or(usize::MAX);
         let file_idx = self.file_list_state.selected().unwrap_or(usize::MAX);
 
@@ -1260,7 +1266,7 @@ impl App {
         );
 
         if !cache_hit {
-            let is_whole_file = matches!(file_status, "added" | "removed" | "deleted");
+            let is_whole_file = file_status.is_whole_file();
             let base_text = if let Some(highlighted) = highlight_diff(patch, filename, file_status)
             {
                 highlighted
@@ -1300,7 +1306,12 @@ impl App {
 
     /// キャッシュからクローンして Hunk ヘッダー整形・Wrap 空行修正・行番号プレフィックスを適用。
     /// `update_diff_highlight_cache` が事前に呼ばれている必要がある。
-    fn prepare_diff_text(&self, patch: &str, file_status: &str, inner_width: u16) -> Text<'static> {
+    fn prepare_diff_text(
+        &self,
+        patch: &str,
+        file_status: FileStatus,
+        inner_width: u16,
+    ) -> Text<'static> {
         let mut text = self.diff.highlight_cache.as_ref().unwrap().2.clone();
 
         // Hunk ヘッダーを整形表示に置換
@@ -1337,8 +1348,8 @@ impl App {
             let mut new_line: usize = 0;
 
             // 追加/削除ファイルは片側の行番号のみ表示
-            let show_old = !matches!(file_status, "added");
-            let show_new = !matches!(file_status, "removed" | "deleted");
+            let show_old = !matches!(file_status, FileStatus::Added);
+            let show_new = !matches!(file_status, FileStatus::Removed | FileStatus::Deleted);
 
             for (idx, text_line) in text.lines.iter_mut().enumerate() {
                 if let Some(raw) = patch_lines.get(idx) {

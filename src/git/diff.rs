@@ -3,6 +3,8 @@ use ratatui::text::Text;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+use crate::github::files::FileStatus;
+
 /// delta コマンドが利用可能かチェック
 pub fn has_delta() -> bool {
     Command::new("delta")
@@ -64,12 +66,16 @@ fn create_diff_header(filename: &str) -> String {
 /// filename を渡すことで delta が言語を検出できる
 /// file_status が "added"/"removed"/"deleted" の場合、差分色を抑制してシンタックスハイライトのみ適用
 /// 出力はパッチ行のみ（言語検出用に追加した diff ヘッダーは除去済み）
-pub fn highlight_diff(diff: &str, filename: &str, file_status: &str) -> Option<Text<'static>> {
+pub fn highlight_diff(
+    diff: &str,
+    filename: &str,
+    file_status: FileStatus,
+) -> Option<Text<'static>> {
     if !has_delta() {
         return None;
     }
 
-    let is_whole_file = matches!(file_status, "added" | "removed" | "deleted");
+    let is_whole_file = file_status.is_whole_file();
 
     // diff ヘッダーを追加してシンタックスハイライトを有効化
     let header = create_diff_header(filename);
@@ -166,7 +172,7 @@ mod tests {
         }
 
         let patch = "@@ -1,3 +1,3 @@\n context\n-old\n+new";
-        let text = highlight_diff(patch, "test.rs", "modified")
+        let text = highlight_diff(patch, "test.rs", FileStatus::Modified)
             .expect("highlight_diff should return Some when delta is available");
 
         assert_eq!(
@@ -184,7 +190,7 @@ mod tests {
         }
 
         let patch = "@@ -0,0 +1,3 @@\n+line1\n+line2\n+line3";
-        let text = highlight_diff(patch, "test.rs", "added")
+        let text = highlight_diff(patch, "test.rs", FileStatus::Added)
             .expect("highlight_diff should return Some when delta is available");
 
         assert_eq!(
@@ -218,7 +224,7 @@ mod tests {
         }
 
         let patch = "@@ -1,5 +1,4 @@\n context\n-old\n+new\n-\n ";
-        let text = highlight_diff(patch, "test.rs", "modified")
+        let text = highlight_diff(patch, "test.rs", FileStatus::Modified)
             .expect("highlight_diff should return Some when delta is available");
 
         use unicode_width::UnicodeWidthStr;

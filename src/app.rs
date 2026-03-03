@@ -1631,6 +1631,7 @@ mod tests {
     use super::media::process_inline_media;
     use super::*;
     use crate::github::commits::{CommitDetail, CommitInfo};
+    use crate::github::files::FileStatus;
     use crossterm::event::{KeyCode, KeyModifiers};
     use ratatui::layout::Rect;
     use std::time::{Duration, Instant};
@@ -1662,14 +1663,14 @@ mod tests {
         vec![
             DiffFile {
                 filename: "src/main.rs".to_string(),
-                status: "modified".to_string(),
+                status: FileStatus::Modified,
                 additions: 10,
                 deletions: 5,
                 patch: None,
             },
             DiffFile {
                 filename: "src/app.rs".to_string(),
-                status: "added".to_string(),
+                status: FileStatus::Added,
                 additions: 50,
                 deletions: 0,
                 patch: None,
@@ -1747,7 +1748,7 @@ mod tests {
                 TEST_SHA_0.to_string(),
                 vec![DiffFile {
                     filename: "src/main.rs".to_string(),
-                    status: "added".to_string(),
+                    status: FileStatus::Added,
                     additions: 10,
                     deletions: 0,
                     patch: Some(patch),
@@ -1761,7 +1762,7 @@ mod tests {
         fn with_custom_patch(
             mut self,
             patch: &str,
-            status: &str,
+            status: FileStatus,
             additions: usize,
             deletions: usize,
         ) -> Self {
@@ -1771,7 +1772,7 @@ mod tests {
                 TEST_SHA_0.to_string(),
                 vec![DiffFile {
                     filename: "src/main.rs".to_string(),
-                    status: status.to_string(),
+                    status,
                     additions,
                     deletions,
                     patch: Some(patch.to_string()),
@@ -1975,7 +1976,7 @@ mod tests {
             TEST_SHA_0.to_string(),
             vec![DiffFile {
                 filename: "file1.rs".to_string(),
-                status: "added".to_string(),
+                status: FileStatus::Added,
                 additions: 10,
                 deletions: 0,
                 patch: None,
@@ -1985,7 +1986,7 @@ mod tests {
             TEST_SHA_1.to_string(),
             vec![DiffFile {
                 filename: "file2.rs".to_string(),
-                status: "modified".to_string(),
+                status: FileStatus::Modified,
                 additions: 5,
                 deletions: 3,
                 patch: None,
@@ -2011,14 +2012,14 @@ mod tests {
             vec![
                 DiffFile {
                     filename: "file1.rs".to_string(),
-                    status: "added".to_string(),
+                    status: FileStatus::Added,
                     additions: 10,
                     deletions: 0,
                     patch: None,
                 },
                 DiffFile {
                     filename: "file2.rs".to_string(),
-                    status: "added".to_string(),
+                    status: FileStatus::Added,
                     additions: 5,
                     deletions: 0,
                     patch: None,
@@ -2029,7 +2030,7 @@ mod tests {
             TEST_SHA_1.to_string(),
             vec![DiffFile {
                 filename: "file3.rs".to_string(),
-                status: "modified".to_string(),
+                status: FileStatus::Modified,
                 additions: 5,
                 deletions: 3,
                 patch: None,
@@ -2133,7 +2134,7 @@ mod tests {
             TEST_SHA_0.to_string(),
             vec![DiffFile {
                 filename: "file1.rs".to_string(),
-                status: "added".to_string(),
+                status: FileStatus::Added,
                 additions: 25,
                 deletions: 0,
                 patch: Some(patch),
@@ -2290,7 +2291,7 @@ mod tests {
         // +行、-行、コンテキスト行が混在するパッチ
         let patch = "@@ -1,3 +1,3 @@\n old line\n-removed\n+added";
         let mut app = TestAppBuilder::new()
-            .with_custom_patch(patch, "modified", 1, 1)
+            .with_custom_patch(patch, FileStatus::Modified, 1, 1)
             .build();
         app.focused_panel = Panel::DiffView;
         // hunk header をスキップ: カーソルを1行目に
@@ -2314,7 +2315,7 @@ mod tests {
         // 全行が -行のパッチ → エラー
         let patch = "@@ -1,2 +0,0 @@\n-deleted1\n-deleted2";
         let mut app = TestAppBuilder::new()
-            .with_custom_patch(patch, "modified", 0, 2)
+            .with_custom_patch(patch, FileStatus::Modified, 0, 2)
             .build();
         app.focused_panel = Panel::DiffView;
         app.diff.cursor_line = 1;
@@ -2554,7 +2555,7 @@ mod tests {
         // 各ステータスが正しい文字を返すことを確認
         let added = DiffFile {
             filename: "new.rs".to_string(),
-            status: "added".to_string(),
+            status: FileStatus::Added,
             additions: 10,
             deletions: 0,
             patch: None,
@@ -2563,7 +2564,7 @@ mod tests {
 
         let modified = DiffFile {
             filename: "mod.rs".to_string(),
-            status: "modified".to_string(),
+            status: FileStatus::Modified,
             additions: 5,
             deletions: 3,
             patch: None,
@@ -2572,7 +2573,7 @@ mod tests {
 
         let removed = DiffFile {
             filename: "old.rs".to_string(),
-            status: "removed".to_string(),
+            status: FileStatus::Removed,
             additions: 0,
             deletions: 10,
             patch: None,
@@ -2581,7 +2582,7 @@ mod tests {
 
         let renamed = DiffFile {
             filename: "renamed.rs".to_string(),
-            status: "renamed".to_string(),
+            status: FileStatus::Renamed,
             additions: 0,
             deletions: 0,
             patch: None,
@@ -2597,7 +2598,7 @@ mod tests {
             TEST_SHA_0.to_string(),
             vec![DiffFile {
                 filename: "image.png".to_string(),
-                status: "added".to_string(),
+                status: FileStatus::Added,
                 additions: 0,
                 deletions: 0,
                 patch: None,
@@ -3066,7 +3067,12 @@ mod tests {
             "Nice line!",
         )];
         TestAppBuilder::new()
-            .with_custom_patch("@@ -0,0 +1,3 @@\n+line1\n+line2\n+line3", "added", 3, 0)
+            .with_custom_patch(
+                "@@ -0,0 +1,3 @@\n+line1\n+line2\n+line3",
+                FileStatus::Added,
+                3,
+                0,
+            )
             .review_comments(comments)
             .build()
     }
@@ -3093,7 +3099,7 @@ mod tests {
             "Outdated comment",
         )];
         let app = TestAppBuilder::new()
-            .with_custom_patch("@@ -0,0 +1 @@\n+line1", "added", 1, 0)
+            .with_custom_patch("@@ -0,0 +1 @@\n+line1", FileStatus::Added, 1, 0)
             .review_comments(comments)
             .build();
         let counts = app.existing_comment_counts();
@@ -3110,7 +3116,7 @@ mod tests {
             "Wrong file",
         )];
         let app = TestAppBuilder::new()
-            .with_custom_patch("@@ -0,0 +1 @@\n+line1", "added", 1, 0)
+            .with_custom_patch("@@ -0,0 +1 @@\n+line1", FileStatus::Added, 1, 0)
             .review_comments(comments)
             .build();
         let counts = app.existing_comment_counts();
@@ -3161,7 +3167,7 @@ mod tests {
         TestAppBuilder::new()
             .with_custom_patch(
                 "@@ -1,3 +1,3 @@\n context\n-old line\n+new line\n@@ -10,3 +10,3 @@\n context2\n-old2\n+new2",
-                "modified",
+                FileStatus::Modified,
                 2,
                 2,
             )
@@ -3426,7 +3432,7 @@ mod tests {
         let mut app = TestAppBuilder::new()
             .with_custom_patch(
                 "@@ -0,0 +1,5 @@\n+line1\n+line2\n+line3\n+line4\n+line5",
-                "added",
+                FileStatus::Added,
                 5,
                 0,
             )
@@ -3455,7 +3461,7 @@ mod tests {
         let mut app = TestAppBuilder::new()
             .with_custom_patch(
                 "@@ -0,0 +1,5 @@\n+line1\n+line2\n+line3\n+line4\n+line5",
-                "added",
+                FileStatus::Added,
                 5,
                 0,
             )
@@ -3498,7 +3504,12 @@ mod tests {
             "Comment A",
         )];
         let mut app = TestAppBuilder::new()
-            .with_custom_patch("@@ -0,0 +1,3 @@\n+line1\n+line2\n+line3", "added", 3, 0)
+            .with_custom_patch(
+                "@@ -0,0 +1,3 @@\n+line1\n+line2\n+line3",
+                FileStatus::Added,
+                3,
+                0,
+            )
             .review_comments(comments)
             .build();
         app.focused_panel = Panel::DiffView;
@@ -3757,7 +3768,7 @@ mod tests {
             TEST_SHA_0.to_string(),
             vec![DiffFile {
                 filename: "src/main.rs".to_string(),
-                status: "modified".to_string(),
+                status: FileStatus::Modified,
                 additions: 1,
                 deletions: 1,
                 patch: Some(patch),
@@ -3797,7 +3808,7 @@ mod tests {
             TEST_SHA_0.to_string(),
             vec![DiffFile {
                 filename: "src/main.rs".to_string(),
-                status: "added".to_string(),
+                status: FileStatus::Added,
                 additions: 20,
                 deletions: 0,
                 patch: Some(patch),
@@ -3840,7 +3851,7 @@ mod tests {
     fn test_line_number_prefix_width() {
         // modified ファイル → 両カラム 11文字
         let mut app = TestAppBuilder::new()
-            .with_custom_patch("@@ -1 +1 @@\n-old\n+new", "modified", 1, 1)
+            .with_custom_patch("@@ -1 +1 @@\n-old\n+new", FileStatus::Modified, 1, 1)
             .build();
         app.diff.show_line_numbers = true;
         assert_eq!(app.line_number_prefix_width(), 11);
@@ -3851,7 +3862,7 @@ mod tests {
             TEST_SHA_0.to_string(),
             vec![DiffFile {
                 filename: "src/new.rs".to_string(),
-                status: "added".to_string(),
+                status: FileStatus::Added,
                 additions: 1,
                 deletions: 0,
                 patch: Some("@@ -0,0 +1 @@\n+new".to_string()),
@@ -4099,7 +4110,7 @@ mod tests {
 
     fn create_own_pr_app() -> App {
         TestAppBuilder::new()
-            .with_custom_patch("+line1", "added", 1, 0)
+            .with_custom_patch("+line1", FileStatus::Added, 1, 0)
             .own_pr()
             .build()
     }

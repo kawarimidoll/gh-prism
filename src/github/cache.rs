@@ -56,6 +56,7 @@ pub fn write_cache(owner: &str, repo: &str, pr_number: u64, cache: &PrCache) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::github::files::FileStatus;
 
     #[test]
     fn test_cache_round_trip() {
@@ -72,7 +73,7 @@ mod tests {
                     "abc1234".to_string(),
                     vec![DiffFile {
                         filename: "test.rs".to_string(),
-                        status: "modified".to_string(),
+                        status: FileStatus::Modified,
                         additions: 1,
                         deletions: 0,
                         patch: Some("@@ -1 +1 @@\n-old\n+new".to_string()),

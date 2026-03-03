@@ -2,10 +2,42 @@ use color_eyre::Result;
 use octocrab::Octocrab;
 use serde::{Deserialize, Serialize};
 
+/// ファイルの変更種別
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileStatus {
+    Added,
+    Modified,
+    Removed,
+    Deleted,
+    Renamed,
+    #[serde(other)]
+    Unknown,
+}
+
+impl FileStatus {
+    pub fn status_char(&self) -> char {
+        match self {
+            FileStatus::Added => 'A',
+            FileStatus::Modified => 'M',
+            FileStatus::Removed | FileStatus::Deleted => 'D',
+            FileStatus::Renamed => 'R',
+            FileStatus::Unknown => '?',
+        }
+    }
+
+    pub fn is_whole_file(&self) -> bool {
+        matches!(
+            self,
+            FileStatus::Added | FileStatus::Removed | FileStatus::Deleted
+        )
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffFile {
     pub filename: String,
-    pub status: String, // "added", "modified", "deleted", "renamed"
+    pub status: FileStatus,
     pub additions: usize,
     pub deletions: usize,
     pub patch: Option<String>,
@@ -14,13 +46,7 @@ pub struct DiffFile {
 impl DiffFile {
     /// ステータスに応じた表示用文字を返す
     pub fn status_char(&self) -> char {
-        match self.status.as_str() {
-            "added" => 'A',
-            "modified" => 'M',
-            "removed" | "deleted" => 'D',
-            "renamed" => 'R',
-            _ => '?',
-        }
+        self.status.status_char()
     }
 }
 
