@@ -110,6 +110,12 @@ pub struct App {
     visible_review_comment_cache: HashMap<(String, String), usize>,
     /// 自分のPRかどうか（Approve/Request Changesを非表示にする）
     is_own_pr: bool,
+    /// push 権限があるか（merge 操作のガード）
+    can_merge: bool,
+    /// merge 方式選択のカーソル位置
+    merge_method_cursor: usize,
+    /// merge 実行フラグ（draw 後に実行）
+    needs_merge: Option<MergeMethod>,
     /// 現在の認証ユーザー名（リロード時の is_own_pr 再判定に使用）
     current_user: String,
     /// Conversation エントリ（Issue Comment + Review を時系列マージ）
@@ -167,6 +173,7 @@ impl App {
         client: Option<Octocrab>,
         theme: ThemeMode,
         is_own_pr: bool,
+        can_merge: bool,
         current_user: String,
         review_threads: Vec<ReviewThread>,
         async_rx: Option<mpsc::UnboundedReceiver<crate::AsyncData>>,
@@ -250,6 +257,9 @@ impl App {
             media_protocol_worker: None,
             visible_review_comment_cache,
             is_own_pr,
+            can_merge,
+            merge_method_cursor: 0,
+            needs_merge: None,
             current_user,
             conversation,
             conversation_scroll: 0,
@@ -629,6 +639,10 @@ impl App {
 
             if self.review.needs_resolve_toggle.is_some() {
                 self.execute_resolve_toggle();
+            }
+
+            if let Some(method) = self.needs_merge.take() {
+                self.execute_merge(method);
             }
 
             self.handle_events()?;
@@ -1050,6 +1064,42 @@ impl App {
             }
             Err(e) => {
                 self.status_message = Some(StatusMessage::error(format!("✗ Failed: {}", e)));
+            }
+        }
+    }
+
+    /// PR をマージする
+    fn execute_merge(&mut self, method: MergeMethod) {
+        let Some(client) = &self.client else {
+            self.status_message = Some(StatusMessage::error("✗ No API client available"));
+            return;
+        };
+
+        let Some((owner, repo)) = self.parse_repo() else {
+            self.status_message = Some(StatusMessage::error("✗ Invalid repo format"));
+            return;
+        };
+
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(crate::github::pr::merge_pr(
+                client,
+                owner,
+                repo,
+                self.pr_number,
+                method.as_api_str(),
+            ))
+        });
+
+        match result {
+            Ok(_msg) => {
+                self.pr_state = "Merged".to_string();
+                self.status_message = Some(StatusMessage::info(format!(
+                    "✓ Merged via {}",
+                    method.label()
+                )));
+            }
+            Err(e) => {
+                self.status_message = Some(StatusMessage::error(format!("✗ Merge failed: {}", e)));
             }
         }
     }
@@ -1764,6 +1814,7 @@ mod tests {
                 self.client,
                 self.theme,
                 self.is_own_pr,
+                false, // can_merge
                 String::new(),
                 Vec::new(),
                 None, // async_rx

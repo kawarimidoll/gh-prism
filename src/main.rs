@@ -155,6 +155,21 @@ fn resolve_repo(repo_arg: &Option<String>) -> Result<(String, String)> {
     }
 }
 
+/// リポジトリへの push 権限を持っているか判定する
+pub fn fetch_push_permission(owner: &str, repo: &str) -> bool {
+    std::process::Command::new("gh")
+        .args([
+            "api",
+            &format!("repos/{owner}/{repo}"),
+            "-q",
+            ".permissions.push",
+        ])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .is_some_and(|s| s.trim() == "true")
+}
+
 /// 現在の認証ユーザーのログイン名を取得
 pub fn fetch_current_user() -> String {
     std::process::Command::new("gh")
@@ -471,6 +486,7 @@ async fn run() -> Result<()> {
     let picker = ratatui_image::picker::Picker::from_query_stdio().ok();
 
     let is_own_pr = !current_user.is_empty() && current_user == metadata.pr_author;
+    let can_merge = fetch_push_permission(&owner, &repo);
 
     // ── チャネル作成 ──
     let (tx, rx) = mpsc::unbounded_channel::<AsyncData>();
@@ -591,6 +607,7 @@ async fn run() -> Result<()> {
         Some(client),
         theme,
         is_own_pr,
+        can_merge,
         current_user,
         cached_review_threads,
         Some(rx),

@@ -52,6 +52,7 @@ pub enum AppMode {
     ReviewSubmit,
     ReviewBodyInput,
     QuitConfirm,
+    MergeConfirm,
     Help,
     MediaViewer,
 }
@@ -84,6 +85,35 @@ impl ReviewEvent {
             ReviewEvent::Comment => "Comment",
             ReviewEvent::Approve => "Approve",
             ReviewEvent::RequestChanges => "Request Changes",
+        }
+    }
+}
+
+/// マージ方式
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MergeMethod {
+    Merge,
+    Squash,
+    Rebase,
+}
+
+impl MergeMethod {
+    pub const ALL: [MergeMethod; 3] =
+        [MergeMethod::Merge, MergeMethod::Squash, MergeMethod::Rebase];
+
+    pub fn as_api_str(&self) -> &str {
+        match self {
+            MergeMethod::Merge => "merge",
+            MergeMethod::Squash => "squash",
+            MergeMethod::Rebase => "rebase",
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            MergeMethod::Merge => "Create a merge commit",
+            MergeMethod::Squash => "Squash and merge",
+            MergeMethod::Rebase => "Rebase and merge",
         }
     }
 }

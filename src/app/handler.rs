@@ -226,6 +226,7 @@ impl App {
                     self.handle_review_body_input_mode(key.code, key.modifiers)
                 }
                 AppMode::QuitConfirm => self.handle_quit_confirm_mode(key.code),
+                AppMode::MergeConfirm => self.handle_merge_confirm_mode(key.code),
                 AppMode::Help => self.handle_help_mode(key.code),
                 AppMode::MediaViewer => self.handle_media_viewer_mode(key.code),
             },
@@ -486,6 +487,23 @@ impl App {
                 } else {
                     self.review.review_event_cursor = 0;
                     self.mode = AppMode::ReviewSubmit;
+                }
+            }
+            KeyCode::Char('M') => {
+                if !self.can_merge {
+                    self.status_message = Some(StatusMessage::error("✗ No merge permission"));
+                } else if self.pr_state != "Open" {
+                    self.status_message = Some(StatusMessage::error(format!(
+                        "✗ Cannot merge: PR is {}",
+                        self.pr_state
+                    )));
+                } else if self.is_async_loading() {
+                    self.status_message = Some(StatusMessage::error(
+                        "✗ Initial loading in progress. Please wait.",
+                    ));
+                } else {
+                    self.merge_method_cursor = 0;
+                    self.mode = AppMode::MergeConfirm;
                 }
             }
             KeyCode::Char('w') => {
@@ -894,6 +912,32 @@ impl App {
             }
             KeyCode::Char('c') | KeyCode::Esc => {
                 // キャンセル
+                self.mode = AppMode::Normal;
+            }
+            _ => {}
+        }
+    }
+
+    /// マージ確認ダイアログのキー処理
+    pub(super) fn handle_merge_confirm_mode(&mut self, code: KeyCode) {
+        let len = MergeMethod::ALL.len();
+        match code {
+            KeyCode::Esc => {
+                self.mode = AppMode::Normal;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.merge_method_cursor = (self.merge_method_cursor + 1) % len;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.merge_method_cursor = if self.merge_method_cursor == 0 {
+                    len - 1
+                } else {
+                    self.merge_method_cursor - 1
+                };
+            }
+            KeyCode::Enter => {
+                let method = MergeMethod::ALL[self.merge_method_cursor];
+                self.needs_merge = Some(method);
                 self.mode = AppMode::Normal;
             }
             _ => {}

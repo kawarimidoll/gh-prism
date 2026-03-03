@@ -37,6 +37,8 @@ const REVIEW_DIALOG_WIDTH: u16 = 36;
 const REVIEW_DIALOG_HEIGHT: u16 = 7;
 const QUIT_DIALOG_WIDTH: u16 = 38;
 const QUIT_DIALOG_HEIGHT: u16 = 9;
+const MERGE_DIALOG_WIDTH: u16 = 36;
+const MERGE_DIALOG_HEIGHT: u16 = 9;
 const HELP_DIALOG_WIDTH: u16 = 60;
 const HELP_DIALOG_MIN_HEIGHT: u16 = 20;
 const HELP_KEY_COLUMN_WIDTH: usize = 20;
@@ -171,6 +173,7 @@ impl App {
             AppMode::ReviewSubmit => " [REVIEW] ",
             AppMode::ReviewBodyInput => " [REVIEW] ",
             AppMode::QuitConfirm => " [CONFIRM] ",
+            AppMode::MergeConfirm => " [MERGE] ",
             AppMode::Help => " [HELP] ",
             AppMode::MediaViewer => " [MEDIA] ",
         };
@@ -190,7 +193,7 @@ impl App {
             AppMode::CommentView => Color::Yellow,
             AppMode::ReviewSubmit => Color::Cyan,
             AppMode::ReviewBodyInput => Color::Green,
-            AppMode::QuitConfirm => Color::Red,
+            AppMode::QuitConfirm | AppMode::MergeConfirm => Color::Red,
             AppMode::Help => Color::DarkGray,
             AppMode::MediaViewer => Color::DarkGray,
         };
@@ -415,6 +418,7 @@ impl App {
         match self.mode {
             AppMode::ReviewSubmit => self.render_review_submit_dialog(frame, area),
             AppMode::QuitConfirm => self.render_quit_confirm_dialog(frame, area),
+            AppMode::MergeConfirm => self.render_merge_confirm_dialog(frame, area),
             AppMode::Help => self.render_help_dialog(frame, area),
             AppMode::MediaViewer => self.render_media_viewer_overlay(frame, area),
             _ => {}
@@ -443,6 +447,9 @@ impl App {
         }
         if self.review.needs_resolve_toggle.is_some() {
             return Some("Updating thread...");
+        }
+        if self.needs_merge.is_some() {
+            return Some("Merging pull request...");
         }
         None
     }
@@ -1851,6 +1858,41 @@ impl App {
         frame.render_widget(paragraph, dialog);
     }
 
+    fn render_merge_confirm_dialog(&self, frame: &mut Frame, area: Rect) {
+        let dialog = Self::centered_rect(MERGE_DIALOG_WIDTH, MERGE_DIALOG_HEIGHT, area);
+        Self::clear_wide_safe(frame, dialog, area);
+
+        let mut lines = vec![Line::raw("")];
+
+        for (i, method) in MergeMethod::ALL.iter().enumerate() {
+            let marker = if i == self.merge_method_cursor {
+                "▶ "
+            } else {
+                "  "
+            };
+            let style = if i == self.merge_method_cursor {
+                Style::default().fg(Color::Yellow)
+            } else {
+                Style::default()
+            };
+            lines.push(Line::styled(format!("{}{}", marker, method.label()), style));
+        }
+
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            "  Enter: merge | Esc: cancel",
+            Style::default().fg(Color::DarkGray),
+        ));
+
+        let paragraph = Paragraph::new(lines).block(
+            Block::default()
+                .title(" Merge Pull Request ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Red)),
+        );
+        frame.render_widget(paragraph, dialog);
+    }
+
     fn render_help_dialog(&mut self, frame: &mut Frame, area: Rect) {
         let dialog_height = (area.height * 2 / 3)
             .max(HELP_DIALOG_MIN_HEIGHT)
@@ -1880,6 +1922,7 @@ impl App {
             ("z", "Toggle zoom"),
             ("R", "Reload PR data"),
             ("S", "Submit review"),
+            ("M", "Merge pull request"),
             ("?", "This help"),
             ("q", "Quit"),
         ];
