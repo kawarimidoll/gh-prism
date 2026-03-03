@@ -155,19 +155,50 @@ fn resolve_repo(repo_arg: &Option<String>) -> Result<(String, String)> {
     }
 }
 
-/// リポジトリへの push 権限を持っているか判定する
-pub fn fetch_push_permission(owner: &str, repo: &str) -> bool {
-    std::process::Command::new("gh")
+/// リポジトリの権限と許可された merge 方式を一括取得する
+pub struct RepoPermissions {
+    pub can_merge: bool,
+    pub allowed_merge_methods: Vec<app::MergeMethod>,
+}
+
+pub fn fetch_repo_permissions(owner: &str, repo: &str) -> RepoPermissions {
+    let output = std::process::Command::new("gh")
         .args([
             "api",
             &format!("repos/{owner}/{repo}"),
             "-q",
-            ".permissions.push",
+            r#"[.permissions.push, .allow_merge_commit, .allow_squash_merge, .allow_rebase_merge] | @tsv"#,
         ])
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
-        .is_some_and(|s| s.trim() == "true")
+        .unwrap_or_default();
+
+    let fields: Vec<&str> = output.trim().split('\t').collect();
+    let can_merge = fields.first().is_some_and(|s| *s == "true");
+    let allow_merge = fields.get(1).is_some_and(|s| *s == "true");
+    let allow_squash = fields.get(2).is_some_and(|s| *s == "true");
+    let allow_rebase = fields.get(3).is_some_and(|s| *s == "true");
+
+    let mut methods = Vec::new();
+    if allow_merge {
+        methods.push(app::MergeMethod::Merge);
+    }
+    if allow_squash {
+        methods.push(app::MergeMethod::Squash);
+    }
+    if allow_rebase {
+        methods.push(app::MergeMethod::Rebase);
+    }
+    // API が全て false を返した場合のフォールバック
+    if methods.is_empty() {
+        methods = app::MergeMethod::ALL.to_vec();
+    }
+
+    RepoPermissions {
+        can_merge,
+        allowed_merge_methods: methods,
+    }
 }
 
 /// 現在の認証ユーザーのログイン名を取得
@@ -486,7 +517,7 @@ async fn run() -> Result<()> {
     let picker = ratatui_image::picker::Picker::from_query_stdio().ok();
 
     let is_own_pr = !current_user.is_empty() && current_user == metadata.pr_author;
-    let can_merge = fetch_push_permission(&owner, &repo);
+    let repo_perms = fetch_repo_permissions(&owner, &repo);
 
     // ── チャネル作成 ──
     let (tx, rx) = mpsc::unbounded_channel::<AsyncData>();
@@ -607,7 +638,8 @@ async fn run() -> Result<()> {
         Some(client),
         theme,
         is_own_pr,
-        can_merge,
+        repo_perms.can_merge,
+        repo_perms.allowed_merge_methods,
         current_user,
         cached_review_threads,
         Some(rx),

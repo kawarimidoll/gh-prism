@@ -920,7 +920,7 @@ impl App {
 
     /// マージ確認ダイアログのキー処理
     pub(super) fn handle_merge_confirm_mode(&mut self, code: KeyCode) {
-        let len = MergeMethod::ALL.len();
+        let len = self.available_merge_methods().len();
         match code {
             KeyCode::Esc => {
                 self.mode = AppMode::Normal;
@@ -936,7 +936,7 @@ impl App {
                 };
             }
             KeyCode::Enter => {
-                let method = MergeMethod::ALL[self.merge_method_cursor];
+                let method = self.available_merge_methods()[self.merge_method_cursor];
                 self.needs_merge = Some(method);
                 self.mode = AppMode::Normal;
             }

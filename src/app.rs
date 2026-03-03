@@ -112,6 +112,8 @@ pub struct App {
     is_own_pr: bool,
     /// push 権限があるか（merge 操作のガード）
     can_merge: bool,
+    /// リポジトリで許可された merge 方式
+    allowed_merge_methods: Vec<MergeMethod>,
     /// merge 方式選択のカーソル位置
     merge_method_cursor: usize,
     /// merge 実行フラグ（draw 後に実行）
@@ -174,6 +176,7 @@ impl App {
         theme: ThemeMode,
         is_own_pr: bool,
         can_merge: bool,
+        allowed_merge_methods: Vec<MergeMethod>,
         current_user: String,
         review_threads: Vec<ReviewThread>,
         async_rx: Option<mpsc::UnboundedReceiver<crate::AsyncData>>,
@@ -258,6 +261,7 @@ impl App {
             visible_review_comment_cache,
             is_own_pr,
             can_merge,
+            allowed_merge_methods,
             merge_method_cursor: 0,
             needs_merge: None,
             current_user,
@@ -279,6 +283,11 @@ impl App {
             rainbow_mode: false,
             rainbow_tick: 0,
         }
+    }
+
+    /// リポジトリで許可された merge 方式を返す
+    fn available_merge_methods(&self) -> &[MergeMethod] {
+        &self.allowed_merge_methods
     }
 
     /// 選択可能なレビューイベントを返す（自分のPRではCommentのみ）
@@ -1814,7 +1823,8 @@ mod tests {
                 self.client,
                 self.theme,
                 self.is_own_pr,
-                false, // can_merge
+                false,                     // can_merge
+                MergeMethod::ALL.to_vec(), // allowed_merge_methods
                 String::new(),
                 Vec::new(),
                 None, // async_rx

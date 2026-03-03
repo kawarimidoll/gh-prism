@@ -1864,7 +1864,7 @@ impl App {
 
         let mut lines = vec![Line::raw("")];
 
-        for (i, method) in MergeMethod::ALL.iter().enumerate() {
+        for (i, method) in self.available_merge_methods().iter().enumerate() {
             let marker = if i == self.merge_method_cursor {
                 "▶ "
             } else {
