@@ -1233,6 +1233,28 @@ impl App {
         }
     }
 
+    /// Conversation ペインのカーソル位置から resolve/unresolve をトグルする
+    pub(super) fn toggle_resolve_from_conversation(&mut self) {
+        let Some(entry) = self.conversation.get(self.conversation_cursor) else {
+            return;
+        };
+        let ConversationKind::CodeComment {
+            thread_node_id: Some(ref node_id),
+            is_resolved,
+            root_comment_id,
+            ..
+        } = entry.kind
+        else {
+            return;
+        };
+
+        self.review.needs_resolve_toggle = Some(ResolveToggleRequest {
+            thread_node_id: node_id.clone(),
+            should_resolve: !is_resolved,
+            root_comment_id,
+        });
+    }
+
     /// CommentView のルートコメント ID から resolve/unresolve をトグルする
     pub(super) fn toggle_resolve_thread(&mut self) {
         let Some(root_id) = comments::root_comment_id(&self.review.viewing_comments) else {

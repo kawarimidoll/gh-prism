@@ -31,6 +31,8 @@ const FILE_TREE_HEIGHT_PCT: u16 = 30;
 const HINT_MEDIA: &str = " m: media ";
 const HINT_VIEWED: &str = " x: viewed ";
 const HINT_COMMENT: &str = " c: comment ";
+const HINT_RESOLVE_COMMENT: &str = " r: resolve | c: comment ";
+const HINT_UNRESOLVE_COMMENT: &str = " r: unresolve | c: comment ";
 const HINT_SELECT_COMMENT: &str = " v: select | c: comment ";
 
 // --- ダイアログサイズ ---
@@ -1031,8 +1033,32 @@ impl App {
             .borders(Borders::ALL)
             .border_style(border_style);
         if self.focused_panel == Panel::Conversation {
-            block =
-                block.title_bottom(Line::from(HINT_COMMENT).alignment(HorizontalAlignment::Right));
+            let hint = match self.conversation.get(self.conversation_cursor) {
+                Some(e)
+                    if matches!(
+                        e.kind,
+                        ConversationKind::CodeComment {
+                            is_resolved: true,
+                            ..
+                        }
+                    ) =>
+                {
+                    HINT_UNRESOLVE_COMMENT
+                }
+                Some(e)
+                    if matches!(
+                        e.kind,
+                        ConversationKind::CodeComment {
+                            is_resolved: false,
+                            ..
+                        }
+                    ) =>
+                {
+                    HINT_RESOLVE_COMMENT
+                }
+                _ => HINT_COMMENT,
+            };
+            block = block.title_bottom(Line::from(hint).alignment(HorizontalAlignment::Right));
         }
         let paragraph = paragraph.block(block).scroll((self.conversation_scroll, 0));
         frame.render_widget(paragraph, area);

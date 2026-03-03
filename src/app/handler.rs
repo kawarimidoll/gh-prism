@@ -686,6 +686,14 @@ impl App {
             KeyCode::Esc => {
                 self.focused_panel = Panel::PrDescription;
             }
+            KeyCode::Char('r') => {
+                if self.loading.conversation == LoadPhase::Loading {
+                    self.status_message =
+                        Some(StatusMessage::error("✗ Conversation loading. Please wait."));
+                    return;
+                }
+                self.toggle_resolve_from_conversation();
+            }
             KeyCode::Char('c') => {
                 // conversation 未ロード時はコメント不可
                 if self.loading.conversation == LoadPhase::Loading {
