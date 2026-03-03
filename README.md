@@ -5,9 +5,10 @@ A TUI for reviewing GitHub Pull Requests, built as a [gh](https://cli.github.com
 ## Features
 
 - 📋 PR description, commits, changed files, and conversation in a single TUI
-- 🔍 Syntax-highlighted side-by-side diff viewer with hunk/change navigation
+- 🔍 Syntax-highlighted diff viewer with hunk/change navigation
 - 💬 Inline code review comments with suggestion blocks (`Ctrl+G`)
 - ✅ Submit reviews (Approve / Request Changes / Comment)
+- 🔀 Merge PRs directly from TUI (merge commit / squash / rebase)
 - 🖼️ Inline image preview in PR descriptions
 - 🌗 Auto-detects terminal light/dark theme (or force with `--light` / `--dark`)
 
@@ -19,13 +20,14 @@ Requires [GitHub CLI](https://cli.github.com/) (`gh`).
 gh extension install kawarimidoll/gh-prism
 ```
 
-Or build from source (requires Rust toolchain):
+To upgrade to the latest version:
 
 ```bash
-cargo install --path .
+gh extension upgrade gh-prism
 ```
 
-### Installation with Nix / home-manager
+<details>
+<summary>Installation with Nix / home-manager</summary>
 
 Add the input to your `flake.nix`:
 
@@ -88,6 +90,8 @@ nix.settings = {
 };
 ```
 
+</details>
+
 ## Usage
 
 ```bash
@@ -109,11 +113,15 @@ gh prism <PR_NUMBER>
 | --- | --- |
 | `j/k` | Move down / up |
 | `h/l` | Previous / next pane |
-| `1-4` | Jump to pane |
+| `1/2/3` | Jump to pane |
 | `Enter` | Open diff / conversation / comment |
 | `v` | Enter line select mode |
 | `c` | Comment on selected line(s) or PR |
+| `x` | Toggle file/commit as viewed |
 | `S` | Submit review |
+| `M` | Merge pull request |
+| `R` | Reload PR data |
+| `z` | Toggle zoom |
 | `?` | Show full help |
 | `q` | Quit |
 
@@ -156,9 +164,22 @@ git commit -m "fix: resolve bug"
 
 ```bash
 nix build
+# ./result/bin/gh-prism
 ```
 
-The binary will be at `./result/bin/gh-prism`.
+Or with Cargo:
+
+```bash
+cargo build --release
+# ./target/release/gh-prism
+```
+
+To install the built binary as a gh extension:
+
+```bash
+ln -s target/release/gh-prism gh-prism  # or: ln -s result/bin/gh-prism gh-prism
+gh extension install .
+```
 
 ## Release
 
