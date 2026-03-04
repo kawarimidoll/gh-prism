@@ -1,4 +1,5 @@
 mod app;
+mod demo;
 mod git;
 mod github;
 
@@ -87,8 +88,8 @@ pub(crate) const VERSION: &str = match option_env!("GH_PRISM_VERSION") {
 #[command(name = "prism", version = VERSION)]
 #[command(about = "A TUI tool for reviewing GitHub Pull Requests")]
 struct Cli {
-    /// Pull Request number
-    pr_number: u64,
+    /// Pull Request number (required unless --demo)
+    pr_number: Option<u64>,
 
     /// Repository in owner/repo format (default: detect from git remote)
     #[arg(short, long)]
@@ -105,6 +106,10 @@ struct Cli {
     /// Force dark theme
     #[arg(long, conflicts_with = "light")]
     dark: bool,
+
+    /// Launch in demo mode with mock data (no API calls)
+    #[arg(long)]
+    demo: bool,
 }
 
 /// termbg でターミナル背景色を検出し、ライト/ダークモードを判定する。
@@ -471,6 +476,14 @@ async fn run() -> Result<()> {
 
     let cli = Cli::parse();
 
+    if cli.demo {
+        return run_demo(cli).await;
+    }
+
+    let pr_number = cli.pr_number.ok_or_else(|| {
+        color_eyre::eyre::eyre!("PR number is required (use --demo for demo mode)")
+    })?;
+
     // リポジトリ情報を解決
     let (owner, repo) = resolve_repo(&cli.repo)?;
 
@@ -478,21 +491,21 @@ async fn run() -> Result<()> {
 
     // GitHub APIクライアントを作成
     let client = github::client::create_client()?;
-    eprintln!("Fetching PR #{}...", cli.pr_number);
+    eprintln!("Fetching PR #{}...", pr_number);
 
     // ── Phase A: ブロッキング ──
     // コミット一覧とPR情報を常にAPI取得
     // （HEAD SHA判定 + キャッシュヒット時もPR状態の最新性を保証するため）
     let (commits, pr) = tokio::try_join!(
-        github::commits::fetch_commits(&client, &owner, &repo, cli.pr_number),
-        github::pr::fetch_pr(&client, &owner, &repo, cli.pr_number),
+        github::commits::fetch_commits(&client, &owner, &repo, pr_number),
+        github::pr::fetch_pr(&client, &owner, &repo, pr_number),
     )?;
     let metadata = extract_pr_metadata(&pr);
     let head_sha = commits.last().map(|c| c.sha.clone()).unwrap_or_default();
 
     // キャッシュ判定
     let (files_map, cached_review_threads, cache_hit) = if !cli.no_cache {
-        if let Some(cached) = github::cache::read_cache(&owner, &repo, cli.pr_number) {
+        if let Some(cached) = github::cache::read_cache(&owner, &repo, pr_number) {
             if cached.head_sha == head_sha {
                 eprintln!(
                     "Using cached data (HEAD: {})",
@@ -552,7 +565,6 @@ async fn run() -> Result<()> {
         let client = client.clone();
         let owner = owner.clone();
         let repo = repo.clone();
-        let pr_number = cli.pr_number;
         tokio::spawn(async move {
             let threads_handle = {
                 let owner = owner.clone();
@@ -634,7 +646,7 @@ async fn run() -> Result<()> {
     crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
 
     let mut app = App::new(
-        cli.pr_number,
+        pr_number,
         format!("{}/{}", owner, repo),
         metadata.pr_title,
         metadata.pr_body,
@@ -659,6 +671,113 @@ async fn run() -> Result<()> {
         head_sha,
         cache_hit, // キャッシュヒット = 既に書き込み済み → 再書き込みスキップ
     );
+    app.set_media(picker, MediaCache::new());
+    let result = app.run(terminal);
+
+    crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture)?;
+    ratatui::restore();
+    result
+}
+
+async fn run_demo(cli: Cli) -> Result<()> {
+    use app::LoadPhase;
+    use tokio::sync::mpsc;
+
+    // ── モックデータを同期構築 ──
+    let metadata = demo::demo_metadata();
+    let commits = demo::demo_commits();
+    let head_sha = commits.last().map(|c| c.sha.clone()).unwrap_or_default();
+
+    // テーマ検出（ターミナル依存なのでそのまま実行）
+    let theme = if cli.light {
+        ThemeMode::Light
+    } else if cli.dark {
+        ThemeMode::Dark
+    } else {
+        detect_theme()
+    };
+
+    // 画像プロトコル検出（raw mode 前に実行）
+    let picker = ratatui_image::picker::Picker::from_query_stdio().ok();
+
+    // ── チャネル作成 ──
+    let (tx, rx) = mpsc::unbounded_channel::<AsyncData>();
+
+    // LoadingState を全 Loading で初期化
+    let loading = app::LoadingState {
+        files: LoadPhase::Loading,
+        conversation: LoadPhase::Loading,
+        media: LoadPhase::Loading,
+    };
+
+    // ── 0.5 秒 sleep 後にモックデータを送信（ローディング UI エミュレーション） ──
+    let sleep_duration = std::time::Duration::from_millis(500);
+
+    // B1: FilesMap
+    {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(sleep_duration).await;
+            let _ = tx.send(AsyncData::FilesMap(demo::demo_files_map()));
+        });
+    }
+
+    // B2: ConversationData
+    {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(sleep_duration).await;
+            let _ = tx.send(AsyncData::ConversationData {
+                review_comments: demo::demo_review_comments(),
+                issue_comments: demo::demo_issue_comments(),
+                reviews: demo::demo_reviews(),
+                review_threads: demo::demo_review_threads(),
+            });
+        });
+    }
+
+    // B3: MediaData（空の MediaCache）
+    {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(sleep_duration).await;
+            let _ = tx.send(AsyncData::MediaData(MediaCache::new()));
+        });
+    }
+
+    drop(tx);
+
+    // ── TUI 起動 ──
+    let terminal = ratatui::init();
+    crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
+
+    let mut app = App::new(
+        demo::DEMO_PR_NUMBER,
+        demo::DEMO_REPO.to_string(),
+        metadata.pr_title,
+        metadata.pr_body,
+        metadata.pr_author,
+        metadata.pr_base_branch,
+        metadata.pr_head_branch,
+        metadata.pr_created_at,
+        metadata.pr_state,
+        commits,
+        HashMap::new(), // files_map: Phase B で到着
+        Vec::new(),     // review_comments: Phase B で到着
+        Vec::new(),     // conversation: Phase B で到着
+        None,           // client: None で書き込み操作を無効化
+        theme,
+        false,                          // is_own_pr: false でレビュー UI を表示可能に
+        true,                           // can_merge: true でデモ時も merge 操作を体験可能に
+        app::MergeMethod::ALL.to_vec(), // allowed_merge_methods: 全方式
+        demo::DEMO_CURRENT_USER.to_string(),
+        Vec::new(), // review_threads: Phase B で到着
+        Some(rx),
+        loading,
+        head_sha,
+        true, // cache_written: true でキャッシュ書き込みをスキップ
+    );
+    app.demo_mode = true;
     app.set_media(picker, MediaCache::new());
     let result = app.run(terminal);
 

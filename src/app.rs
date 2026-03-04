@@ -11,7 +11,7 @@ use helpers::{format_datetime, open_url_in_browser, truncate_path, truncate_str}
 pub use media::{collect_image_urls, preprocess_pr_body};
 pub use types::*;
 
-use crate::github::comments::{self as comments, ReviewComment, ReviewThread};
+use crate::github::comments::{self as comments, ReviewComment, ReviewCommentUser, ReviewThread};
 use crate::github::commits::CommitInfo;
 use crate::github::files::DiffFile;
 use crate::github::media::MediaCache;
@@ -144,6 +144,8 @@ pub struct App {
     head_sha: String,
     /// キャッシュ書き込み済みフラグ
     cache_written: bool,
+    /// デモモードフラグ（API 呼び出しをスキップし、UI 操作のみエミュレート）
+    pub(crate) demo_mode: bool,
     /// Conversation ペインのエントリカーソル位置
     conversation_cursor: usize,
     /// Conversation エントリごとの論理行オフセット（ensure_conversation_rendered で計算）
@@ -297,6 +299,7 @@ impl App {
             loading,
             head_sha,
             cache_written,
+            demo_mode: false,
             conversation_cursor: 0,
             conversation_entry_offsets: Vec::new(),
             conversation_visual_offsets: Vec::new(),
@@ -1046,6 +1049,74 @@ impl App {
             return;
         }
 
+        if self.demo_mode {
+            let count = self.review.pending_comments.len();
+            let now = chrono::Local::now()
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string();
+
+            // PendingComment → ReviewComment に変換して review_comments に追加
+            let demo_id_base = self.review.review_comments.len() as u64 + 9000;
+            for (i, pc) in self.review.pending_comments.drain(..).enumerate() {
+                let rc = ReviewComment {
+                    id: demo_id_base + i as u64,
+                    body: pc.body.clone(),
+                    path: pc.file_path.clone(),
+                    line: Some(pc.end_line),
+                    start_line: if pc.start_line != pc.end_line {
+                        Some(pc.start_line)
+                    } else {
+                        None
+                    },
+                    side: Some("RIGHT".to_string()),
+                    start_side: None,
+                    commit_id: pc.commit_sha.clone(),
+                    user: ReviewCommentUser {
+                        login: self.current_user.clone(),
+                    },
+                    created_at: now.clone(),
+                    in_reply_to_id: None,
+                    pull_request_review_id: None,
+                };
+                self.review.review_comments.push(rc);
+            }
+
+            // visible_review_comment_cache を再計算
+            self.visible_review_comment_cache =
+                Self::build_visible_comment_cache(&self.review.review_comments, &self.files_map);
+
+            // Review エントリを conversation に追加
+            let verdict = match event {
+                ReviewEvent::Approve => ReviewVerdict::Approved,
+                ReviewEvent::RequestChanges => ReviewVerdict::ChangesRequested,
+                ReviewEvent::Comment => ReviewVerdict::Commented,
+            };
+            let review_body = self.review.review_body_editor.text();
+            if !review_body.trim().is_empty() || verdict != ReviewVerdict::Commented {
+                self.conversation.push(ConversationEntry {
+                    author: self.current_user.clone(),
+                    body: review_body,
+                    created_at: now,
+                    kind: ConversationKind::Review { state: verdict },
+                });
+                self.conversation_rendered = None;
+            }
+
+            self.review.review_body_editor.clear();
+            let msg = if count > 0 {
+                format!(
+                    "✓ {} ({} comment{})",
+                    event.label(),
+                    count,
+                    if count == 1 { "" } else { "s" }
+                )
+            } else {
+                format!("✓ {}", event.label())
+            };
+            self.status_message = Some(StatusMessage::info(msg));
+            return;
+        }
+
         let (client, owner, repo) = require_api!(self);
 
         // HEAD コミットの SHA を取得
@@ -1098,6 +1169,15 @@ impl App {
 
     /// PR をマージする
     fn execute_merge(&mut self, method: MergeMethod) {
+        if self.demo_mode {
+            self.pr_state = PrState::Merged;
+            self.status_message = Some(StatusMessage::info(format!(
+                "✓ Merged via {}",
+                method.label()
+            )));
+            return;
+        }
+
         let (client, owner, repo) = require_api!(self);
 
         let result = tokio::task::block_in_place(|| {
@@ -1126,6 +1206,17 @@ impl App {
 
     /// PR を close/reopen する
     fn execute_close_toggle(&mut self, should_close: bool) {
+        if self.demo_mode {
+            self.pr_state = if should_close {
+                PrState::Closed
+            } else {
+                PrState::Open
+            };
+            let action = if should_close { "Closed" } else { "Reopened" };
+            self.status_message = Some(StatusMessage::info(format!("✓ {action} pull request")));
+            return;
+        }
+
         let (client, owner, repo) = require_api!(self);
 
         let state = if should_close {
@@ -1165,6 +1256,22 @@ impl App {
     fn submit_issue_comment(&mut self) {
         let body = self.review.comment_editor.text();
         if body.trim().is_empty() {
+            return;
+        }
+
+        if self.demo_mode {
+            self.conversation.push(ConversationEntry {
+                author: self.current_user.clone(),
+                body: body.clone(),
+                created_at: chrono::Local::now()
+                    .format("%Y-%m-%dT%H:%M:%SZ")
+                    .to_string(),
+                kind: ConversationKind::IssueComment,
+            });
+            self.conversation_rendered = None;
+            self.review.comment_editor.clear();
+            self.conversation_scroll = u16::MAX;
+            self.status_message = Some(StatusMessage::info("✓ Comment posted"));
             return;
         }
 
@@ -1211,6 +1318,31 @@ impl App {
         let Some(in_reply_to) = self.review.reply_to_comment_id.take() else {
             return;
         };
+
+        if self.demo_mode {
+            for entry in &mut self.conversation {
+                if let ConversationKind::CodeComment {
+                    root_comment_id,
+                    ref mut replies,
+                    ..
+                } = entry.kind
+                    && root_comment_id == in_reply_to
+                {
+                    replies.push(CodeCommentReply {
+                        author: self.current_user.clone(),
+                        body: body.clone(),
+                        created_at: chrono::Local::now()
+                            .format("%Y-%m-%dT%H:%M:%SZ")
+                            .to_string(),
+                    });
+                    break;
+                }
+            }
+            self.conversation_rendered = None;
+            self.review.comment_editor.clear();
+            self.status_message = Some(StatusMessage::info("✓ Reply posted"));
+            return;
+        }
 
         let (client, owner, repo) = require_api!(self);
 
@@ -1312,6 +1444,31 @@ impl App {
             return;
         };
 
+        if self.demo_mode {
+            if let Some(thread) = self.review.thread_map.get_mut(&req.root_comment_id) {
+                thread.is_resolved = req.should_resolve;
+            }
+            for entry in &mut self.conversation {
+                if let ConversationKind::CodeComment {
+                    ref mut is_resolved,
+                    ref thread_node_id,
+                    ..
+                } = entry.kind
+                    && thread_node_id.as_deref() == Some(&req.thread_node_id)
+                {
+                    *is_resolved = req.should_resolve;
+                }
+            }
+            self.conversation_rendered = None;
+            let label = if req.should_resolve {
+                "✓ Thread resolved"
+            } else {
+                "✓ Thread unresolved"
+            };
+            self.status_message = Some(StatusMessage::info(label));
+            return;
+        }
+
         let result = if req.should_resolve {
             comments::resolve_review_thread(&req.thread_node_id)
         } else {
@@ -1357,6 +1514,11 @@ impl App {
 
     /// PR データをリロードして App 状態を更新する
     fn execute_reload(&mut self) {
+        if self.demo_mode {
+            self.status_message = Some(StatusMessage::info("✓ Demo mode: data is static"));
+            return;
+        }
+
         let (client, owner, repo) = require_api!(self);
 
         let client = client.clone();
