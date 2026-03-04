@@ -1057,7 +1057,7 @@ impl App {
                 head_sha,
                 &self.review.pending_comments,
                 &self.files_map,
-                event.as_api_str(),
+                event,
                 &self.review.review_body_editor.text(),
             ))
         });
@@ -1102,7 +1102,7 @@ impl App {
                 owner,
                 repo,
                 self.pr_number,
-                method.as_api_str(),
+                method,
             ))
         });
 
@@ -1132,7 +1132,11 @@ impl App {
             return;
         };
 
-        let state = if should_close { "closed" } else { "open" };
+        let state = if should_close {
+            PrState::Closed
+        } else {
+            PrState::Open
+        };
 
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(crate::github::pr::update_pr_state(
@@ -2847,6 +2851,20 @@ mod tests {
         assert_eq!(ReviewEvent::Comment.as_api_str(), "COMMENT");
         assert_eq!(ReviewEvent::Approve.as_api_str(), "APPROVE");
         assert_eq!(ReviewEvent::RequestChanges.as_api_str(), "REQUEST_CHANGES");
+    }
+
+    #[test]
+    fn test_merge_method_api_str() {
+        assert_eq!(MergeMethod::Merge.as_api_str(), "merge");
+        assert_eq!(MergeMethod::Squash.as_api_str(), "squash");
+        assert_eq!(MergeMethod::Rebase.as_api_str(), "rebase");
+    }
+
+    #[test]
+    fn test_pr_state_api_str() {
+        assert_eq!(PrState::Open.as_api_str(), "open");
+        assert_eq!(PrState::Merged.as_api_str(), "merged");
+        assert_eq!(PrState::Closed.as_api_str(), "closed");
     }
 
     #[test]

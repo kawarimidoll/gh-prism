@@ -137,6 +137,16 @@ impl std::fmt::Display for PrState {
     }
 }
 
+impl PrState {
+    pub fn as_api_str(&self) -> &str {
+        match self {
+            PrState::Open => "open",
+            PrState::Merged => "merged",
+            PrState::Closed => "closed",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StatusLevel {
     Info,

@@ -1,3 +1,4 @@
+use crate::app::ReviewEvent;
 use crate::github::comments::ReviewCommentUser;
 use crate::github::files::DiffFile;
 use color_eyre::{Result, eyre::eyre};
@@ -200,7 +201,7 @@ pub async fn submit_review(
     head_sha: &str,
     pending_comments: &[PendingComment],
     files_map: &HashMap<String, Vec<DiffFile>>,
-    event: &str,
+    event: ReviewEvent,
     body: &str,
 ) -> Result<()> {
     let mut comments = Vec::new();
@@ -217,7 +218,7 @@ pub async fn submit_review(
     let request = CreateReviewRequest {
         commit_id: head_sha.to_string(),
         body: body.to_string(),
-        event: event.to_string(),
+        event: event.as_api_str().to_string(),
         comments,
     };
 

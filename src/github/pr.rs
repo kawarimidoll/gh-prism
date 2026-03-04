@@ -1,3 +1,4 @@
+use crate::app::{MergeMethod, PrState};
 use color_eyre::Result;
 use octocrab::Octocrab;
 use octocrab::models::pulls::PullRequest;
@@ -18,10 +19,10 @@ pub async fn merge_pr(
     owner: &str,
     repo: &str,
     pr_number: u64,
-    merge_method: &str,
+    method: MergeMethod,
 ) -> Result<String> {
     let route = format!("/repos/{owner}/{repo}/pulls/{pr_number}/merge");
-    let body = serde_json::json!({ "merge_method": merge_method });
+    let body = serde_json::json!({ "merge_method": method.as_api_str() });
     let response: serde_json::Value = client.put(route, Some(&body)).await?;
     let message = response["message"].as_str().unwrap_or("Merged").to_string();
     Ok(message)
@@ -33,10 +34,10 @@ pub async fn update_pr_state(
     owner: &str,
     repo: &str,
     pr_number: u64,
-    state: &str,
+    state: PrState,
 ) -> Result<()> {
     let route = format!("/repos/{owner}/{repo}/pulls/{pr_number}");
-    let body = serde_json::json!({ "state": state });
+    let body = serde_json::json!({ "state": state.as_api_str() });
     let _response: serde_json::Value = client.patch(route, Some(&body)).await?;
     Ok(())
 }
