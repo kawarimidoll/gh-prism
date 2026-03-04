@@ -430,61 +430,6 @@ impl App {
             AppMode::MediaViewer => self.render_media_viewer_overlay(frame, area),
             _ => {}
         }
-
-        // ブロッキング操作中ダイアログ（最前面に描画）
-        if let Some(msg) = self.blocking_operation_message() {
-            Self::render_blocking_dialog(frame, area, msg);
-        }
-    }
-
-    /// ブロッキング操作のメッセージを返す（フラグが立っていればダイアログ描画に使う）
-    /// 評価順序は `run()` ループの実行順序と一致させている
-    pub(super) fn blocking_operation_message(&self) -> Option<&'static str> {
-        if self.review.needs_submit.is_some() {
-            return Some("Submitting review...");
-        }
-        if self.needs_issue_comment_submit {
-            return Some("Submitting comment...");
-        }
-        if self.needs_reply_submit {
-            return Some("Submitting reply...");
-        }
-        if self.needs_reload {
-            return Some("Reloading PR data...");
-        }
-        if self.review.needs_resolve_toggle.is_some() {
-            return Some("Updating thread...");
-        }
-        if self.needs_merge.is_some() {
-            return Some("Merging pull request...");
-        }
-        match self.needs_close_toggle {
-            Some(true) => return Some("Closing pull request..."),
-            Some(false) => return Some("Reopening pull request..."),
-            None => {}
-        }
-        None
-    }
-
-    /// ブロッキング操作中のダイアログを画面中央に描画する
-    fn render_blocking_dialog(frame: &mut Frame, area: Rect, message: &str) {
-        // ボーダー左右 (2) + 先頭スペース (1) + ⏳ 幅 (2) + スペース (1) = 6
-        let width = (message.len() as u16) + 6;
-        let height = 3;
-        let dialog = Self::centered_rect(width, height, area);
-        Self::clear_wide_safe(frame, dialog, area);
-
-        let paragraph = Paragraph::new(Line::from(vec![
-            Span::raw(" "),
-            Span::styled("⏳ ", Style::default().fg(Color::Yellow)),
-            Span::raw(message),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow)),
-        );
-        frame.render_widget(paragraph, dialog);
     }
 
     fn render_pr_description(&mut self, frame: &mut Frame, area: Rect) {
