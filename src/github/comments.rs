@@ -167,6 +167,7 @@ pub struct ReviewComment {
     pub user: ReviewCommentUser,
     pub created_at: String,
     pub in_reply_to_id: Option<u64>,
+    pub pull_request_review_id: Option<u64>,
 }
 
 pub async fn fetch_review_comments(

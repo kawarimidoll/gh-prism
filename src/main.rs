@@ -282,6 +282,12 @@ pub fn build_conversation(
         .iter()
         .map(|t| (t.root_comment_database_id, t))
         .collect();
+    // review_id → submitted_at のルックアップマップ（CodeComment のソートキーに使用）
+    let review_time_map: HashMap<u64, &str> = reviews
+        .iter()
+        .filter_map(|r| r.submitted_at.as_deref().map(|t| (r.id, t)))
+        .collect();
+
     let mut entries = Vec::new();
 
     for c in issue_comments {
@@ -293,9 +299,9 @@ pub fn build_conversation(
         });
     }
 
-    for r in reviews {
+    for r in &reviews {
         // submitted_at が None のレビューは未送信（下書き）なのでスキップ
-        let Some(submitted_at) = r.submitted_at else {
+        let Some(submitted_at) = r.submitted_at.as_deref() else {
             continue;
         };
         let body = r.body.as_deref().unwrap_or("");
@@ -304,9 +310,9 @@ pub fn build_conversation(
             continue;
         }
         entries.push(ConversationEntry {
-            author: r.user.login,
+            author: r.user.login.clone(),
             body: body.to_string(),
-            created_at: submitted_at,
+            created_at: submitted_at.to_string(),
             kind: ConversationKind::Review { state: r.state },
         });
     }
@@ -339,10 +345,15 @@ pub fn build_conversation(
         }
 
         let thread_info = thread_lookup.get(&root.id);
+        // ソートキー: レビューの submitted_at を使い、GitHub Web と同じ表示順にする
+        let sort_time = root
+            .pull_request_review_id
+            .and_then(|rid| review_time_map.get(&rid).copied())
+            .unwrap_or(root.created_at.as_str());
         entries.push(ConversationEntry {
             author: root.user.login.clone(),
             body: root.body.clone(),
-            created_at: root.created_at.clone(),
+            created_at: sort_time.to_string(),
             kind: ConversationKind::CodeComment {
                 path: root.path.clone(),
                 line: root.line,
@@ -354,7 +365,8 @@ pub fn build_conversation(
         });
     }
 
-    // created_at で時系列ソート
+    // created_at で時系列ソート（安定ソート: 同一時刻のエントリは push 順を維持。
+    // Review → CodeComment の順で push されるため、GitHub Web と同じ並びになる）
     entries.sort_by(|a, b| a.created_at.cmp(&b.created_at));
     entries
 }
@@ -667,6 +679,7 @@ mod tests {
         line: Option<usize>,
         in_reply_to_id: Option<u64>,
         created_at: &str,
+        pull_request_review_id: Option<u64>,
     ) -> ReviewComment {
         ReviewComment {
             id,
@@ -682,6 +695,7 @@ mod tests {
             },
             created_at: created_at.to_string(),
             in_reply_to_id,
+            pull_request_review_id,
         }
     }
 
@@ -694,6 +708,7 @@ mod tests {
             Some(10),
             None,
             "2024-01-01T00:00:00Z",
+            None,
         );
         let reply1 = make_review_comment(
             2,
@@ -702,6 +717,7 @@ mod tests {
             Some(10),
             Some(1),
             "2024-01-01T01:00:00Z",
+            None,
         );
         let reply2 = make_review_comment(
             3,
@@ -710,6 +726,7 @@ mod tests {
             Some(10),
             Some(1),
             "2024-01-01T02:00:00Z",
+            None,
         );
 
         let entries = build_conversation(vec![], vec![], vec![root, reply1, reply2], &[]);
@@ -749,6 +766,7 @@ mod tests {
             Some(5),
             None,
             "2024-01-01T01:00:00Z",
+            None,
         );
 
         let entries = build_conversation(vec![issue], vec![], vec![code], &[]);
@@ -771,6 +789,7 @@ mod tests {
             Some(10),
             None,
             "2024-01-01T00:00:00Z",
+            None,
         );
         let threads = vec![ReviewThread {
             node_id: "RT_abc".to_string(),
@@ -803,6 +822,7 @@ mod tests {
             Some(5),
             None,
             "2024-01-01T00:00:00Z",
+            None,
         );
 
         // スレッド情報なし → is_resolved: false, thread_node_id: None
@@ -820,5 +840,57 @@ mod tests {
             }
             _ => panic!("Expected CodeComment"),
         }
+    }
+
+    #[test]
+    fn test_build_conversation_code_comment_sorted_by_review_submitted_at() {
+        use github::review::ReviewSummary;
+
+        // CodeComment の created_at は 01:00 だが、所属レビューの submitted_at は 03:00
+        let code = make_review_comment(
+            1,
+            "code comment",
+            "src/lib.rs",
+            Some(5),
+            None,
+            "2024-01-01T01:00:00Z",
+            Some(1000), // review id
+        );
+
+        // IssueComment の created_at は 02:00
+        let issue = IssueComment {
+            id: 100,
+            body: Some("issue comment".to_string()),
+            user: ReviewCommentUser {
+                login: "user1".to_string(),
+            },
+            created_at: "2024-01-01T02:00:00Z".to_string(),
+        };
+
+        // Review id=1000 の submitted_at は 03:00
+        let review = ReviewSummary {
+            id: 1000,
+            user: ReviewCommentUser {
+                login: "reviewer".to_string(),
+            },
+            body: Some("looks good".to_string()),
+            state: ReviewVerdict::Approved,
+            submitted_at: Some("2024-01-01T03:00:00Z".to_string()),
+        };
+
+        let entries = build_conversation(vec![issue], vec![review], vec![code], &[]);
+        // Review(body あり) + IssueComment + CodeComment = 3 エントリ
+        assert_eq!(entries.len(), 3);
+
+        // IssueComment (02:00) → Review (03:00) → CodeComment (review の 03:00 で表示)
+        assert!(matches!(entries[0].kind, ConversationKind::IssueComment));
+        assert!(matches!(entries[1].kind, ConversationKind::Review { .. }));
+        assert!(matches!(
+            entries[2].kind,
+            ConversationKind::CodeComment { .. }
+        ));
+        // Review と CodeComment は同じ submitted_at だが、安定ソートにより push 順（Review が先）を維持
+        assert_eq!(entries[1].created_at, "2024-01-01T03:00:00Z");
+        assert_eq!(entries[2].created_at, "2024-01-01T03:00:00Z");
     }
 }

@@ -3125,6 +3125,7 @@ mod tests {
             },
             created_at: "2025-01-01T00:00:00Z".to_string(),
             in_reply_to_id: None,
+            pull_request_review_id: None,
         }
     }
 
