@@ -729,12 +729,14 @@ impl App {
                 ];
 
                 // Review の場合は state ラベルを追加（COMMENTED は非表示）
-                if let ConversationKind::Review { ref state } = entry.kind {
-                    let label_opt = match state.as_str() {
-                        "APPROVED" => Some(("APPROVED", Color::Green)),
-                        "CHANGES_REQUESTED" => Some(("CHANGES REQUESTED", Color::Red)),
-                        "DISMISSED" => Some(("DISMISSED", Color::DarkGray)),
-                        _ => None, // COMMENTED やその他は非表示
+                if let ConversationKind::Review { state } = entry.kind {
+                    let label_opt = match state {
+                        ReviewVerdict::Approved => Some(("APPROVED", Color::Green)),
+                        ReviewVerdict::ChangesRequested => Some(("CHANGES REQUESTED", Color::Red)),
+                        ReviewVerdict::Dismissed => Some(("DISMISSED", Color::DarkGray)),
+                        ReviewVerdict::Commented
+                        | ReviewVerdict::Pending
+                        | ReviewVerdict::Unknown => None,
                     };
                     if let Some((label, color)) = label_opt {
                         header_spans.push(Span::styled(

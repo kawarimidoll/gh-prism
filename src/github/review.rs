@@ -1,4 +1,4 @@
-use crate::app::ReviewEvent;
+use crate::app::{ReviewEvent, ReviewVerdict};
 use crate::github::comments::ReviewCommentUser;
 use crate::github::files::DiffFile;
 use color_eyre::{Result, eyre::eyre};
@@ -94,7 +94,7 @@ pub struct ReviewSummary {
     pub id: u64,
     pub user: ReviewCommentUser,
     pub body: Option<String>,
-    pub state: String,
+    pub state: ReviewVerdict,
     pub submitted_at: Option<String>,
 }
 

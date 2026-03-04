@@ -2,7 +2,7 @@ mod app;
 mod git;
 mod github;
 
-use app::{App, CodeCommentReply, ConversationEntry, ConversationKind, ThemeMode};
+use app::{App, CodeCommentReply, ConversationEntry, ConversationKind, ReviewVerdict, ThemeMode};
 use clap::Parser;
 use color_eyre::Result;
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -300,7 +300,7 @@ pub fn build_conversation(
         };
         let body = r.body.as_deref().unwrap_or("");
         // body 空かつ state が COMMENTED のみの review はスキップ（空コメントノイズ防止）
-        if body.is_empty() && r.state == "COMMENTED" {
+        if body.is_empty() && r.state == ReviewVerdict::Commented {
             continue;
         }
         entries.push(ConversationEntry {

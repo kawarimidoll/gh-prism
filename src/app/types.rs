@@ -1,6 +1,6 @@
 use super::editor::TextEditor;
 use ratatui::layout::Rect;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
 const STATUS_MSG_TTL_SECS: u64 = 3;
@@ -57,6 +57,19 @@ pub enum AppMode {
     CloseConfirm,
     Help,
     MediaViewer,
+}
+
+/// GitHub API が返すレビューの判定結果
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ReviewVerdict {
+    Approved,
+    ChangesRequested,
+    Commented,
+    Dismissed,
+    Pending,
+    #[serde(other)]
+    Unknown,
 }
 
 /// レビューイベントタイプ
@@ -263,7 +276,7 @@ pub struct CodeCommentReply {
 #[derive(Debug, Clone)]
 pub enum ConversationKind {
     /// PR レビュー（Approve, Request Changes 等）
-    Review { state: String },
+    Review { state: ReviewVerdict },
     /// Issue コメント（Conversation タブの一般コメント）
     IssueComment,
     /// コード行コメント（diff 上のレビューコメントスレッド）
