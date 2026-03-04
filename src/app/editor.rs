@@ -34,6 +34,12 @@ impl TextEditor {
         }
     }
 
+    /// テキストを設定（clear + insert_text）
+    pub fn set_text(&mut self, text: &str) {
+        self.clear();
+        self.insert_text(text);
+    }
+
     /// 初期状態にリセット
     pub fn clear(&mut self) {
         self.lines = vec![String::new()];
