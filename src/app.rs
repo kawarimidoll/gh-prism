@@ -158,6 +158,24 @@ pub struct App {
     rainbow_tick: u16,
 }
 
+/// API 呼び出しに必要な client と (owner, repo) を取得する。
+/// 取得できない場合は status_message にエラーを設定し early-return する。
+/// メソッドではなくマクロにすることで self の部分借用を保持し、
+/// 戻り値の参照と self の他フィールドへの同時アクセスを可能にしている。
+macro_rules! require_api {
+    ($self:ident) => {{
+        let Some(client) = &$self.client else {
+            $self.status_message = Some(StatusMessage::error("✗ No API client available"));
+            return;
+        };
+        let Some((owner, repo)) = $self.parse_repo() else {
+            $self.status_message = Some(StatusMessage::error("✗ Invalid repo format"));
+            return;
+        };
+        (client, owner, repo)
+    }};
+}
+
 impl App {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -1028,15 +1046,7 @@ impl App {
             return;
         }
 
-        let Some(client) = &self.client else {
-            self.status_message = Some(StatusMessage::error("✗ No API client available"));
-            return;
-        };
-
-        let Some((owner, repo)) = self.parse_repo() else {
-            self.status_message = Some(StatusMessage::error("✗ Invalid repo format"));
-            return;
-        };
+        let (client, owner, repo) = require_api!(self);
 
         // HEAD コミットの SHA を取得
         let Some(head_sha) = self.commits.last().map(|c| c.sha.as_str()) else {
@@ -1088,15 +1098,7 @@ impl App {
 
     /// PR をマージする
     fn execute_merge(&mut self, method: MergeMethod) {
-        let Some(client) = &self.client else {
-            self.status_message = Some(StatusMessage::error("✗ No API client available"));
-            return;
-        };
-
-        let Some((owner, repo)) = self.parse_repo() else {
-            self.status_message = Some(StatusMessage::error("✗ Invalid repo format"));
-            return;
-        };
+        let (client, owner, repo) = require_api!(self);
 
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(crate::github::pr::merge_pr(
@@ -1124,15 +1126,7 @@ impl App {
 
     /// PR を close/reopen する
     fn execute_close_toggle(&mut self, should_close: bool) {
-        let Some(client) = &self.client else {
-            self.status_message = Some(StatusMessage::error("✗ No API client available"));
-            return;
-        };
-
-        let Some((owner, repo)) = self.parse_repo() else {
-            self.status_message = Some(StatusMessage::error("✗ Invalid repo format"));
-            return;
-        };
+        let (client, owner, repo) = require_api!(self);
 
         let state = if should_close {
             PrState::Closed
@@ -1174,15 +1168,7 @@ impl App {
             return;
         }
 
-        let Some(client) = &self.client else {
-            self.status_message = Some(StatusMessage::error("✗ No API client available"));
-            return;
-        };
-
-        let Some((owner, repo)) = self.parse_repo() else {
-            self.status_message = Some(StatusMessage::error("✗ Invalid repo format"));
-            return;
-        };
+        let (client, owner, repo) = require_api!(self);
 
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(comments::post_issue_comment(
@@ -1226,15 +1212,7 @@ impl App {
             return;
         };
 
-        let Some(client) = &self.client else {
-            self.status_message = Some(StatusMessage::error("✗ No API client available"));
-            return;
-        };
-
-        let Some((owner, repo)) = self.parse_repo() else {
-            self.status_message = Some(StatusMessage::error("✗ Invalid repo format"));
-            return;
-        };
+        let (client, owner, repo) = require_api!(self);
 
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(comments::post_reply_comment(
@@ -1379,15 +1357,7 @@ impl App {
 
     /// PR データをリロードして App 状態を更新する
     fn execute_reload(&mut self) {
-        let Some(client) = &self.client else {
-            self.status_message = Some(StatusMessage::error("✗ No API client available"));
-            return;
-        };
-
-        let Some((owner, repo)) = self.parse_repo() else {
-            self.status_message = Some(StatusMessage::error("✗ Invalid repo format"));
-            return;
-        };
+        let (client, owner, repo) = require_api!(self);
 
         let client = client.clone();
         let owner = owner.to_string();
