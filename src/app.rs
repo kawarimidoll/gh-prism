@@ -1056,70 +1056,7 @@ impl App {
         }
 
         if self.demo_mode {
-            let count = self.review.pending_comments.len();
-            let now = chrono::Local::now()
-                .format("%Y-%m-%dT%H:%M:%SZ")
-                .to_string();
-
-            // PendingComment → ReviewComment に変換して review_comments に追加
-            let demo_id_base = self.review.review_comments.len() as u64 + 9000;
-            for (i, pc) in self.review.pending_comments.drain(..).enumerate() {
-                let rc = ReviewComment {
-                    id: demo_id_base + i as u64,
-                    body: pc.body.clone(),
-                    path: pc.file_path.clone(),
-                    line: Some(pc.end_line),
-                    start_line: if pc.start_line != pc.end_line {
-                        Some(pc.start_line)
-                    } else {
-                        None
-                    },
-                    side: Some("RIGHT".to_string()),
-                    start_side: None,
-                    commit_id: pc.commit_sha.clone(),
-                    user: ReviewCommentUser {
-                        login: self.current_user.clone(),
-                    },
-                    created_at: now.clone(),
-                    in_reply_to_id: None,
-                    pull_request_review_id: None,
-                };
-                self.review.review_comments.push(rc);
-            }
-
-            // visible_review_comment_cache を再計算
-            self.visible_review_comment_cache =
-                Self::build_visible_comment_cache(&self.review.review_comments, &self.files_map);
-
-            // Review エントリを conversation に追加
-            let verdict = match event {
-                ReviewEvent::Approve => ReviewVerdict::Approved,
-                ReviewEvent::RequestChanges => ReviewVerdict::ChangesRequested,
-                ReviewEvent::Comment => ReviewVerdict::Commented,
-            };
-            let review_body = self.review.review_body_editor.text();
-            if !review_body.trim().is_empty() || verdict != ReviewVerdict::Commented {
-                self.conversation.push(ConversationEntry {
-                    author: self.current_user.clone(),
-                    body: review_body,
-                    created_at: now,
-                    kind: ConversationKind::Review { state: verdict },
-                });
-                self.conversation_rendered = None;
-            }
-
-            self.review.review_body_editor.clear();
-            let msg = if count > 0 {
-                format!(
-                    "✓ {} ({} comment{})",
-                    event.label(),
-                    count,
-                    if count == 1 { "" } else { "s" }
-                )
-            } else {
-                format!("✓ {}", event.label())
-            };
-            self.status_message = Some(StatusMessage::info(msg));
+            self.apply_review_submit(event);
             return;
         }
 
@@ -1153,19 +1090,9 @@ impl App {
 
         match result {
             Ok(()) => {
-                let msg = if count > 0 {
-                    format!(
-                        "✓ {} ({} comment{})",
-                        event.label(),
-                        count,
-                        if count == 1 { "" } else { "s" }
-                    )
-                } else {
-                    format!("✓ {}", event.label())
-                };
-                self.status_message = Some(StatusMessage::info(msg));
-                self.review.pending_comments.clear();
-                self.review.review_body_editor.clear();
+                // count は apply 前に取得済み（apply が pending_comments を drain する）
+                let _ = count;
+                self.apply_review_submit(event);
             }
             Err(e) => {
                 self.status_message = Some(StatusMessage::error(format!("✗ Failed: {}", e)));
@@ -1176,11 +1103,7 @@ impl App {
     /// PR をマージする
     fn execute_merge(&mut self, method: MergeMethod) {
         if self.demo_mode {
-            self.pr_state = PrState::Merged;
-            self.status_message = Some(StatusMessage::info(format!(
-                "✓ Merged via {}",
-                method.label()
-            )));
+            self.apply_merge(method);
             return;
         }
 
@@ -1198,11 +1121,7 @@ impl App {
 
         match result {
             Ok(_msg) => {
-                self.pr_state = PrState::Merged;
-                self.status_message = Some(StatusMessage::info(format!(
-                    "✓ Merged via {}",
-                    method.label()
-                )));
+                self.apply_merge(method);
             }
             Err(e) => {
                 self.status_message = Some(StatusMessage::error(format!("✗ Merge failed: {}", e)));
@@ -1213,13 +1132,7 @@ impl App {
     /// PR を close/reopen する
     fn execute_close_toggle(&mut self, should_close: bool) {
         if self.demo_mode {
-            self.pr_state = if should_close {
-                PrState::Closed
-            } else {
-                PrState::Open
-            };
-            let action = if should_close { "Closed" } else { "Reopened" };
-            self.status_message = Some(StatusMessage::info(format!("✓ {action} pull request")));
+            self.apply_close_toggle(should_close);
             return;
         }
 
@@ -1243,13 +1156,7 @@ impl App {
 
         match result {
             Ok(()) => {
-                self.pr_state = if should_close {
-                    PrState::Closed
-                } else {
-                    PrState::Open
-                };
-                let action = if should_close { "Closed" } else { "Reopened" };
-                self.status_message = Some(StatusMessage::info(format!("✓ {action} pull request")));
+                self.apply_close_toggle(should_close);
             }
             Err(e) => {
                 let action = if should_close { "Close" } else { "Reopen" };
@@ -1266,18 +1173,10 @@ impl App {
         }
 
         if self.demo_mode {
-            self.conversation.push(ConversationEntry {
-                author: self.current_user.clone(),
-                body: body.clone(),
-                created_at: chrono::Local::now()
-                    .format("%Y-%m-%dT%H:%M:%SZ")
-                    .to_string(),
-                kind: ConversationKind::IssueComment,
-            });
-            self.conversation_rendered = None;
-            self.review.comment_editor.clear();
-            self.conversation_scroll = u16::MAX;
-            self.status_message = Some(StatusMessage::info("✓ Comment posted"));
+            let now = chrono::Local::now()
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string();
+            self.apply_issue_comment(self.current_user.clone(), body, now);
             return;
         }
 
@@ -1295,17 +1194,11 @@ impl App {
 
         match result {
             Ok(comment) => {
-                self.conversation.push(ConversationEntry {
-                    author: comment.user.login,
-                    body: comment.body.unwrap_or_default(),
-                    created_at: comment.created_at,
-                    kind: ConversationKind::IssueComment,
-                });
-                self.conversation_rendered = None; // キャッシュ無効化
-                self.review.comment_editor.clear();
-                // 末尾までスクロール（次の render で visual_total が更新されるため大きな値を設定）
-                self.conversation_scroll = u16::MAX;
-                self.status_message = Some(StatusMessage::info("✓ Comment posted"));
+                self.apply_issue_comment(
+                    comment.user.login,
+                    comment.body.unwrap_or_default(),
+                    comment.created_at,
+                );
             }
             Err(e) => {
                 self.status_message = Some(StatusMessage::error(format!("✗ Failed: {}", e)));
@@ -1326,27 +1219,10 @@ impl App {
         };
 
         if self.demo_mode {
-            for entry in &mut self.conversation {
-                if let ConversationKind::CodeComment {
-                    root_comment_id,
-                    ref mut replies,
-                    ..
-                } = entry.kind
-                    && root_comment_id == in_reply_to
-                {
-                    replies.push(CodeCommentReply {
-                        author: self.current_user.clone(),
-                        body: body.clone(),
-                        created_at: chrono::Local::now()
-                            .format("%Y-%m-%dT%H:%M:%SZ")
-                            .to_string(),
-                    });
-                    break;
-                }
-            }
-            self.conversation_rendered = None;
-            self.review.comment_editor.clear();
-            self.status_message = Some(StatusMessage::info("✓ Reply posted"));
+            let now = chrono::Local::now()
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string();
+            self.apply_reply_comment(in_reply_to, self.current_user.clone(), body, now);
             return;
         }
 
@@ -1373,27 +1249,12 @@ impl App {
                     self.review.viewing_comments.push(comment.clone());
                 }
 
-                // conversation 内の該当 CodeComment エントリに reply を追加
-                for entry in &mut self.conversation {
-                    if let ConversationKind::CodeComment {
-                        root_comment_id,
-                        ref mut replies,
-                        ..
-                    } = entry.kind
-                        && root_comment_id == in_reply_to
-                    {
-                        replies.push(CodeCommentReply {
-                            author: comment.user.login.clone(),
-                            body: comment.body.clone(),
-                            created_at: comment.created_at.clone(),
-                        });
-                        break;
-                    }
-                }
-
-                self.conversation_rendered = None; // キャッシュ無効化
-                self.review.comment_editor.clear();
-                self.status_message = Some(StatusMessage::info("✓ Reply posted"));
+                self.apply_reply_comment(
+                    in_reply_to,
+                    comment.user.login,
+                    comment.body,
+                    comment.created_at,
+                );
             }
             Err(e) => {
                 // 失敗時は reply_to_comment_id を復元して再試行可能に
@@ -1451,27 +1312,7 @@ impl App {
         };
 
         if self.demo_mode {
-            if let Some(thread) = self.review.thread_map.get_mut(&req.root_comment_id) {
-                thread.is_resolved = req.should_resolve;
-            }
-            for entry in &mut self.conversation {
-                if let ConversationKind::CodeComment {
-                    ref mut is_resolved,
-                    ref thread_node_id,
-                    ..
-                } = entry.kind
-                    && thread_node_id.as_deref() == Some(&req.thread_node_id)
-                {
-                    *is_resolved = req.should_resolve;
-                }
-            }
-            self.conversation_rendered = None;
-            let label = if req.should_resolve {
-                "✓ Thread resolved"
-            } else {
-                "✓ Thread unresolved"
-            };
-            self.status_message = Some(StatusMessage::info(label));
+            self.apply_resolve_toggle(req.root_comment_id, &req.thread_node_id, req.should_resolve);
             return;
         }
 
@@ -1483,29 +1324,11 @@ impl App {
 
         match result {
             Ok(is_resolved) if is_resolved == req.should_resolve => {
-                // thread_map を更新
-                if let Some(thread) = self.review.thread_map.get_mut(&req.root_comment_id) {
-                    thread.is_resolved = req.should_resolve;
-                }
-                // conversation 内の該当エントリを更新
-                for entry in &mut self.conversation {
-                    if let ConversationKind::CodeComment {
-                        ref mut is_resolved,
-                        ref thread_node_id,
-                        ..
-                    } = entry.kind
-                        && thread_node_id.as_deref() == Some(&req.thread_node_id)
-                    {
-                        *is_resolved = req.should_resolve;
-                    }
-                }
-                self.conversation_rendered = None; // キャッシュ無効化
-                let label = if req.should_resolve {
-                    "✓ Thread resolved"
-                } else {
-                    "✓ Thread unresolved"
-                };
-                self.status_message = Some(StatusMessage::info(label));
+                self.apply_resolve_toggle(
+                    req.root_comment_id,
+                    &req.thread_node_id,
+                    req.should_resolve,
+                );
             }
             Ok(_) => {
                 self.status_message = Some(StatusMessage::error(
@@ -1516,6 +1339,170 @@ impl App {
                 self.status_message = Some(StatusMessage::error(format!("✗ Failed: {}", e)));
             }
         }
+    }
+
+    // ── apply_* メソッド群: UI 副作用の共通化（デモ・通常パスで共有） ──
+
+    /// close/reopen の UI 適用
+    fn apply_close_toggle(&mut self, should_close: bool) {
+        self.pr_state = if should_close {
+            PrState::Closed
+        } else {
+            PrState::Open
+        };
+        let action = if should_close { "Closed" } else { "Reopened" };
+        self.status_message = Some(StatusMessage::info(format!("✓ {action} pull request")));
+    }
+
+    /// merge の UI 適用
+    fn apply_merge(&mut self, method: MergeMethod) {
+        self.pr_state = PrState::Merged;
+        self.status_message = Some(StatusMessage::info(format!(
+            "✓ Merged via {}",
+            method.label()
+        )));
+    }
+
+    /// resolve/unresolve の UI 適用
+    fn apply_resolve_toggle(
+        &mut self,
+        root_comment_id: u64,
+        thread_node_id: &str,
+        should_resolve: bool,
+    ) {
+        if let Some(thread) = self.review.thread_map.get_mut(&root_comment_id) {
+            thread.is_resolved = should_resolve;
+        }
+        for entry in &mut self.conversation {
+            if let ConversationKind::CodeComment {
+                ref mut is_resolved,
+                thread_node_id: ref tn,
+                ..
+            } = entry.kind
+                && tn.as_deref() == Some(thread_node_id)
+            {
+                *is_resolved = should_resolve;
+            }
+        }
+        self.conversation_rendered = None;
+        let label = if should_resolve {
+            "✓ Thread resolved"
+        } else {
+            "✓ Thread unresolved"
+        };
+        self.status_message = Some(StatusMessage::info(label));
+    }
+
+    /// issue comment の UI 適用
+    fn apply_issue_comment(&mut self, author: String, body: String, created_at: String) {
+        self.conversation.push(ConversationEntry {
+            author,
+            body,
+            created_at,
+            kind: ConversationKind::IssueComment,
+        });
+        self.conversation_rendered = None;
+        self.review.comment_editor.clear();
+        self.conversation_scroll = u16::MAX;
+        self.status_message = Some(StatusMessage::info("✓ Comment posted"));
+    }
+
+    /// reply comment の UI 適用
+    fn apply_reply_comment(
+        &mut self,
+        in_reply_to: u64,
+        author: String,
+        body: String,
+        created_at: String,
+    ) {
+        for entry in &mut self.conversation {
+            if let ConversationKind::CodeComment {
+                root_comment_id,
+                ref mut replies,
+                ..
+            } = entry.kind
+                && root_comment_id == in_reply_to
+            {
+                replies.push(CodeCommentReply {
+                    author,
+                    body,
+                    created_at,
+                });
+                break;
+            }
+        }
+        self.conversation_rendered = None;
+        self.review.comment_editor.clear();
+        self.status_message = Some(StatusMessage::info("✓ Reply posted"));
+    }
+
+    /// review submit の UI 適用。投稿された pending_comments の数を返す。
+    fn apply_review_submit(&mut self, event: ReviewEvent) -> usize {
+        let count = self.review.pending_comments.len();
+        let now = chrono::Local::now()
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
+
+        // PendingComment → ReviewComment に変換して review_comments に追加
+        let demo_id_base = self.review.review_comments.len() as u64 + 9000;
+        for (i, pc) in self.review.pending_comments.drain(..).enumerate() {
+            let rc = ReviewComment {
+                id: demo_id_base + i as u64,
+                body: pc.body.clone(),
+                path: pc.file_path.clone(),
+                line: Some(pc.end_line),
+                start_line: if pc.start_line != pc.end_line {
+                    Some(pc.start_line)
+                } else {
+                    None
+                },
+                side: Some("RIGHT".to_string()),
+                start_side: None,
+                commit_id: pc.commit_sha.clone(),
+                user: ReviewCommentUser {
+                    login: self.current_user.clone(),
+                },
+                created_at: now.clone(),
+                in_reply_to_id: None,
+                pull_request_review_id: None,
+            };
+            self.review.review_comments.push(rc);
+        }
+
+        // visible_review_comment_cache を再計算
+        self.visible_review_comment_cache =
+            Self::build_visible_comment_cache(&self.review.review_comments, &self.files_map);
+
+        // Review エントリを conversation に追加
+        let verdict = match event {
+            ReviewEvent::Approve => ReviewVerdict::Approved,
+            ReviewEvent::RequestChanges => ReviewVerdict::ChangesRequested,
+            ReviewEvent::Comment => ReviewVerdict::Commented,
+        };
+        let review_body = self.review.review_body_editor.text();
+        if !review_body.trim().is_empty() || verdict != ReviewVerdict::Commented {
+            self.conversation.push(ConversationEntry {
+                author: self.current_user.clone(),
+                body: review_body,
+                created_at: now,
+                kind: ConversationKind::Review { state: verdict },
+            });
+            self.conversation_rendered = None;
+        }
+
+        self.review.review_body_editor.clear();
+        let msg = if count > 0 {
+            format!(
+                "✓ {} ({} comment{})",
+                event.label(),
+                count,
+                if count == 1 { "" } else { "s" }
+            )
+        } else {
+            format!("✓ {}", event.label())
+        };
+        self.status_message = Some(StatusMessage::info(msg));
+        count
     }
 
     /// PR データをリロードして App 状態を更新する
