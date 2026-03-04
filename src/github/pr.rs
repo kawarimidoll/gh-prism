@@ -22,7 +22,7 @@ pub async fn merge_pr(
     method: MergeMethod,
 ) -> Result<String> {
     let route = format!("/repos/{owner}/{repo}/pulls/{pr_number}/merge");
-    let body = serde_json::json!({ "merge_method": method.as_api_str() });
+    let body = serde_json::json!({ "merge_method": method });
     let response: serde_json::Value = client.put(route, Some(&body)).await?;
     let message = response["message"].as_str().unwrap_or("Merged").to_string();
     Ok(message)
@@ -37,7 +37,7 @@ pub async fn update_pr_state(
     state: PrState,
 ) -> Result<()> {
     let route = format!("/repos/{owner}/{repo}/pulls/{pr_number}");
-    let body = serde_json::json!({ "state": state.as_api_str() });
+    let body = serde_json::json!({ "state": state });
     let _response: serde_json::Value = client.patch(route, Some(&body)).await?;
     Ok(())
 }

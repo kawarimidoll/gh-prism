@@ -126,7 +126,7 @@ struct ReviewComment {
 struct CreateReviewRequest {
     commit_id: String,
     body: String,
-    event: String,
+    event: ReviewEvent,
     comments: Vec<ReviewComment>,
 }
 
@@ -218,7 +218,7 @@ pub async fn submit_review(
     let request = CreateReviewRequest {
         commit_id: head_sha.to_string(),
         body: body.to_string(),
-        event: event.as_api_str().to_string(),
+        event,
         comments,
     };
 

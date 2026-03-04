@@ -1,5 +1,6 @@
 use super::editor::TextEditor;
 use ratatui::layout::Rect;
+use serde::Serialize;
 use std::time::{Duration, Instant};
 
 const STATUS_MSG_TTL_SECS: u64 = 3;
@@ -59,7 +60,8 @@ pub enum AppMode {
 }
 
 /// レビューイベントタイプ
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ReviewEvent {
     Comment,
     Approve,
@@ -73,14 +75,6 @@ impl ReviewEvent {
         ReviewEvent::RequestChanges,
     ];
 
-    pub fn as_api_str(&self) -> &str {
-        match self {
-            ReviewEvent::Comment => "COMMENT",
-            ReviewEvent::Approve => "APPROVE",
-            ReviewEvent::RequestChanges => "REQUEST_CHANGES",
-        }
-    }
-
     pub fn label(&self) -> &str {
         match self {
             ReviewEvent::Comment => "Comment",
@@ -91,7 +85,8 @@ impl ReviewEvent {
 }
 
 /// マージ方式
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum MergeMethod {
     Merge,
     Squash,
@@ -101,14 +96,6 @@ pub enum MergeMethod {
 impl MergeMethod {
     pub const ALL: [MergeMethod; 3] =
         [MergeMethod::Merge, MergeMethod::Squash, MergeMethod::Rebase];
-
-    pub fn as_api_str(&self) -> &str {
-        match self {
-            MergeMethod::Merge => "merge",
-            MergeMethod::Squash => "squash",
-            MergeMethod::Rebase => "rebase",
-        }
-    }
 
     pub fn label(&self) -> &str {
         match self {
@@ -120,7 +107,8 @@ impl MergeMethod {
 }
 
 /// PR の状態
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum PrState {
     Open,
     Merged,
@@ -133,16 +121,6 @@ impl std::fmt::Display for PrState {
             PrState::Open => write!(f, "Open"),
             PrState::Merged => write!(f, "Merged"),
             PrState::Closed => write!(f, "Closed"),
-        }
-    }
-}
-
-impl PrState {
-    pub fn as_api_str(&self) -> &str {
-        match self {
-            PrState::Open => "open",
-            PrState::Merged => "merged",
-            PrState::Closed => "closed",
         }
     }
 }

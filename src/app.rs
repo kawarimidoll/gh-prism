@@ -2847,24 +2847,33 @@ mod tests {
     }
 
     #[test]
-    fn test_review_event_api_str() {
-        assert_eq!(ReviewEvent::Comment.as_api_str(), "COMMENT");
-        assert_eq!(ReviewEvent::Approve.as_api_str(), "APPROVE");
-        assert_eq!(ReviewEvent::RequestChanges.as_api_str(), "REQUEST_CHANGES");
+    fn test_review_event_serialize() {
+        assert_eq!(
+            serde_json::to_value(ReviewEvent::Comment).unwrap(),
+            "COMMENT"
+        );
+        assert_eq!(
+            serde_json::to_value(ReviewEvent::Approve).unwrap(),
+            "APPROVE"
+        );
+        assert_eq!(
+            serde_json::to_value(ReviewEvent::RequestChanges).unwrap(),
+            "REQUEST_CHANGES"
+        );
     }
 
     #[test]
-    fn test_merge_method_api_str() {
-        assert_eq!(MergeMethod::Merge.as_api_str(), "merge");
-        assert_eq!(MergeMethod::Squash.as_api_str(), "squash");
-        assert_eq!(MergeMethod::Rebase.as_api_str(), "rebase");
+    fn test_merge_method_serialize() {
+        assert_eq!(serde_json::to_value(MergeMethod::Merge).unwrap(), "merge");
+        assert_eq!(serde_json::to_value(MergeMethod::Squash).unwrap(), "squash");
+        assert_eq!(serde_json::to_value(MergeMethod::Rebase).unwrap(), "rebase");
     }
 
     #[test]
-    fn test_pr_state_api_str() {
-        assert_eq!(PrState::Open.as_api_str(), "open");
-        assert_eq!(PrState::Merged.as_api_str(), "merged");
-        assert_eq!(PrState::Closed.as_api_str(), "closed");
+    fn test_pr_state_serialize() {
+        assert_eq!(serde_json::to_value(PrState::Open).unwrap(), "open");
+        assert_eq!(serde_json::to_value(PrState::Merged).unwrap(), "merged");
+        assert_eq!(serde_json::to_value(PrState::Closed).unwrap(), "closed");
     }
 
     #[test]
