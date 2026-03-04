@@ -67,11 +67,11 @@ pub struct App {
     /// Commit Overview の Wrap 考慮済み視覚行数（render 時に更新）
     commit_overview_visual_total: u16,
     /// DiffView パネルの表示状態
-    pub diff: DiffViewState,
+    pub(crate) diff: DiffViewState,
     /// 行選択モードでの選択状態
     line_selection: Option<LineSelection>,
     /// レビュー・コメント関連の状態
-    pub review: ReviewState,
+    pub(crate) review: ReviewState,
     /// GitHub API クライアント（テスト時は None）
     client: Option<Octocrab>,
     /// ステータスメッセージ（ヘッダーバーに表示、3秒後に自動クリア）
@@ -93,7 +93,7 @@ pub struct App {
     /// カラーテーマ（ライト/ダーク）
     theme: ThemeMode,
     /// 各ペインの描画領域キャッシュ（マウスヒットテスト用、render 時に更新）
-    pub layout: LayoutCache,
+    pub(crate) layout: LayoutCache,
     /// PR body 中のメディア参照
     media_refs: Vec<MediaRef>,
     /// 画像プロトコル検出結果（None = 画像表示不可）
@@ -139,7 +139,7 @@ pub struct App {
     /// バックグラウンド非同期データ受信チャネル
     async_rx: Option<mpsc::UnboundedReceiver<crate::AsyncData>>,
     /// 非同期データのロード状態
-    pub loading: LoadingState,
+    pub(crate) loading: LoadingState,
     /// HEAD SHA（キャッシュ書き込み用）
     head_sha: String,
     /// キャッシュ書き込み済みフラグ
