@@ -66,6 +66,26 @@ pub enum AsyncErrorKind {
     Media,
 }
 
+/// 楽観的更新の操作ID
+#[derive(Debug, Clone)]
+pub enum OpId {
+    SubmitReview,
+    Merge,
+    CloseToggle,
+    IssueComment,
+    ReplyComment,
+    ResolveToggle,
+    Reload,
+}
+
+/// 楽観的更新の結果ペイロード
+pub enum OpPayload {
+    None,
+    IssueComment(IssueComment),
+    ReplyComment(ReviewComment),
+    Reload(Box<ReloadedData>),
+}
+
 /// バックグラウンド非同期タスクから App に送信するデータ
 pub enum AsyncData {
     FilesMap(HashMap<String, Vec<DiffFile>>),
@@ -77,6 +97,8 @@ pub enum AsyncData {
     },
     MediaData(MediaCache),
     Error(AsyncErrorKind, String),
+    OpSuccess(OpId, OpPayload),
+    OpFailure(OpId, String),
 }
 
 pub(crate) const VERSION: &str = match option_env!("GH_PRISM_VERSION") {
@@ -638,7 +660,8 @@ async fn run() -> Result<()> {
         });
     }
 
-    // sender を全 spawn に clone 済みなので元の tx を drop
+    // api_tx 用に clone を保持してから元の tx を drop
+    let api_tx = tx.clone();
     drop(tx);
 
     // ── TUI 起動 ──
@@ -671,6 +694,7 @@ async fn run() -> Result<()> {
         head_sha,
         cache_hit, // キャッシュヒット = 既に書き込み済み → 再書き込みスキップ
     );
+    app.api_tx = Some(api_tx);
     app.set_media(picker, MediaCache::new());
     let result = app.run(terminal);
 
@@ -745,6 +769,7 @@ async fn run_demo(cli: Cli) -> Result<()> {
         });
     }
 
+    let api_tx = tx.clone();
     drop(tx);
 
     // ── TUI 起動 ──
@@ -778,6 +803,7 @@ async fn run_demo(cli: Cli) -> Result<()> {
         true, // cache_written: true でキャッシュ書き込みをスキップ
     );
     app.demo_mode = true;
+    app.api_tx = Some(api_tx);
     app.set_media(picker, MediaCache::new());
     let result = app.run(terminal);
 

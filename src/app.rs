@@ -146,6 +146,10 @@ pub struct App {
     cache_written: bool,
     /// デモモードフラグ（API 呼び出しをスキップし、UI 操作のみエミュレート）
     pub(crate) demo_mode: bool,
+    /// 楽観的更新の API 結果送信チャネル
+    pub(crate) api_tx: Option<mpsc::UnboundedSender<crate::AsyncData>>,
+    /// 楽観的更新のロールバック状態
+    inflight_rollback: Option<RollbackState>,
     /// Conversation ペインのエントリカーソル位置
     conversation_cursor: usize,
     /// Conversation エントリごとの論理行オフセット（ensure_conversation_rendered で計算）
@@ -300,6 +304,8 @@ impl App {
             head_sha,
             cache_written,
             demo_mode: false,
+            api_tx: None,
+            inflight_rollback: None,
             conversation_cursor: 0,
             conversation_entry_offsets: Vec::new(),
             conversation_visual_offsets: Vec::new(),
@@ -1698,6 +1704,12 @@ impl App {
                             }
                         }
                     }
+                    crate::AsyncData::OpSuccess(op_id, payload) => {
+                        self.handle_op_success(op_id, payload);
+                    }
+                    crate::AsyncData::OpFailure(op_id, error_msg) => {
+                        self.handle_op_failure(op_id, error_msg);
+                    }
                 },
                 Err(mpsc::error::TryRecvError::Empty) => break,
                 Err(mpsc::error::TryRecvError::Disconnected) => {
@@ -1707,8 +1719,12 @@ impl App {
             }
         }
 
-        if disconnected || self.loading.all_done() {
-            // 全タスク完了 → rx を返却せずに破棄
+        // all_done でキャッシュ書き込みを試行（チャネルは api_tx が生存中のため破棄しない）
+        if self.loading.all_done() {
+            self.try_write_cache();
+        }
+
+        if disconnected {
             // チャネル切断時に Loading のままのフェーズがあればエラーに強制遷移
             if self.loading.files == LoadPhase::Loading {
                 self.loading.files = LoadPhase::Error;
@@ -1721,9 +1737,19 @@ impl App {
             }
             self.try_write_cache();
         } else {
-            // まだ受信中 → rx を戻す
+            // チャネルを戻す（api_tx が保持される限り切断されない）
             self.async_rx = Some(rx);
         }
+    }
+
+    /// 楽観的更新の成功ハンドリング
+    fn handle_op_success(&mut self, _op_id: crate::OpId, _payload: crate::OpPayload) {
+        self.inflight_rollback = None;
+    }
+
+    /// 楽観的更新の失敗ハンドリング（ロールバック）
+    fn handle_op_failure(&mut self, _op_id: crate::OpId, _error_msg: String) {
+        self.inflight_rollback = None;
     }
 
     /// files_map をバックグラウンドデータで更新
