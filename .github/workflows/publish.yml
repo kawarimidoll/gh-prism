@@ -1,10 +1,13 @@
 name: Publish
 
 on:
+  schedule:
+    - cron: '0 0 * * *'
   workflow_dispatch:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   prepare:
@@ -14,6 +17,19 @@ jobs:
       sha: ${{ steps.version.outputs.SHA }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check for new commits since last release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LAST_TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName // empty')
+          if [ -n "$LAST_TAG" ] && [ "$(git rev-list "${LAST_TAG}..HEAD" --count)" -eq 0 ]; then
+            echo "No new commits since $LAST_TAG, cancelling workflow"
+            gh run cancel ${{ github.run_id }}
+            sleep 30
+          fi
 
       - name: Generate calver tag
         id: tag

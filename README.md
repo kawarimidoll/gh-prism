@@ -183,7 +183,10 @@ gh extension install .
 
 ## Release
 
-Releases use [CalVer](https://calver.org/) (`YY.MM.DD`). To create a new release:
+Releases use [CalVer](https://calver.org/) (`YY.MM.DD`).
+New releases are automatically published daily (UTC 0:00) when there are new commits since the last release.
+
+To trigger a release manually:
 
 ```bash
 gh workflow run publish.yml
