@@ -75,6 +75,7 @@ pub enum OpId {
     IssueComment,
     ReplyComment,
     ResolveToggle,
+    AddReaction,
     Reload,
 }
 
@@ -94,6 +95,8 @@ pub enum AsyncData {
         issue_comments: Vec<IssueComment>,
         reviews: Vec<ReviewSummary>,
         review_threads: Vec<ReviewThread>,
+        /// comment_id → (content → reaction_id) の per-user リアクション情報
+        user_reactions: HashMap<u64, HashMap<String, u64>>,
     },
     MediaData(MediaCache),
     Error(AsyncErrorKind, String),
@@ -297,6 +300,70 @@ pub async fn fetch_all(
     Ok(files_map)
 }
 
+/// リアクションがあるコメントの per-user リアクション情報を一括フェッチ
+async fn fetch_user_reactions(
+    client: &Octocrab,
+    owner: &str,
+    repo: &str,
+    issue_comments: &[IssueComment],
+    review_comments: &[ReviewComment],
+    username: &str,
+) -> HashMap<u64, HashMap<String, u64>> {
+    use futures::stream::{FuturesUnordered, StreamExt};
+
+    if username.is_empty() {
+        return HashMap::new();
+    }
+
+    use std::pin::Pin;
+    type ReactionFut = Pin<Box<dyn Future<Output = (u64, HashMap<String, u64>)> + Send>>;
+    let mut futures: FuturesUnordered<ReactionFut> = FuturesUnordered::new();
+
+    // リアクションがある issue comment のみフェッチ
+    for c in issue_comments {
+        if c.reactions.as_ref().is_some_and(|r| !r.is_empty()) {
+            let client = client.clone();
+            let owner = owner.to_string();
+            let repo = repo.to_string();
+            let username = username.to_string();
+            let comment_id = c.id;
+            futures.push(Box::pin(async move {
+                let result = github::comments::fetch_user_reactions_for_issue_comment(
+                    &client, &owner, &repo, comment_id, &username,
+                )
+                .await;
+                (comment_id, result.unwrap_or_default())
+            }));
+        }
+    }
+
+    // リアクションがある review comment のルートコメントのみフェッチ
+    for rc in review_comments {
+        if rc.in_reply_to_id.is_none() && rc.reactions.as_ref().is_some_and(|r| !r.is_empty()) {
+            let client = client.clone();
+            let owner = owner.to_string();
+            let repo = repo.to_string();
+            let username = username.to_string();
+            let comment_id = rc.id;
+            futures.push(Box::pin(async move {
+                let result = github::comments::fetch_user_reactions_for_review_comment(
+                    &client, &owner, &repo, comment_id, &username,
+                )
+                .await;
+                (comment_id, result.unwrap_or_default())
+            }));
+        }
+    }
+
+    let mut map = HashMap::new();
+    while let Some((comment_id, user_reactions)) = futures.next().await {
+        if !user_reactions.is_empty() {
+            map.insert(comment_id, user_reactions);
+        }
+    }
+    map
+}
+
 /// IssueComment, ReviewSummary, ReviewComment を ConversationEntry にマージして時系列ソート
 pub fn build_conversation(
     issue_comments: Vec<IssueComment>,
@@ -322,8 +389,9 @@ pub fn build_conversation(
             author: c.user.login,
             body: c.body.unwrap_or_default(),
             created_at: c.created_at,
-            kind: ConversationKind::IssueComment,
+            kind: ConversationKind::IssueComment { comment_id: c.id },
             reactions: c.reactions,
+            user_reaction_ids: HashMap::new(),
         });
     }
 
@@ -341,8 +409,12 @@ pub fn build_conversation(
             author: r.user.login.clone(),
             body: body.to_string(),
             created_at: submitted_at.to_string(),
-            kind: ConversationKind::Review { state: r.state },
-            reactions: None,
+            kind: ConversationKind::Review {
+                state: r.state,
+                node_id: r.node_id.clone(),
+            },
+            reactions: r.reactions.clone(),
+            user_reaction_ids: HashMap::new(),
         });
     }
 
@@ -393,6 +465,7 @@ pub fn build_conversation(
                 root_comment_id: root.id,
             },
             reactions: root.reactions.clone(),
+            user_reaction_ids: HashMap::new(),
         });
     }
 
@@ -443,12 +516,15 @@ pub async fn reload_pr_data(
         github::comments::fetch_issue_comments(client, owner, repo, pr_number);
     let reviews_future = github::review::fetch_reviews(client, owner, repo, pr_number);
 
-    let (files_map, review_comments, issue_comments, reviews) = tokio::try_join!(
+    let (files_map, review_comments, issue_comments, mut reviews) = tokio::try_join!(
         data_future,
         comments_future,
         issue_comments_future,
         reviews_future,
     )?;
+
+    // REST API は reviews にリアクションを含めないため GraphQL で補完
+    github::review::populate_review_reactions(&mut reviews, owner, repo, pr_number);
 
     let review_threads = threads_handle.await.unwrap_or_default();
 
@@ -585,12 +661,13 @@ async fn run() -> Result<()> {
         media: LoadPhase::Loading,
     };
 
-    // B1: Conversation データ（4 API を try_join! → ConversationData 送信）
+    // B1: Conversation データ（4 API を try_join! → per-user リアクション取得 → ConversationData 送信）
     {
         let tx = tx.clone();
         let client = client.clone();
         let owner = owner.clone();
         let repo = repo.clone();
+        let current_user = current_user.clone();
         tokio::spawn(async move {
             let threads_handle = {
                 let owner = owner.clone();
@@ -608,13 +685,34 @@ async fn run() -> Result<()> {
             );
 
             match result {
-                Ok((review_comments, issue_comments, reviews)) => {
+                Ok((review_comments, issue_comments, mut reviews)) => {
                     let review_threads = threads_handle.await.unwrap_or_default();
+
+                    // REST API は reviews にリアクションを含めないため GraphQL で補完
+                    github::review::populate_review_reactions(
+                        &mut reviews,
+                        &owner,
+                        &repo,
+                        pr_number,
+                    );
+
+                    // リアクションがあるコメントの per-user リアクション情報を取得
+                    let user_reactions = fetch_user_reactions(
+                        &client,
+                        &owner,
+                        &repo,
+                        &issue_comments,
+                        &review_comments,
+                        &current_user,
+                    )
+                    .await;
+
                     let _ = tx.send(AsyncData::ConversationData {
                         review_comments,
                         issue_comments,
                         reviews,
                         review_threads,
+                        user_reactions,
                     });
                 }
                 Err(e) => {
@@ -760,6 +858,7 @@ async fn run_demo(cli: Cli) -> Result<()> {
                 issue_comments: demo::demo_issue_comments(),
                 reviews: demo::demo_reviews(),
                 review_threads: demo::demo_review_threads(),
+                user_reactions: HashMap::new(),
             });
         });
     }
@@ -928,7 +1027,10 @@ mod tests {
             entries[0].kind,
             ConversationKind::CodeComment { .. }
         ));
-        assert!(matches!(entries[1].kind, ConversationKind::IssueComment));
+        assert!(matches!(
+            entries[1].kind,
+            ConversationKind::IssueComment { .. }
+        ));
     }
 
     #[test]
@@ -1022,12 +1124,14 @@ mod tests {
         // Review id=1000 の submitted_at は 03:00
         let review = ReviewSummary {
             id: 1000,
+            node_id: "PRR_test_001".to_string(),
             user: ReviewCommentUser {
                 login: "reviewer".to_string(),
             },
             body: Some("looks good".to_string()),
             state: ReviewVerdict::Approved,
             submitted_at: Some("2024-01-01T03:00:00Z".to_string()),
+            reactions: None,
         };
 
         let entries = build_conversation(vec![issue], vec![review], vec![code], &[]);
@@ -1035,7 +1139,10 @@ mod tests {
         assert_eq!(entries.len(), 3);
 
         // IssueComment (02:00) → Review (03:00) → CodeComment (review の 03:00 で表示)
-        assert!(matches!(entries[0].kind, ConversationKind::IssueComment));
+        assert!(matches!(
+            entries[0].kind,
+            ConversationKind::IssueComment { .. }
+        ));
         assert!(matches!(entries[1].kind, ConversationKind::Review { .. }));
         assert!(matches!(
             entries[2].kind,

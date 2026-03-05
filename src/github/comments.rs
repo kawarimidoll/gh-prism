@@ -294,6 +294,219 @@ pub async fn post_issue_comment(
     Ok(comment)
 }
 
+/// Issue comment にリアクションを追加
+pub async fn post_reaction_to_issue_comment(
+    client: &Octocrab,
+    owner: &str,
+    repo: &str,
+    comment_id: u64,
+    content: &str,
+) -> Result<()> {
+    let url = format!(
+        "/repos/{}/{}/issues/comments/{}/reactions",
+        owner, repo, comment_id
+    );
+    let _: serde_json::Value = client
+        .post(url, Some(&serde_json::json!({ "content": content })))
+        .await?;
+    Ok(())
+}
+
+/// Review comment にリアクションを追加
+pub async fn post_reaction_to_review_comment(
+    client: &Octocrab,
+    owner: &str,
+    repo: &str,
+    comment_id: u64,
+    content: &str,
+) -> Result<()> {
+    let url = format!(
+        "/repos/{}/{}/pulls/comments/{}/reactions",
+        owner, repo, comment_id
+    );
+    let _: serde_json::Value = client
+        .post(url, Some(&serde_json::json!({ "content": content })))
+        .await?;
+    Ok(())
+}
+
+/// GraphQL addReaction mutation で Review にリアクションを追加（REST API 非対応のため）
+pub fn post_reaction_to_review(node_id: &str, content: &str) -> Result<()> {
+    // GraphQL の ReactionContent enum 値に変換（SCREAMING_SNAKE_CASE）
+    let gql_content = match content {
+        "+1" => "THUMBS_UP",
+        "-1" => "THUMBS_DOWN",
+        "laugh" => "LAUGH",
+        "hooray" => "HOORAY",
+        "confused" => "CONFUSED",
+        "heart" => "HEART",
+        "rocket" => "ROCKET",
+        "eyes" => "EYES",
+        other => {
+            return Err(color_eyre::eyre::eyre!("Unknown reaction content: {other}"));
+        }
+    };
+
+    let query = format!(
+        r#"mutation($id: ID!) {{ addReaction(input: {{subjectId: $id, content: {gql_content}}}) {{ reaction {{ content }} }} }}"#
+    );
+
+    let output = std::process::Command::new("gh")
+        .args([
+            "api",
+            "graphql",
+            "-f",
+            &format!("query={query}"),
+            "-F",
+            &format!("id={node_id}"),
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(color_eyre::eyre::eyre!(
+            "addReaction failed: {}",
+            stderr.trim()
+        ));
+    }
+
+    Ok(())
+}
+
+/// Reactions List API が返す個別リアクションオブジェクト
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReactionItem {
+    pub id: u64,
+    pub content: String,
+    pub user: ReviewCommentUser,
+}
+
+/// Issue comment のリアクション一覧を取得し、指定ユーザーのものだけ (content → reaction_id) で返す
+pub async fn fetch_user_reactions_for_issue_comment(
+    client: &Octocrab,
+    owner: &str,
+    repo: &str,
+    comment_id: u64,
+    username: &str,
+) -> Result<std::collections::HashMap<String, u64>> {
+    let url = format!(
+        "/repos/{}/{}/issues/comments/{}/reactions",
+        owner, repo, comment_id
+    );
+    let items: Vec<ReactionItem> = client.get(url, None::<&()>).await?;
+    Ok(items
+        .into_iter()
+        .filter(|r| r.user.login == username)
+        .map(|r| (r.content, r.id))
+        .collect())
+}
+
+/// Review comment のリアクション一覧を取得し、指定ユーザーのものだけ (content → reaction_id) で返す
+pub async fn fetch_user_reactions_for_review_comment(
+    client: &Octocrab,
+    owner: &str,
+    repo: &str,
+    comment_id: u64,
+    username: &str,
+) -> Result<std::collections::HashMap<String, u64>> {
+    let url = format!(
+        "/repos/{}/{}/pulls/comments/{}/reactions",
+        owner, repo, comment_id
+    );
+    let items: Vec<ReactionItem> = client.get(url, None::<&()>).await?;
+    Ok(items
+        .into_iter()
+        .filter(|r| r.user.login == username)
+        .map(|r| (r.content, r.id))
+        .collect())
+}
+
+/// DELETE API でリアクションを削除（Issue comment）
+pub async fn delete_reaction_from_issue_comment(
+    client: &Octocrab,
+    owner: &str,
+    repo: &str,
+    comment_id: u64,
+    reaction_id: u64,
+) -> Result<()> {
+    let url = format!(
+        "/repos/{}/{}/issues/comments/{}/reactions/{}",
+        owner, repo, comment_id, reaction_id
+    );
+    let resp = client._delete(url, None::<&()>).await?;
+    if !resp.status().is_success() {
+        return Err(color_eyre::eyre::eyre!(
+            "Delete reaction failed: {}",
+            resp.status()
+        ));
+    }
+    Ok(())
+}
+
+/// DELETE API でリアクションを削除（Review comment）
+pub async fn delete_reaction_from_review_comment(
+    client: &Octocrab,
+    owner: &str,
+    repo: &str,
+    comment_id: u64,
+    reaction_id: u64,
+) -> Result<()> {
+    let url = format!(
+        "/repos/{}/{}/pulls/comments/{}/reactions/{}",
+        owner, repo, comment_id, reaction_id
+    );
+    let resp = client._delete(url, None::<&()>).await?;
+    if !resp.status().is_success() {
+        return Err(color_eyre::eyre::eyre!(
+            "Delete reaction failed: {}",
+            resp.status()
+        ));
+    }
+    Ok(())
+}
+
+/// GraphQL removeReaction mutation で Review からリアクションを削除
+pub fn remove_reaction_from_review(node_id: &str, content: &str) -> Result<()> {
+    let gql_content = match content {
+        "+1" => "THUMBS_UP",
+        "-1" => "THUMBS_DOWN",
+        "laugh" => "LAUGH",
+        "hooray" => "HOORAY",
+        "confused" => "CONFUSED",
+        "heart" => "HEART",
+        "rocket" => "ROCKET",
+        "eyes" => "EYES",
+        other => {
+            return Err(color_eyre::eyre::eyre!("Unknown reaction content: {other}"));
+        }
+    };
+
+    let query = format!(
+        r#"mutation($id: ID!) {{ removeReaction(input: {{subjectId: $id, content: {gql_content}}}) {{ reaction {{ content }} }} }}"#
+    );
+
+    let output = std::process::Command::new("gh")
+        .args([
+            "api",
+            "graphql",
+            "-f",
+            &format!("query={query}"),
+            "-F",
+            &format!("id={node_id}"),
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(color_eyre::eyre::eyre!(
+            "removeReaction failed: {}",
+            stderr.trim()
+        ));
+    }
+
+    Ok(())
+}
+
 /// Issue Comments API で PR の一般コメントを取得
 pub async fn fetch_issue_comments(
     client: &Octocrab,

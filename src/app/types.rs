@@ -54,6 +54,7 @@ pub enum AppMode {
     ReviewBodyInput,
     QuitConfirm,
     MergeConfirm,
+    ReactionPicker,
     CloseConfirm,
     Help,
     MediaViewer,
@@ -277,9 +278,12 @@ pub struct CodeCommentReply {
 #[derive(Debug, Clone)]
 pub enum ConversationKind {
     /// PR レビュー（Approve, Request Changes 等）
-    Review { state: ReviewVerdict },
+    Review {
+        state: ReviewVerdict,
+        node_id: String,
+    },
     /// Issue コメント（Conversation タブの一般コメント）
-    IssueComment,
+    IssueComment { comment_id: u64 },
     /// コード行コメント（diff 上のレビューコメントスレッド）
     CodeComment {
         path: String,
@@ -299,6 +303,8 @@ pub struct ConversationEntry {
     pub created_at: String,
     pub kind: ConversationKind,
     pub reactions: Option<crate::github::comments::Reactions>,
+    /// 自分がつけたリアクション（content → reaction_id）。トグル判定・DELETE API に使用
+    pub user_reaction_ids: std::collections::HashMap<String, u64>,
 }
 
 /// 非同期データ取得の進行状態
@@ -349,6 +355,62 @@ impl Default for DiffViewState {
     }
 }
 
+/// GitHub Reactions API の content 値
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReactionContent {
+    PlusOne,
+    MinusOne,
+    Laugh,
+    Hooray,
+    Confused,
+    Heart,
+    Rocket,
+    Eyes,
+}
+
+impl ReactionContent {
+    pub const ALL: [ReactionContent; 8] = [
+        ReactionContent::PlusOne,
+        ReactionContent::MinusOne,
+        ReactionContent::Laugh,
+        ReactionContent::Hooray,
+        ReactionContent::Confused,
+        ReactionContent::Heart,
+        ReactionContent::Rocket,
+        ReactionContent::Eyes,
+    ];
+
+    pub fn emoji(&self) -> &str {
+        match self {
+            ReactionContent::PlusOne => "👍",
+            ReactionContent::MinusOne => "👎",
+            ReactionContent::Laugh => "😄",
+            ReactionContent::Hooray => "🎉",
+            ReactionContent::Confused => "😕",
+            ReactionContent::Heart => "🩷",
+            ReactionContent::Rocket => "🚀",
+            ReactionContent::Eyes => "👀",
+        }
+    }
+
+    pub fn api_value(&self) -> &str {
+        match self {
+            ReactionContent::PlusOne => "+1",
+            ReactionContent::MinusOne => "-1",
+            ReactionContent::Laugh => "laugh",
+            ReactionContent::Hooray => "hooray",
+            ReactionContent::Confused => "confused",
+            ReactionContent::Heart => "heart",
+            ReactionContent::Rocket => "rocket",
+            ReactionContent::Eyes => "eyes",
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        self.api_value()
+    }
+}
+
 /// 楽観的更新のロールバック状態
 pub enum RollbackState {
     Merge {
@@ -378,5 +440,10 @@ pub enum RollbackState {
         review_comments_len: usize,
         conversation_len: usize,
         visible_cache: std::collections::HashMap<(String, String), usize>,
+    },
+    AddReaction {
+        entry_index: usize,
+        old_reactions: Option<crate::github::comments::Reactions>,
+        old_user_reaction_ids: std::collections::HashMap<String, u64>,
     },
 }

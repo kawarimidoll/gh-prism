@@ -227,6 +227,7 @@ impl App {
                 }
                 AppMode::QuitConfirm => self.handle_quit_confirm_mode(key.code),
                 AppMode::MergeConfirm => self.handle_merge_confirm_mode(key.code),
+                AppMode::ReactionPicker => self.handle_reaction_picker_mode(key.code),
                 AppMode::CloseConfirm => self.handle_close_confirm_mode(key.code),
                 AppMode::Help => self.handle_help_mode(key.code),
                 AppMode::MediaViewer => self.handle_media_viewer_mode(key.code),
@@ -731,6 +732,35 @@ impl App {
                 }
                 self.review.comment_editor.clear();
                 self.mode = AppMode::IssueCommentInput;
+            }
+            KeyCode::Char('e') => {
+                self.open_reaction_picker();
+            }
+            _ => {}
+        }
+    }
+
+    /// リアクション Picker モードのキー処理
+    fn handle_reaction_picker_mode(&mut self, code: KeyCode) {
+        let len = ReactionContent::ALL.len();
+        match code {
+            KeyCode::Esc => {
+                self.mode = AppMode::Normal;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.reaction_cursor = (self.reaction_cursor + 1) % len;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.reaction_cursor = if self.reaction_cursor == 0 {
+                    len - 1
+                } else {
+                    self.reaction_cursor - 1
+                };
+            }
+            KeyCode::Enter => {
+                let content = ReactionContent::ALL[self.reaction_cursor];
+                self.needs_add_reaction = Some(content);
+                self.mode = AppMode::Normal;
             }
             _ => {}
         }

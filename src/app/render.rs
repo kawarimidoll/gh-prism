@@ -44,6 +44,8 @@ const MERGE_DIALOG_WIDTH: u16 = 36;
 const MERGE_DIALOG_HEIGHT: u16 = 9;
 const CLOSE_DIALOG_WIDTH: u16 = 36;
 const CLOSE_DIALOG_HEIGHT: u16 = 5;
+const REACTION_DIALOG_WIDTH: u16 = 24;
+const REACTION_DIALOG_HEIGHT: u16 = 12;
 const HELP_DIALOG_WIDTH: u16 = 60;
 const HELP_DIALOG_MIN_HEIGHT: u16 = 20;
 const HELP_KEY_COLUMN_WIDTH: usize = 20;
@@ -182,6 +184,7 @@ impl App {
             AppMode::CloseConfirm => " [CLOSE] ",
             AppMode::Help => " [HELP] ",
             AppMode::MediaViewer => " [MEDIA] ",
+            AppMode::ReactionPicker => " [REACT] ",
         };
 
         let comments_badge = if self.review.pending_comments.is_empty() {
@@ -202,6 +205,7 @@ impl App {
             AppMode::QuitConfirm | AppMode::MergeConfirm | AppMode::CloseConfirm => Color::Red,
             AppMode::Help => Color::DarkGray,
             AppMode::MediaViewer => Color::DarkGray,
+            AppMode::ReactionPicker => Color::Cyan,
         };
         // CommentView / ReviewSubmit は明るい bg なので常に Black。
         // 他のモードはテーマに応じて White / Black を切り替え。
@@ -426,6 +430,7 @@ impl App {
             AppMode::QuitConfirm => self.render_quit_confirm_dialog(frame, area),
             AppMode::MergeConfirm => self.render_merge_confirm_dialog(frame, area),
             AppMode::CloseConfirm => self.render_close_confirm_dialog(frame, area),
+            AppMode::ReactionPicker => self.render_reaction_picker_dialog(frame, area),
             AppMode::Help => self.render_help_dialog(frame, area),
             AppMode::MediaViewer => self.render_media_viewer_overlay(frame, area),
             _ => {}
@@ -1912,6 +1917,54 @@ impl App {
         frame.render_widget(paragraph, dialog);
     }
 
+    fn render_reaction_picker_dialog(&self, frame: &mut Frame, area: Rect) {
+        let dialog = Self::centered_rect(REACTION_DIALOG_WIDTH, REACTION_DIALOG_HEIGHT, area);
+        Self::clear_wide_safe(frame, dialog, area);
+
+        // 現在の conversation entry の user_reaction_ids を取得
+        let user_ids = self
+            .conversation
+            .get(self.conversation_cursor)
+            .map(|e| &e.user_reaction_ids);
+
+        let mut lines = vec![Line::raw("")];
+
+        for (i, content) in ReactionContent::ALL.iter().enumerate() {
+            let is_selected = i == self.reaction_cursor;
+            let is_reacted = user_ids.is_some_and(|ids| ids.contains_key(content.api_value()));
+
+            let marker = if is_selected { "▶ " } else { "  " };
+            let check = if is_reacted { " ✓" } else { "" };
+
+            let style = match (is_selected, is_reacted) {
+                (true, _) => Style::default().fg(Color::Yellow),
+                (false, true) => Style::default().fg(Color::Green),
+                (false, false) => Style::default(),
+            };
+
+            let emoji = content.emoji();
+            let pad = " ".repeat(2_usize.saturating_sub(emoji.width()));
+            lines.push(Line::styled(
+                format!("{}{}{}  {}{}", marker, emoji, pad, content.label(), check),
+                style,
+            ));
+        }
+
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            " Enter: toggle  Esc: back",
+            Style::default().fg(Color::DarkGray),
+        ));
+
+        let paragraph = Paragraph::new(lines).block(
+            Block::default()
+                .title(" Add Reaction ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        );
+        frame.render_widget(paragraph, dialog);
+    }
+
     fn render_help_dialog(&mut self, frame: &mut Frame, area: Rect) {
         let dialog_height = (area.height * 2 / 3)
             .max(HELP_DIALOG_MIN_HEIGHT)
@@ -2020,6 +2073,7 @@ impl App {
                     ("", "Conversation"),
                     ("j / k", "Next / prev entry"),
                     ("c", "Reply / comment on PR"),
+                    ("e", "Add reaction"),
                     ("Ctrl+S", "Submit comment"),
                     ("Esc", "Back to PR description"),
                 ]);

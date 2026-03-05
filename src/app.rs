@@ -163,6 +163,10 @@ pub struct App {
     rainbow_mode: bool,
     /// 虹色アニメーションの tick カウンター
     rainbow_tick: u16,
+    /// リアクション Picker のカーソル位置
+    pub(crate) reaction_cursor: usize,
+    /// リアクション追加フラグ（draw 後に実行）
+    needs_add_reaction: Option<ReactionContent>,
 }
 
 /// API 呼び出しに必要な client と (owner, repo) を取得する。
@@ -314,6 +318,8 @@ impl App {
             konami_buffer: Vec::new(),
             rainbow_mode: false,
             rainbow_tick: 0,
+            reaction_cursor: 0,
+            needs_add_reaction: None,
         }
     }
 
@@ -688,6 +694,10 @@ impl App {
 
             if let Some(should_close) = self.needs_close_toggle.take() {
                 self.execute_close_toggle(should_close);
+            }
+
+            if let Some(content) = self.needs_add_reaction.take() {
+                self.execute_add_reaction(content);
             }
 
             self.handle_events()?;
@@ -1561,14 +1571,254 @@ impl App {
         self.status_message = Some(StatusMessage::info(label));
     }
 
+    /// リアクション Picker を開く
+    pub(crate) fn open_reaction_picker(&mut self) {
+        if self.loading.conversation == LoadPhase::Loading {
+            self.status_message =
+                Some(StatusMessage::error("✗ Conversation loading. Please wait."));
+            return;
+        }
+        let Some(entry) = self.conversation.get(self.conversation_cursor) else {
+            return;
+        };
+        match &entry.kind {
+            ConversationKind::IssueComment { comment_id } if *comment_id > 0 => {}
+            ConversationKind::CodeComment { .. } => {}
+            ConversationKind::Review { node_id, .. } if !node_id.is_empty() => {}
+            ConversationKind::IssueComment { .. } | ConversationKind::Review { .. } => {
+                self.status_message = Some(StatusMessage::error("✗ Comment is still being posted"));
+                return;
+            }
+        }
+        self.reaction_cursor = 0;
+        self.mode = AppMode::ReactionPicker;
+    }
+
+    /// リアクション追加を実行（楽観的更新パターン）
+    ///
+    /// Note: GitHub API のリアクションはトグル動作。既にリアクション済みなら削除される。
+    /// 楽観的更新では常に +1 するため、トグル削除時はカウントがずれる。
+    /// リロード (`R`) で正しいカウントに復元される。
+    fn execute_add_reaction(&mut self, content: ReactionContent) {
+        if self.inflight_rollback.is_some() || self.reloading {
+            self.status_message = Some(StatusMessage::error("Another operation is in progress"));
+            return;
+        }
+
+        let entry_index = self.conversation_cursor;
+        let Some(entry) = self.conversation.get(entry_index) else {
+            return;
+        };
+
+        // API 呼び出し先を決定
+        enum ReactionTarget {
+            IssueComment(u64),
+            ReviewComment(u64),
+            Review(String), // node_id for GraphQL
+        }
+        let target = match &entry.kind {
+            ConversationKind::IssueComment { comment_id } => {
+                ReactionTarget::IssueComment(*comment_id)
+            }
+            ConversationKind::CodeComment {
+                root_comment_id, ..
+            } => ReactionTarget::ReviewComment(*root_comment_id),
+            ConversationKind::Review { node_id, .. } => ReactionTarget::Review(node_id.clone()),
+        };
+
+        let old_reactions = entry.reactions.clone();
+        let old_user_reaction_ids = entry.user_reaction_ids.clone();
+        let api_value = content.api_value().to_string();
+
+        // トグル判定: 自分が既にこのリアクションをつけているか
+        let existing_reaction_id = entry.user_reaction_ids.get(&api_value).copied();
+        let is_remove = existing_reaction_id.is_some();
+
+        if self.demo_mode {
+            if is_remove {
+                self.apply_remove_reaction(entry_index, &content);
+            } else {
+                self.apply_add_reaction(entry_index, &content);
+            }
+            return;
+        }
+
+        let Some(tx) = self.api_tx.clone() else {
+            return;
+        };
+        let (client, owner, repo) = require_api!(self);
+        let owner = owner.to_string();
+        let repo = repo.to_string();
+        let client = client.clone();
+
+        let rollback = RollbackState::AddReaction {
+            entry_index,
+            old_reactions,
+            old_user_reaction_ids,
+        };
+
+        if is_remove {
+            self.apply_remove_reaction(entry_index, &content);
+        } else {
+            self.apply_add_reaction(entry_index, &content);
+        }
+        self.inflight_rollback = Some(rollback);
+
+        if is_remove {
+            // DELETE パス
+            match target {
+                ReactionTarget::IssueComment(comment_id) => {
+                    let reaction_id = existing_reaction_id.unwrap();
+                    tokio::spawn(async move {
+                        let result = comments::delete_reaction_from_issue_comment(
+                            &client,
+                            &owner,
+                            &repo,
+                            comment_id,
+                            reaction_id,
+                        )
+                        .await;
+                        Self::send_reaction_result(&tx, result);
+                    });
+                }
+                ReactionTarget::ReviewComment(comment_id) => {
+                    let reaction_id = existing_reaction_id.unwrap();
+                    tokio::spawn(async move {
+                        let result = comments::delete_reaction_from_review_comment(
+                            &client,
+                            &owner,
+                            &repo,
+                            comment_id,
+                            reaction_id,
+                        )
+                        .await;
+                        Self::send_reaction_result(&tx, result);
+                    });
+                }
+                ReactionTarget::Review(node_id) => {
+                    tokio::task::spawn_blocking(move || {
+                        let result = comments::remove_reaction_from_review(&node_id, &api_value);
+                        Self::send_reaction_result(&tx, result);
+                    });
+                }
+            }
+        } else {
+            // POST パス
+            match target {
+                ReactionTarget::IssueComment(comment_id) => {
+                    tokio::spawn(async move {
+                        let result = comments::post_reaction_to_issue_comment(
+                            &client, &owner, &repo, comment_id, &api_value,
+                        )
+                        .await;
+                        Self::send_reaction_result(&tx, result);
+                    });
+                }
+                ReactionTarget::ReviewComment(comment_id) => {
+                    tokio::spawn(async move {
+                        let result = comments::post_reaction_to_review_comment(
+                            &client, &owner, &repo, comment_id, &api_value,
+                        )
+                        .await;
+                        Self::send_reaction_result(&tx, result);
+                    });
+                }
+                ReactionTarget::Review(node_id) => {
+                    tokio::task::spawn_blocking(move || {
+                        let result = comments::post_reaction_to_review(&node_id, &api_value);
+                        Self::send_reaction_result(&tx, result);
+                    });
+                }
+            }
+        }
+    }
+
+    fn send_reaction_result(
+        tx: &mpsc::UnboundedSender<crate::AsyncData>,
+        result: color_eyre::Result<()>,
+    ) {
+        match result {
+            Ok(()) => {
+                let _ = tx.send(crate::AsyncData::OpSuccess(
+                    crate::OpId::AddReaction,
+                    crate::OpPayload::None,
+                ));
+            }
+            Err(e) => {
+                let _ = tx.send(crate::AsyncData::OpFailure(
+                    crate::OpId::AddReaction,
+                    format!("{e}"),
+                ));
+            }
+        }
+    }
+
+    /// リアクションカウントを +1 して UI を更新
+    fn apply_add_reaction(&mut self, entry_index: usize, content: &ReactionContent) {
+        let Some(entry) = self.conversation.get_mut(entry_index) else {
+            return;
+        };
+        let reactions = entry
+            .reactions
+            .get_or_insert_with(crate::github::comments::Reactions::default);
+        match content {
+            ReactionContent::PlusOne => reactions.plus_one += 1,
+            ReactionContent::MinusOne => reactions.minus_one += 1,
+            ReactionContent::Laugh => reactions.laugh += 1,
+            ReactionContent::Hooray => reactions.hooray += 1,
+            ReactionContent::Confused => reactions.confused += 1,
+            ReactionContent::Heart => reactions.heart += 1,
+            ReactionContent::Rocket => reactions.rocket += 1,
+            ReactionContent::Eyes => reactions.eyes += 1,
+        }
+        // user_reaction_ids に追加（reaction_id は未知なので 0）
+        entry
+            .user_reaction_ids
+            .insert(content.api_value().to_string(), 0);
+        self.conversation_rendered = None;
+        self.status_message = Some(StatusMessage::info(format!("✓ {} added", content.emoji())));
+    }
+
+    /// リアクションカウントを -1 して UI を更新（トグル削除）
+    fn apply_remove_reaction(&mut self, entry_index: usize, content: &ReactionContent) {
+        let Some(entry) = self.conversation.get_mut(entry_index) else {
+            return;
+        };
+        if let Some(reactions) = entry.reactions.as_mut() {
+            match content {
+                ReactionContent::PlusOne => {
+                    reactions.plus_one = reactions.plus_one.saturating_sub(1)
+                }
+                ReactionContent::MinusOne => {
+                    reactions.minus_one = reactions.minus_one.saturating_sub(1)
+                }
+                ReactionContent::Laugh => reactions.laugh = reactions.laugh.saturating_sub(1),
+                ReactionContent::Hooray => reactions.hooray = reactions.hooray.saturating_sub(1),
+                ReactionContent::Confused => {
+                    reactions.confused = reactions.confused.saturating_sub(1)
+                }
+                ReactionContent::Heart => reactions.heart = reactions.heart.saturating_sub(1),
+                ReactionContent::Rocket => reactions.rocket = reactions.rocket.saturating_sub(1),
+                ReactionContent::Eyes => reactions.eyes = reactions.eyes.saturating_sub(1),
+            }
+        }
+        entry.user_reaction_ids.remove(content.api_value());
+        self.conversation_rendered = None;
+        self.status_message = Some(StatusMessage::info(format!(
+            "✓ {} removed",
+            content.emoji()
+        )));
+    }
+
     /// issue comment の UI 適用
     fn apply_issue_comment(&mut self, author: String, body: String, created_at: String) {
         self.conversation.push(ConversationEntry {
             author,
             body,
             created_at,
-            kind: ConversationKind::IssueComment,
+            kind: ConversationKind::IssueComment { comment_id: 0 },
             reactions: None,
+            user_reaction_ids: HashMap::new(),
         });
         self.conversation_rendered = None;
         self.review.comment_editor.clear();
@@ -1656,8 +1906,12 @@ impl App {
                 author: self.current_user.clone(),
                 body: review_body,
                 created_at: now,
-                kind: ConversationKind::Review { state: verdict },
+                kind: ConversationKind::Review {
+                    state: verdict,
+                    node_id: String::new(),
+                },
                 reactions: None,
+                user_reaction_ids: HashMap::new(),
             });
             self.conversation_rendered = None;
         }
@@ -1850,12 +2104,14 @@ impl App {
                         issue_comments,
                         reviews,
                         review_threads,
+                        user_reactions,
                     } => {
                         self.apply_conversation_data(
                             review_comments,
                             issue_comments,
                             reviews,
                             review_threads,
+                            user_reactions,
                         );
                     }
                     crate::AsyncData::MediaData(media_cache) => {
@@ -1993,6 +2249,17 @@ impl App {
                 self.conversation_rendered = None;
                 self.visible_review_comment_cache = visible_cache;
             }
+            Some(RollbackState::AddReaction {
+                entry_index,
+                old_reactions,
+                old_user_reaction_ids,
+            }) => {
+                if let Some(entry) = self.conversation.get_mut(entry_index) {
+                    entry.reactions = old_reactions;
+                    entry.user_reaction_ids = old_user_reaction_ids;
+                }
+                self.conversation_rendered = None;
+            }
             None => {}
         }
 
@@ -2007,6 +2274,7 @@ impl App {
             crate::OpId::IssueComment => "Comment",
             crate::OpId::ReplyComment => "Reply",
             crate::OpId::SubmitReview => "Review",
+            crate::OpId::AddReaction => "Reaction",
             crate::OpId::Reload => "Reload",
         };
         self.status_message = Some(StatusMessage::error(format!(
@@ -2037,6 +2305,7 @@ impl App {
         issue_comments: Vec<crate::github::comments::IssueComment>,
         reviews: Vec<crate::github::review::ReviewSummary>,
         review_threads: Vec<ReviewThread>,
+        user_reactions: HashMap<u64, HashMap<String, u64>>,
     ) {
         // thread_map を再構築
         self.review.thread_map = review_threads
@@ -2052,8 +2321,25 @@ impl App {
         // conversation を構築（review_comments の所有権を渡す）
         // build_conversation が所有権を要求するため、self.review.review_comments 用に先に clone
         self.review.review_comments = review_comments.clone();
-        self.conversation =
+        let mut conversation =
             crate::build_conversation(issue_comments, reviews, review_comments, &review_threads);
+
+        // per-user リアクション情報を各エントリに適用
+        for entry in &mut conversation {
+            let comment_id = match &entry.kind {
+                ConversationKind::IssueComment { comment_id } => Some(*comment_id),
+                ConversationKind::CodeComment {
+                    root_comment_id, ..
+                } => Some(*root_comment_id),
+                _ => None,
+            };
+            if let Some(id) = comment_id
+                && let Some(reactions) = user_reactions.get(&id)
+            {
+                entry.user_reaction_ids = reactions.clone();
+            }
+        }
+        self.conversation = conversation;
 
         // レンダリングキャッシュ無効化
         self.conversation_rendered = None;
