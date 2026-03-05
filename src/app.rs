@@ -44,6 +44,7 @@ pub struct App {
     pr_head_branch: String,
     pr_created_at: String,
     pr_state: PrState,
+    pub(crate) mergeable_state: Option<MergeableStatus>,
     commits: Vec<CommitInfo>,
     commit_list_state: ListState,
     files_map: HashMap<String, Vec<DiffFile>>,
@@ -199,6 +200,7 @@ impl App {
         pr_head_branch: String,
         pr_created_at: String,
         pr_state: PrState,
+        mergeable_state: Option<MergeableStatus>,
         commits: Vec<CommitInfo>,
         files_map: HashMap<String, Vec<DiffFile>>,
         review_comments: Vec<ReviewComment>,
@@ -252,6 +254,7 @@ impl App {
             pr_head_branch,
             pr_created_at,
             pr_state,
+            mergeable_state,
             commits,
             commit_list_state,
             files_map,
@@ -334,6 +337,16 @@ impl App {
             &ReviewEvent::ALL[..1]
         } else {
             &ReviewEvent::ALL
+        }
+    }
+
+    /// マージ不可の理由を返す（マージ可能なら None）
+    fn merge_blocked_reason(&self) -> Option<&'static str> {
+        match self.mergeable_state {
+            Some(MergeableStatus::Dirty) => Some("conflicts exist"),
+            Some(MergeableStatus::Blocked) => Some("blocked by branch protection"),
+            None => Some("mergeable status is being calculated"),
+            _ => None,
         }
     }
 
@@ -1990,6 +2003,7 @@ impl App {
         self.pr_head_branch = data.metadata.pr_head_branch;
         self.pr_created_at = data.metadata.pr_created_at;
         self.pr_state = data.metadata.pr_state;
+        self.mergeable_state = data.metadata.mergeable_state;
 
         // コミット・ファイル・コメントを差し替え
         self.commits = data.commits;
@@ -2599,6 +2613,7 @@ mod tests {
                 String::new(),
                 String::new(),
                 PrState::Open,
+                None, // mergeable_state
                 self.commits,
                 self.files_map,
                 self.review_comments,
@@ -5086,5 +5101,72 @@ mod tests {
             app.status_message.as_ref().unwrap().level,
             StatusLevel::Error
         );
+    }
+
+    #[test]
+    fn test_merge_blocked_when_dirty() {
+        let mut app = TestAppBuilder::new().with_commits().build();
+        app.mergeable_state = Some(MergeableStatus::Dirty);
+        app.can_merge = true;
+
+        // Mキーを押す
+        app.handle_normal_mode(KeyCode::Char('M'), KeyModifiers::NONE);
+
+        // MergeConfirm モードにならないこと
+        assert_eq!(app.mode, AppMode::Normal);
+        assert!(
+            app.status_message
+                .as_ref()
+                .unwrap()
+                .body
+                .contains("conflicts")
+        );
+    }
+
+    #[test]
+    fn test_merge_blocked_when_blocked() {
+        let mut app = TestAppBuilder::new().with_commits().build();
+        app.mergeable_state = Some(MergeableStatus::Blocked);
+        app.can_merge = true;
+
+        app.handle_normal_mode(KeyCode::Char('M'), KeyModifiers::NONE);
+
+        assert_eq!(app.mode, AppMode::Normal);
+        assert!(
+            app.status_message
+                .as_ref()
+                .unwrap()
+                .body
+                .contains("branch protection")
+        );
+    }
+
+    #[test]
+    fn test_merge_blocked_when_none() {
+        let mut app = TestAppBuilder::new().with_commits().build();
+        app.mergeable_state = None;
+        app.can_merge = true;
+
+        app.handle_normal_mode(KeyCode::Char('M'), KeyModifiers::NONE);
+
+        assert_eq!(app.mode, AppMode::Normal);
+        assert!(
+            app.status_message
+                .as_ref()
+                .unwrap()
+                .body
+                .contains("being calculated")
+        );
+    }
+
+    #[test]
+    fn test_merge_allowed_when_clean() {
+        let mut app = TestAppBuilder::new().with_commits().build();
+        app.mergeable_state = Some(MergeableStatus::Clean);
+        app.can_merge = true;
+
+        app.handle_normal_mode(KeyCode::Char('M'), KeyModifiers::NONE);
+
+        assert_eq!(app.mode, AppMode::MergeConfirm);
     }
 }

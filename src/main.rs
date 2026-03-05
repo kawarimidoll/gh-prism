@@ -3,7 +3,10 @@ mod demo;
 mod git;
 mod github;
 
-use app::{App, CodeCommentReply, ConversationEntry, ConversationKind, ReviewVerdict, ThemeMode};
+use app::{
+    App, CodeCommentReply, ConversationEntry, ConversationKind, MergeableStatus, ReviewVerdict,
+    ThemeMode,
+};
 use clap::Parser;
 use color_eyre::Result;
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -27,6 +30,7 @@ pub struct PrMetadata {
     pub pr_head_branch: String,
     pub pr_created_at: String,
     pub pr_state: app::PrState,
+    pub mergeable_state: Option<MergeableStatus>,
 }
 
 pub fn extract_pr_metadata(pr: &PullRequest) -> PrMetadata {
@@ -56,6 +60,19 @@ pub fn extract_pr_metadata(pr: &PullRequest) -> PrMetadata {
                 _ => app::PrState::Closed,
             }
         },
+        mergeable_state: pr.mergeable_state.as_ref().map(|s| {
+            use octocrab::models::pulls::MergeableState;
+            match s {
+                MergeableState::Clean | MergeableState::HasHooks => MergeableStatus::Clean,
+                MergeableState::Unstable => MergeableStatus::Unstable,
+                MergeableState::Behind => MergeableStatus::Behind,
+                MergeableState::Blocked => MergeableStatus::Blocked,
+                MergeableState::Dirty => MergeableStatus::Dirty,
+                MergeableState::Draft => MergeableStatus::Draft,
+                MergeableState::Unknown => MergeableStatus::Unknown,
+                _ => MergeableStatus::Unknown,
+            }
+        }),
     }
 }
 
@@ -780,6 +797,7 @@ async fn run() -> Result<()> {
         metadata.pr_head_branch,
         metadata.pr_created_at,
         metadata.pr_state,
+        metadata.mergeable_state,
         commits,
         files_map,
         Vec::new(), // review_comments: Phase B で到着
@@ -889,6 +907,7 @@ async fn run_demo(cli: Cli) -> Result<()> {
         metadata.pr_head_branch,
         metadata.pr_created_at,
         metadata.pr_state,
+        metadata.mergeable_state,
         commits,
         HashMap::new(), // files_map: Phase B で到着
         Vec::new(),     // review_comments: Phase B で到着

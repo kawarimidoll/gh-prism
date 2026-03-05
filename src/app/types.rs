@@ -140,6 +140,17 @@ impl std::fmt::Display for PrState {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MergeableStatus {
+    Clean,
+    Unstable,
+    Behind,
+    Blocked,
+    Dirty,
+    Draft,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StatusLevel {
     Info,
     Error,

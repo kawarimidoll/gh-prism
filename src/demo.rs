@@ -1,5 +1,5 @@
 use crate::PrMetadata;
-use crate::app::PrState;
+use crate::app::{MergeableStatus, PrState};
 use crate::github::comments::{
     IssueComment, Reactions, ReviewComment, ReviewCommentUser, ReviewThread,
 };
@@ -52,6 +52,7 @@ Add dark mode support to the application with automatic OS-level detection.
         pr_head_branch: "feature/dark-mode".to_string(),
         pr_created_at: "2025-03-01 10:30 +0900".to_string(),
         pr_state: PrState::Open,
+        mergeable_state: Some(MergeableStatus::Clean),
     }
 }
 

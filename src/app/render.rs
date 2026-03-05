@@ -721,17 +721,23 @@ impl App {
     fn render_info_pane(&self, frame: &mut Frame, area: Rect) {
         let mut lines: Vec<Line> = Vec::new();
 
-        // Status (Open/Merged/Closed)
+        // Status (Open/Merged/Closed) — コンフリクト時は Open (CONFLICT) と表示
         {
             let state_color = match self.pr_state {
                 PrState::Open => Color::Green,
                 PrState::Merged => Color::Magenta,
                 PrState::Closed => Color::Red,
             };
-            lines.push(Line::from(vec![
+            let mut spans = vec![
                 Span::raw(" Status:  "),
                 Span::styled(self.pr_state.to_string(), Style::default().fg(state_color)),
-            ]));
+            ];
+            if self.pr_state == PrState::Open
+                && self.mergeable_state == Some(MergeableStatus::Dirty)
+            {
+                spans.push(Span::styled(" (CONFLICT)", Style::default().fg(Color::Red)));
+            }
+            lines.push(Line::from(spans));
         }
 
         // Author

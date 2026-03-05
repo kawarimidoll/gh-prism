@@ -499,6 +499,9 @@ impl App {
                         "✗ Cannot merge: PR is {}",
                         self.pr_state
                     )));
+                } else if let Some(reason) = self.merge_blocked_reason() {
+                    self.status_message =
+                        Some(StatusMessage::error(format!("✗ Cannot merge: {reason}")));
                 } else if self.is_async_loading() {
                     self.status_message = Some(StatusMessage::error(
                         "✗ Initial loading in progress. Please wait.",
