@@ -270,6 +270,7 @@ pub struct CodeCommentReply {
     pub author: String,
     pub body: String,
     pub created_at: String,
+    pub reactions: Option<crate::github::comments::Reactions>,
 }
 
 /// Conversation エントリの種別
@@ -297,6 +298,7 @@ pub struct ConversationEntry {
     pub body: String,
     pub created_at: String,
     pub kind: ConversationKind,
+    pub reactions: Option<crate::github::comments::Reactions>,
 }
 
 /// 非同期データ取得の進行状態

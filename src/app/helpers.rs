@@ -84,6 +84,40 @@ impl App {
     }
 }
 
+/// リアクション行をスタイル付き Line として構築する
+/// `user_reaction_ids` に含まれる（自分がリアクション済みの）絵文字は Yellow + Bold でハイライト
+pub(super) fn build_reaction_line<'a>(
+    reactions: &crate::github::comments::Reactions,
+    user_reaction_ids: &std::collections::HashMap<String, u64>,
+    indent: &str,
+) -> Option<Line<'a>> {
+    let pairs = reactions.non_zero();
+    if pairs.is_empty() {
+        return None;
+    }
+
+    let dim = Style::default().fg(Color::DarkGray);
+    let highlight = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+
+    let mut spans: Vec<Span<'a>> = vec![Span::raw(indent.to_string())];
+    for (i, (emoji, api_val, count)) in pairs.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("  ", dim));
+        }
+        let pad = " ".repeat(2_usize.saturating_sub(UnicodeWidthStr::width(*emoji)));
+        let text = format!("{}{} {}", emoji, pad, count);
+        let style = if user_reaction_ids.contains_key(*api_val) {
+            highlight
+        } else {
+            dim
+        };
+        spans.push(Span::styled(text, style));
+    }
+    Some(Line::from(spans))
+}
+
 /// URL をシステムのデフォルトブラウザで開く
 pub(super) fn open_url_in_browser(url: &str) {
     #[cfg(target_os = "macos")]

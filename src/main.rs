@@ -323,6 +323,7 @@ pub fn build_conversation(
             body: c.body.unwrap_or_default(),
             created_at: c.created_at,
             kind: ConversationKind::IssueComment,
+            reactions: c.reactions,
         });
     }
 
@@ -341,6 +342,7 @@ pub fn build_conversation(
             body: body.to_string(),
             created_at: submitted_at.to_string(),
             kind: ConversationKind::Review { state: r.state },
+            reactions: None,
         });
     }
 
@@ -367,6 +369,7 @@ pub fn build_conversation(
                     author: r.user.login.clone(),
                     body: r.body.clone(),
                     created_at: r.created_at.clone(),
+                    reactions: r.reactions.clone(),
                 });
             }
         }
@@ -389,6 +392,7 @@ pub fn build_conversation(
                 thread_node_id: thread_info.map(|t| t.node_id.clone()),
                 root_comment_id: root.id,
             },
+            reactions: root.reactions.clone(),
         });
     }
 
@@ -841,6 +845,7 @@ mod tests {
             created_at: created_at.to_string(),
             in_reply_to_id,
             pull_request_review_id,
+            reactions: None,
         }
     }
 
@@ -903,6 +908,7 @@ mod tests {
                 login: "user1".to_string(),
             },
             created_at: "2024-01-01T02:00:00Z".to_string(),
+            reactions: None,
         };
         let code = make_review_comment(
             1,
@@ -1010,6 +1016,7 @@ mod tests {
                 login: "user1".to_string(),
             },
             created_at: "2024-01-01T02:00:00Z".to_string(),
+            reactions: None,
         };
 
         // Review id=1000 の submitted_at は 03:00

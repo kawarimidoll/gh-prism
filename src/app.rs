@@ -758,7 +758,7 @@ impl App {
                 ];
 
                 // Review の場合は state ラベルを追加（COMMENTED は非表示）
-                if let ConversationKind::Review { state } = entry.kind {
+                if let ConversationKind::Review { state, .. } = entry.kind {
                     let label_opt = match state {
                         ReviewVerdict::Approved => Some(("APPROVED", Color::Green)),
                         ReviewVerdict::ChangesRequested => Some(("CHANGES REQUESTED", Color::Red)),
@@ -804,6 +804,15 @@ impl App {
                     lines.extend(markdown::render_markdown(&entry.body, self.theme));
                 }
 
+                // エントリ本文のリアクション行（自分のリアクションをハイライト）
+                if let Some(reaction_line) = entry
+                    .reactions
+                    .as_ref()
+                    .and_then(|r| helpers::build_reaction_line(r, &entry.user_reaction_ids, "  "))
+                {
+                    lines.push(reaction_line);
+                }
+
                 // CodeComment のリプライを描画
                 if let ConversationKind::CodeComment { ref replies, .. } = entry.kind {
                     for reply in replies {
@@ -821,6 +830,15 @@ impl App {
                         if !reply.body.is_empty() {
                             // リプライ本文もマークダウンレンダリング
                             lines.extend(markdown::render_markdown(&reply.body, self.theme));
+                        }
+                        // リプライのリアクション行
+                        if let Some(line_str) = reply
+                            .reactions
+                            .as_ref()
+                            .and_then(|r| r.display_line("    "))
+                        {
+                            lines
+                                .push(Line::styled(line_str, Style::default().fg(Color::DarkGray)));
                         }
                     }
                 }
@@ -1550,6 +1568,7 @@ impl App {
             body,
             created_at,
             kind: ConversationKind::IssueComment,
+            reactions: None,
         });
         self.conversation_rendered = None;
         self.review.comment_editor.clear();
@@ -1577,6 +1596,7 @@ impl App {
                     author,
                     body,
                     created_at,
+                    reactions: None,
                 });
                 break;
             }
@@ -1615,6 +1635,7 @@ impl App {
                 created_at: now.clone(),
                 in_reply_to_id: None,
                 pull_request_review_id: None,
+                reactions: None,
             };
             self.review.review_comments.push(rc);
         }
@@ -1636,6 +1657,7 @@ impl App {
                 body: review_body,
                 created_at: now,
                 kind: ConversationKind::Review { state: verdict },
+                reactions: None,
             });
             self.conversation_rendered = None;
         }
@@ -3554,6 +3576,7 @@ mod tests {
             created_at: "2025-01-01T00:00:00Z".to_string(),
             in_reply_to_id: None,
             pull_request_review_id: None,
+            reactions: None,
         }
     }
 

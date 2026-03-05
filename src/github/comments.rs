@@ -1,8 +1,72 @@
 use color_eyre::Result;
 use octocrab::Octocrab;
 use serde::{Deserialize, Serialize};
+use unicode_width::UnicodeWidthStr;
 
 const REVIEW_THREADS_PAGE_SIZE: u32 = 100;
+
+/// GitHub API が返す reactions オブジェクト
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Reactions {
+    #[serde(rename = "+1")]
+    pub plus_one: u32,
+    #[serde(rename = "-1")]
+    pub minus_one: u32,
+    pub laugh: u32,
+    pub hooray: u32,
+    pub confused: u32,
+    pub heart: u32,
+    pub rocket: u32,
+    pub eyes: u32,
+}
+
+impl Reactions {
+    /// カウント > 0 の reaction を (emoji, api_value, count) のリストで返す
+    pub fn non_zero(&self) -> Vec<(&str, &str, u32)> {
+        if self.is_empty() {
+            return Vec::new();
+        }
+        let all = [
+            ("👍", "+1", self.plus_one),
+            ("👎", "-1", self.minus_one),
+            ("😄", "laugh", self.laugh),
+            ("🎉", "hooray", self.hooray),
+            ("😕", "confused", self.confused),
+            ("🩷", "heart", self.heart),
+            ("🚀", "rocket", self.rocket),
+            ("👀", "eyes", self.eyes),
+        ];
+        all.into_iter().filter(|(_, _, c)| *c > 0).collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.plus_one == 0
+            && self.minus_one == 0
+            && self.laugh == 0
+            && self.hooray == 0
+            && self.confused == 0
+            && self.heart == 0
+            && self.rocket == 0
+            && self.eyes == 0
+    }
+
+    /// リアクション行を表示用文字列として返す（カウント0のものは除外）
+    pub fn display_line(&self, indent: &str) -> Option<String> {
+        let pairs = self.non_zero();
+        if pairs.is_empty() {
+            return None;
+        }
+        let reaction_str: String = pairs
+            .iter()
+            .map(|(emoji, _, count)| {
+                let pad = " ".repeat(2_usize.saturating_sub(emoji.width()));
+                format!("{}{} {}", emoji, pad, count)
+            })
+            .collect::<Vec<_>>()
+            .join("  ");
+        Some(format!("{}{}", indent, reaction_str))
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewThread {
@@ -168,6 +232,7 @@ pub struct ReviewComment {
     pub created_at: String,
     pub in_reply_to_id: Option<u64>,
     pub pull_request_review_id: Option<u64>,
+    pub reactions: Option<Reactions>,
 }
 
 pub async fn fetch_review_comments(
@@ -189,6 +254,7 @@ pub struct IssueComment {
     pub body: Option<String>,
     pub user: ReviewCommentUser,
     pub created_at: String,
+    pub reactions: Option<Reactions>,
 }
 
 /// Pull Request Review Comments API で既存コメントスレッドに返信を投稿

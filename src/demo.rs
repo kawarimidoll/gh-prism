@@ -1,6 +1,8 @@
 use crate::PrMetadata;
 use crate::app::PrState;
-use crate::github::comments::{IssueComment, ReviewComment, ReviewCommentUser, ReviewThread};
+use crate::github::comments::{
+    IssueComment, Reactions, ReviewComment, ReviewCommentUser, ReviewThread,
+};
 use crate::github::commits::{CommitAuthor, CommitDetail, CommitInfo};
 use crate::github::files::{DiffFile, FileStatus};
 use crate::github::review::ReviewSummary;
@@ -319,6 +321,11 @@ pub fn demo_review_comments() -> Vec<ReviewComment> {
             created_at: "2025-03-02T10:00:00Z".to_string(),
             in_reply_to_id: None,
             pull_request_review_id: Some(5001),
+            reactions: Some(Reactions {
+                plus_one: 2,
+                heart: 1,
+                ..Default::default()
+            }),
         },
         // Thread 1: reply from author
         ReviewComment {
@@ -336,6 +343,10 @@ pub fn demo_review_comments() -> Vec<ReviewComment> {
             created_at: "2025-03-02T11:00:00Z".to_string(),
             in_reply_to_id: Some(1001),
             pull_request_review_id: None,
+            reactions: Some(Reactions {
+                plus_one: 1,
+                ..Default::default()
+            }),
         },
         // Thread 2: unresolved - timeout concern (root)
         ReviewComment {
@@ -353,6 +364,11 @@ pub fn demo_review_comments() -> Vec<ReviewComment> {
             created_at: "2025-03-02T12:00:00Z".to_string(),
             in_reply_to_id: None,
             pull_request_review_id: Some(5002),
+            reactions: Some(Reactions {
+                plus_one: 3,
+                rocket: 1,
+                ..Default::default()
+            }),
         },
         // Thread 3: resolved - naming convention (root)
         ReviewComment {
@@ -370,6 +386,7 @@ pub fn demo_review_comments() -> Vec<ReviewComment> {
             created_at: "2025-03-02T10:30:00Z".to_string(),
             in_reply_to_id: None,
             pull_request_review_id: Some(5001),
+            reactions: None,
         },
         // Thread 3: reply + resolved
         ReviewComment {
@@ -387,6 +404,7 @@ pub fn demo_review_comments() -> Vec<ReviewComment> {
             created_at: "2025-03-02T13:00:00Z".to_string(),
             in_reply_to_id: Some(1004),
             pull_request_review_id: None,
+            reactions: None,
         },
     ]
 }
@@ -403,6 +421,11 @@ pub fn demo_issue_comments() -> Vec<IssueComment> {
                 login: "curious-user".to_string(),
             },
             created_at: "2025-03-01T15:00:00Z".to_string(),
+            reactions: Some(Reactions {
+                plus_one: 3,
+                rocket: 1,
+                ..Default::default()
+            }),
         },
         IssueComment {
             id: 2002,
@@ -414,6 +437,12 @@ pub fn demo_issue_comments() -> Vec<IssueComment> {
                 login: "octocat".to_string(),
             },
             created_at: "2025-03-01T16:00:00Z".to_string(),
+            reactions: Some(Reactions {
+                plus_one: 2,
+                heart: 1,
+                hooray: 1,
+                ..Default::default()
+            }),
         },
     ]
 }
@@ -422,6 +451,7 @@ pub fn demo_reviews() -> Vec<ReviewSummary> {
     vec![
         ReviewSummary {
             id: 5001,
+            node_id: "PRR_demo_001".to_string(),
             user: ReviewCommentUser {
                 login: "reviewer-alice".to_string(),
             },
@@ -430,9 +460,11 @@ pub fn demo_reviews() -> Vec<ReviewSummary> {
             ),
             state: ReviewVerdict::ChangesRequested,
             submitted_at: Some("2025-03-02T10:00:00Z".to_string()),
+            reactions: None,
         },
         ReviewSummary {
             id: 5002,
+            node_id: "PRR_demo_002".to_string(),
             user: ReviewCommentUser {
                 login: "reviewer-bob".to_string(),
             },
@@ -442,6 +474,11 @@ pub fn demo_reviews() -> Vec<ReviewSummary> {
             ),
             state: ReviewVerdict::Approved,
             submitted_at: Some("2025-03-02T12:00:00Z".to_string()),
+            reactions: Some(Reactions {
+                plus_one: 1,
+                heart: 1,
+                ..Default::default()
+            }),
         },
     ]
 }

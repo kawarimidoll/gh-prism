@@ -92,10 +92,14 @@ pub fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReviewSummary {
     pub id: u64,
+    pub node_id: String,
     pub user: ReviewCommentUser,
     pub body: Option<String>,
     pub state: ReviewVerdict,
     pub submitted_at: Option<String>,
+    /// REST API は reviews にリアクションを含めないため、GraphQL で補完後にセットされる
+    #[serde(skip)]
+    pub reactions: Option<crate::github::comments::Reactions>,
 }
 
 /// PR Reviews API でレビュー一覧を取得
@@ -108,6 +112,78 @@ pub async fn fetch_reviews(
     let url = format!("/repos/{}/{}/pulls/{}/reviews", owner, repo, pr_number);
     let reviews: Vec<ReviewSummary> = client.get(url, None::<&()>).await?;
     Ok(reviews)
+}
+
+/// GraphQL で各レビューのリアクション情報を取得し、ReviewSummary に補完する
+/// REST API `/pulls/{}/reviews` はリアクションを返さないため GraphQL で取得する
+pub fn populate_review_reactions(
+    reviews: &mut [ReviewSummary],
+    owner: &str,
+    repo: &str,
+    pr_number: u64,
+) {
+    let query = format!(
+        r#"query {{ repository(owner: "{owner}", name: "{repo}") {{ pullRequest(number: {pr_number}) {{ reviews(last: 100) {{ nodes {{ databaseId reactions(first: 100) {{ nodes {{ content }} }} }} }} }} }} }}"#
+    );
+
+    let output = match std::process::Command::new("gh")
+        .args(["api", "graphql", "-f", &format!("query={query}")])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return,
+    };
+
+    let json: serde_json::Value = match serde_json::from_slice(&output.stdout) {
+        Ok(v) => v,
+        _ => return,
+    };
+
+    let Some(nodes) = json
+        .pointer("/data/repository/pullRequest/reviews/nodes")
+        .and_then(|v| v.as_array())
+    else {
+        return;
+    };
+
+    // databaseId → Reactions のマップを構築
+    let mut reaction_map: HashMap<u64, crate::github::comments::Reactions> = HashMap::new();
+    for node in nodes {
+        let Some(db_id) = node.get("databaseId").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        let Some(reaction_nodes) = node.pointer("/reactions/nodes").and_then(|v| v.as_array())
+        else {
+            continue;
+        };
+        if reaction_nodes.is_empty() {
+            continue;
+        }
+        let mut reactions = crate::github::comments::Reactions::default();
+        for rn in reaction_nodes {
+            if let Some(content) = rn.get("content").and_then(|v| v.as_str()) {
+                match content {
+                    "THUMBS_UP" => reactions.plus_one += 1,
+                    "THUMBS_DOWN" => reactions.minus_one += 1,
+                    "LAUGH" => reactions.laugh += 1,
+                    "HOORAY" => reactions.hooray += 1,
+                    "CONFUSED" => reactions.confused += 1,
+                    "HEART" => reactions.heart += 1,
+                    "ROCKET" => reactions.rocket += 1,
+                    "EYES" => reactions.eyes += 1,
+                    _ => {}
+                }
+            }
+        }
+        reaction_map.insert(db_id, reactions);
+    }
+
+    // ReviewSummary にマージ
+    for review in reviews.iter_mut() {
+        if let Some(reactions) = reaction_map.remove(&review.id) {
+            review.reactions = Some(reactions);
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
