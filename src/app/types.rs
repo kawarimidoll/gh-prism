@@ -346,3 +346,35 @@ impl Default for DiffViewState {
         }
     }
 }
+
+/// 楽観的更新のロールバック状態
+pub enum RollbackState {
+    Merge {
+        pr_state: PrState,
+    },
+    CloseToggle {
+        pr_state: PrState,
+    },
+    ResolveToggle {
+        root_comment_id: u64,
+        thread_node_id: String,
+        was_resolved: bool,
+    },
+    IssueComment {
+        editor_text: String,
+        conversation_len: usize,
+    },
+    ReplyComment {
+        editor_text: String,
+        in_reply_to: u64,
+        entry_index: usize,
+        reply_count_before: usize,
+    },
+    SubmitReview {
+        pending_comments: Vec<crate::github::review::PendingComment>,
+        review_body: String,
+        review_comments_len: usize,
+        conversation_len: usize,
+        visible_cache: std::collections::HashMap<(String, String), usize>,
+    },
+}

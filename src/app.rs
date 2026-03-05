@@ -29,7 +29,6 @@ use ratatui::{
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
 use std::collections::{HashMap, HashSet};
-use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
 pub struct App {
@@ -146,6 +145,12 @@ pub struct App {
     cache_written: bool,
     /// デモモードフラグ（API 呼び出しをスキップし、UI 操作のみエミュレート）
     pub(crate) demo_mode: bool,
+    /// 楽観的更新の API 結果送信チャネル
+    pub(crate) api_tx: Option<mpsc::UnboundedSender<crate::AsyncData>>,
+    /// 楽観的更新のロールバック状態
+    inflight_rollback: Option<RollbackState>,
+    /// リロード中フラグ
+    reloading: bool,
     /// Conversation ペインのエントリカーソル位置
     conversation_cursor: usize,
     /// Conversation エントリごとの論理行オフセット（ensure_conversation_rendered で計算）
@@ -300,6 +305,9 @@ impl App {
             head_sha,
             cache_written,
             demo_mode: false,
+            api_tx: None,
+            inflight_rollback: None,
+            reloading: false,
             conversation_cursor: 0,
             conversation_entry_offsets: Vec::new(),
             conversation_visual_offsets: Vec::new(),
@@ -1044,212 +1052,185 @@ impl App {
 
     /// レビューを GitHub PR Review API に送信
     fn submit_review_with_event(&mut self, event: ReviewEvent) {
-        // COMMENT はコメントが必要
         if event == ReviewEvent::Comment && self.review.pending_comments.is_empty() {
             return;
         }
 
+        if self.inflight_rollback.is_some() || self.reloading {
+            self.status_message = Some(StatusMessage::error("Another operation is in progress"));
+            return;
+        }
+
         if self.demo_mode {
-            let count = self.review.pending_comments.len();
-            let now = chrono::Local::now()
-                .format("%Y-%m-%dT%H:%M:%SZ")
-                .to_string();
-
-            // PendingComment → ReviewComment に変換して review_comments に追加
-            let demo_id_base = self.review.review_comments.len() as u64 + 9000;
-            for (i, pc) in self.review.pending_comments.drain(..).enumerate() {
-                let rc = ReviewComment {
-                    id: demo_id_base + i as u64,
-                    body: pc.body.clone(),
-                    path: pc.file_path.clone(),
-                    line: Some(pc.end_line),
-                    start_line: if pc.start_line != pc.end_line {
-                        Some(pc.start_line)
-                    } else {
-                        None
-                    },
-                    side: Some("RIGHT".to_string()),
-                    start_side: None,
-                    commit_id: pc.commit_sha.clone(),
-                    user: ReviewCommentUser {
-                        login: self.current_user.clone(),
-                    },
-                    created_at: now.clone(),
-                    in_reply_to_id: None,
-                    pull_request_review_id: None,
-                };
-                self.review.review_comments.push(rc);
-            }
-
-            // visible_review_comment_cache を再計算
-            self.visible_review_comment_cache =
-                Self::build_visible_comment_cache(&self.review.review_comments, &self.files_map);
-
-            // Review エントリを conversation に追加
-            let verdict = match event {
-                ReviewEvent::Approve => ReviewVerdict::Approved,
-                ReviewEvent::RequestChanges => ReviewVerdict::ChangesRequested,
-                ReviewEvent::Comment => ReviewVerdict::Commented,
-            };
-            let review_body = self.review.review_body_editor.text();
-            if !review_body.trim().is_empty() || verdict != ReviewVerdict::Commented {
-                self.conversation.push(ConversationEntry {
-                    author: self.current_user.clone(),
-                    body: review_body,
-                    created_at: now,
-                    kind: ConversationKind::Review { state: verdict },
-                });
-                self.conversation_rendered = None;
-            }
-
-            self.review.review_body_editor.clear();
-            let msg = if count > 0 {
-                format!(
-                    "✓ {} ({} comment{})",
-                    event.label(),
-                    count,
-                    if count == 1 { "" } else { "s" }
-                )
-            } else {
-                format!("✓ {}", event.label())
-            };
-            self.status_message = Some(StatusMessage::info(msg));
+            self.apply_review_submit(event);
             return;
         }
 
         let (client, owner, repo) = require_api!(self);
-
-        // HEAD コミットの SHA を取得
-        let Some(head_sha) = self.commits.last().map(|c| c.sha.as_str()) else {
+        let Some(head_sha) = self.commits.last().map(|c| c.sha.clone()) else {
             self.status_message = Some(StatusMessage::error("✗ No commits available"));
             return;
         };
-
-        let count = self.review.pending_comments.len();
-        let ctx = review::ReviewContext {
-            client,
-            owner,
-            repo,
-            pr_number: self.pr_number,
+        let Some(tx) = self.api_tx.clone() else {
+            return;
         };
 
-        // 同期ループ内から async を呼ぶ
-        let result = tokio::task::block_in_place(|| {
-            Handle::current().block_on(review::submit_review(
-                &ctx,
-                head_sha,
-                &self.review.pending_comments,
-                &self.files_map,
-                event,
-                &self.review.review_body_editor.text(),
-            ))
-        });
+        // ロールバック状態を保存（apply が drain する前に）
+        let rollback = RollbackState::SubmitReview {
+            pending_comments: self.review.pending_comments.clone(),
+            review_body: self.review.review_body_editor.text(),
+            review_comments_len: self.review.review_comments.len(),
+            conversation_len: self.conversation.len(),
+            visible_cache: self.visible_review_comment_cache.clone(),
+        };
+        let RollbackState::SubmitReview {
+            ref pending_comments,
+            ref review_body,
+            ..
+        } = rollback
+        else {
+            unreachable!();
+        };
+        let pending_comments = pending_comments.clone();
+        let review_body = review_body.clone();
+        let files_map = self.files_map.clone();
+        let client = client.clone();
+        let owner = owner.to_string();
+        let repo = repo.to_string();
+        let pr_number = self.pr_number;
 
-        match result {
-            Ok(()) => {
-                let msg = if count > 0 {
-                    format!(
-                        "✓ {} ({} comment{})",
-                        event.label(),
-                        count,
-                        if count == 1 { "" } else { "s" }
-                    )
-                } else {
-                    format!("✓ {}", event.label())
-                };
-                self.status_message = Some(StatusMessage::info(msg));
-                self.review.pending_comments.clear();
-                self.review.review_body_editor.clear();
+        self.apply_review_submit(event);
+
+        self.inflight_rollback = Some(rollback);
+        tokio::spawn(async move {
+            let ctx = review::ReviewContext {
+                client: &client,
+                owner: &owner,
+                repo: &repo,
+                pr_number,
+            };
+            match review::submit_review(
+                &ctx,
+                &head_sha,
+                &pending_comments,
+                &files_map,
+                event,
+                &review_body,
+            )
+            .await
+            {
+                Ok(()) => {
+                    let _ = tx.send(crate::AsyncData::OpSuccess(
+                        crate::OpId::SubmitReview,
+                        crate::OpPayload::None,
+                    ));
+                }
+                Err(e) => {
+                    let _ = tx.send(crate::AsyncData::OpFailure(
+                        crate::OpId::SubmitReview,
+                        format!("{e}"),
+                    ));
+                }
             }
-            Err(e) => {
-                self.status_message = Some(StatusMessage::error(format!("✗ Failed: {}", e)));
-            }
-        }
+        });
     }
 
     /// PR をマージする
     fn execute_merge(&mut self, method: MergeMethod) {
+        if self.inflight_rollback.is_some() || self.reloading {
+            self.status_message = Some(StatusMessage::error("Another operation is in progress"));
+            return;
+        }
+
         if self.demo_mode {
-            self.pr_state = PrState::Merged;
-            self.status_message = Some(StatusMessage::info(format!(
-                "✓ Merged via {}",
-                method.label()
-            )));
+            self.apply_merge(method);
             return;
         }
 
         let (client, owner, repo) = require_api!(self);
+        let Some(tx) = self.api_tx.clone() else {
+            return;
+        };
 
-        let result = tokio::task::block_in_place(|| {
-            Handle::current().block_on(crate::github::pr::merge_pr(
-                client,
-                owner,
-                repo,
-                self.pr_number,
-                method,
-            ))
+        let rollback = RollbackState::Merge {
+            pr_state: self.pr_state,
+        };
+        let client = client.clone();
+        let owner = owner.to_string();
+        let repo = repo.to_string();
+        let pr_number = self.pr_number;
+
+        self.apply_merge(method);
+
+        self.inflight_rollback = Some(rollback);
+        tokio::spawn(async move {
+            match crate::github::pr::merge_pr(&client, &owner, &repo, pr_number, method).await {
+                Ok(_msg) => {
+                    let _ = tx.send(crate::AsyncData::OpSuccess(
+                        crate::OpId::Merge,
+                        crate::OpPayload::None,
+                    ));
+                }
+                Err(e) => {
+                    let _ = tx.send(crate::AsyncData::OpFailure(
+                        crate::OpId::Merge,
+                        format!("{e}"),
+                    ));
+                }
+            }
         });
-
-        match result {
-            Ok(_msg) => {
-                self.pr_state = PrState::Merged;
-                self.status_message = Some(StatusMessage::info(format!(
-                    "✓ Merged via {}",
-                    method.label()
-                )));
-            }
-            Err(e) => {
-                self.status_message = Some(StatusMessage::error(format!("✗ Merge failed: {}", e)));
-            }
-        }
     }
 
     /// PR を close/reopen する
     fn execute_close_toggle(&mut self, should_close: bool) {
+        if self.inflight_rollback.is_some() || self.reloading {
+            self.status_message = Some(StatusMessage::error("Another operation is in progress"));
+            return;
+        }
+
         if self.demo_mode {
-            self.pr_state = if should_close {
-                PrState::Closed
-            } else {
-                PrState::Open
-            };
-            let action = if should_close { "Closed" } else { "Reopened" };
-            self.status_message = Some(StatusMessage::info(format!("✓ {action} pull request")));
+            self.apply_close_toggle(should_close);
             return;
         }
 
         let (client, owner, repo) = require_api!(self);
+        let Some(tx) = self.api_tx.clone() else {
+            return;
+        };
 
+        let rollback = RollbackState::CloseToggle {
+            pr_state: self.pr_state,
+        };
+        let client = client.clone();
+        let owner = owner.to_string();
+        let repo = repo.to_string();
+        let pr_number = self.pr_number;
         let state = if should_close {
             PrState::Closed
         } else {
             PrState::Open
         };
 
-        let result = tokio::task::block_in_place(|| {
-            Handle::current().block_on(crate::github::pr::update_pr_state(
-                client,
-                owner,
-                repo,
-                self.pr_number,
-                state,
-            ))
-        });
+        self.apply_close_toggle(should_close);
 
-        match result {
-            Ok(()) => {
-                self.pr_state = if should_close {
-                    PrState::Closed
-                } else {
-                    PrState::Open
-                };
-                let action = if should_close { "Closed" } else { "Reopened" };
-                self.status_message = Some(StatusMessage::info(format!("✓ {action} pull request")));
+        self.inflight_rollback = Some(rollback);
+        tokio::spawn(async move {
+            match crate::github::pr::update_pr_state(&client, &owner, &repo, pr_number, state).await
+            {
+                Ok(()) => {
+                    let _ = tx.send(crate::AsyncData::OpSuccess(
+                        crate::OpId::CloseToggle,
+                        crate::OpPayload::None,
+                    ));
+                }
+                Err(e) => {
+                    let _ = tx.send(crate::AsyncData::OpFailure(
+                        crate::OpId::CloseToggle,
+                        format!("{e}"),
+                    ));
+                }
             }
-            Err(e) => {
-                let action = if should_close { "Close" } else { "Reopen" };
-                self.status_message = Some(StatusMessage::error(format!("✗ {action} failed: {e}")));
-            }
-        }
+        });
     }
 
     /// Issue Comment を GitHub API に送信
@@ -1259,52 +1240,55 @@ impl App {
             return;
         }
 
+        if self.inflight_rollback.is_some() || self.reloading {
+            self.status_message = Some(StatusMessage::error("Another operation is in progress"));
+            return;
+        }
+
         if self.demo_mode {
-            self.conversation.push(ConversationEntry {
-                author: self.current_user.clone(),
-                body: body.clone(),
-                created_at: chrono::Local::now()
-                    .format("%Y-%m-%dT%H:%M:%SZ")
-                    .to_string(),
-                kind: ConversationKind::IssueComment,
-            });
-            self.conversation_rendered = None;
-            self.review.comment_editor.clear();
-            self.conversation_scroll = u16::MAX;
-            self.status_message = Some(StatusMessage::info("✓ Comment posted"));
+            let now = chrono::Local::now()
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string();
+            self.apply_issue_comment(self.current_user.clone(), body, now);
             return;
         }
 
         let (client, owner, repo) = require_api!(self);
+        let Some(tx) = self.api_tx.clone() else {
+            return;
+        };
 
-        let result = tokio::task::block_in_place(|| {
-            Handle::current().block_on(comments::post_issue_comment(
-                client,
-                owner,
-                repo,
-                self.pr_number,
-                &body,
-            ))
+        let rollback = RollbackState::IssueComment {
+            editor_text: body.clone(),
+            conversation_len: self.conversation.len(),
+        };
+        let client = client.clone();
+        let owner = owner.to_string();
+        let repo = repo.to_string();
+        let pr_number = self.pr_number;
+        let now = chrono::Local::now()
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
+
+        self.apply_issue_comment(self.current_user.clone(), body.clone(), now);
+
+        self.inflight_rollback = Some(rollback);
+        tokio::spawn(async move {
+            match comments::post_issue_comment(&client, &owner, &repo, pr_number, &body).await {
+                Ok(comment) => {
+                    let _ = tx.send(crate::AsyncData::OpSuccess(
+                        crate::OpId::IssueComment,
+                        crate::OpPayload::IssueComment(comment),
+                    ));
+                }
+                Err(e) => {
+                    let _ = tx.send(crate::AsyncData::OpFailure(
+                        crate::OpId::IssueComment,
+                        format!("{e}"),
+                    ));
+                }
+            }
         });
-
-        match result {
-            Ok(comment) => {
-                self.conversation.push(ConversationEntry {
-                    author: comment.user.login,
-                    body: comment.body.unwrap_or_default(),
-                    created_at: comment.created_at,
-                    kind: ConversationKind::IssueComment,
-                });
-                self.conversation_rendered = None; // キャッシュ無効化
-                self.review.comment_editor.clear();
-                // 末尾までスクロール（次の render で visual_total が更新されるため大きな値を設定）
-                self.conversation_scroll = u16::MAX;
-                self.status_message = Some(StatusMessage::info("✓ Comment posted"));
-            }
-            Err(e) => {
-                self.status_message = Some(StatusMessage::error(format!("✗ Failed: {}", e)));
-            }
-        }
     }
 
     /// Reply Comment を GitHub API に送信
@@ -1314,87 +1298,88 @@ impl App {
             self.review.reply_to_comment_id = None;
             return;
         }
-
         let Some(in_reply_to) = self.review.reply_to_comment_id.take() else {
             return;
         };
 
+        if self.inflight_rollback.is_some() || self.reloading {
+            self.status_message = Some(StatusMessage::error("Another operation is in progress"));
+            self.review.reply_to_comment_id = Some(in_reply_to); // 復元
+            return;
+        }
+
+        // rollback 用にエントリインデックスとリプライ数を保存
+        let Some(entry_index) = self.conversation.iter().position(|e| {
+            matches!(&e.kind, ConversationKind::CodeComment { root_comment_id, .. } if *root_comment_id == in_reply_to)
+        }) else {
+            self.status_message = Some(StatusMessage::error("✗ Reply target not found"));
+            self.review.reply_to_comment_id = Some(in_reply_to);
+            return;
+        };
+        let reply_count_before = self
+            .conversation
+            .get(entry_index)
+            .and_then(|e| match &e.kind {
+                ConversationKind::CodeComment { replies, .. } => Some(replies.len()),
+                _ => None,
+            })
+            .unwrap_or(0);
+
         if self.demo_mode {
-            for entry in &mut self.conversation {
-                if let ConversationKind::CodeComment {
-                    root_comment_id,
-                    ref mut replies,
-                    ..
-                } = entry.kind
-                    && root_comment_id == in_reply_to
-                {
-                    replies.push(CodeCommentReply {
-                        author: self.current_user.clone(),
-                        body: body.clone(),
-                        created_at: chrono::Local::now()
-                            .format("%Y-%m-%dT%H:%M:%SZ")
-                            .to_string(),
-                    });
-                    break;
-                }
-            }
-            self.conversation_rendered = None;
-            self.review.comment_editor.clear();
-            self.status_message = Some(StatusMessage::info("✓ Reply posted"));
+            let now = chrono::Local::now()
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string();
+            self.apply_reply_comment(in_reply_to, self.current_user.clone(), body, now);
             return;
         }
 
         let (client, owner, repo) = require_api!(self);
+        let Some(tx) = self.api_tx.clone() else {
+            return;
+        };
 
-        let result = tokio::task::block_in_place(|| {
-            Handle::current().block_on(comments::post_reply_comment(
-                client,
-                owner,
-                repo,
-                self.pr_number,
+        let rollback = RollbackState::ReplyComment {
+            editor_text: body.clone(),
+            in_reply_to,
+            entry_index,
+            reply_count_before,
+        };
+        let client = client.clone();
+        let owner = owner.to_string();
+        let repo = repo.to_string();
+        let pr_number = self.pr_number;
+        let now = chrono::Local::now()
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
+
+        self.apply_reply_comment(in_reply_to, self.current_user.clone(), body.clone(), now);
+
+        self.inflight_rollback = Some(rollback);
+        tokio::spawn(async move {
+            match comments::post_reply_comment(
+                &client,
+                &owner,
+                &repo,
+                pr_number,
                 &body,
                 in_reply_to,
-            ))
+            )
+            .await
+            {
+                Ok(comment) => {
+                    let _ = tx.send(crate::AsyncData::OpSuccess(
+                        crate::OpId::ReplyComment,
+                        crate::OpPayload::ReplyComment(comment),
+                    ));
+                }
+                Err(e) => {
+                    let _ = tx.send(crate::AsyncData::OpFailure(
+                        crate::OpId::ReplyComment,
+                        format!("{e}"),
+                    ));
+                }
+            }
         });
-
-        match result {
-            Ok(comment) => {
-                // review_comments に追加
-                self.review.review_comments.push(comment.clone());
-
-                // viewing_comments が表示中なら追加（CommentView 経由時）
-                if !self.review.viewing_comments.is_empty() {
-                    self.review.viewing_comments.push(comment.clone());
-                }
-
-                // conversation 内の該当 CodeComment エントリに reply を追加
-                for entry in &mut self.conversation {
-                    if let ConversationKind::CodeComment {
-                        root_comment_id,
-                        ref mut replies,
-                        ..
-                    } = entry.kind
-                        && root_comment_id == in_reply_to
-                    {
-                        replies.push(CodeCommentReply {
-                            author: comment.user.login.clone(),
-                            body: comment.body.clone(),
-                            created_at: comment.created_at.clone(),
-                        });
-                        break;
-                    }
-                }
-
-                self.conversation_rendered = None; // キャッシュ無効化
-                self.review.comment_editor.clear();
-                self.status_message = Some(StatusMessage::info("✓ Reply posted"));
-            }
-            Err(e) => {
-                // 失敗時は reply_to_comment_id を復元して再試行可能に
-                self.review.reply_to_comment_id = Some(in_reply_to);
-                self.status_message = Some(StatusMessage::error(format!("✗ Failed: {}", e)));
-            }
-        }
     }
 
     /// Conversation ペインのカーソル位置から resolve/unresolve をトグルする
@@ -1444,72 +1429,230 @@ impl App {
             return;
         };
 
-        if self.demo_mode {
-            if let Some(thread) = self.review.thread_map.get_mut(&req.root_comment_id) {
-                thread.is_resolved = req.should_resolve;
-            }
-            for entry in &mut self.conversation {
-                if let ConversationKind::CodeComment {
-                    ref mut is_resolved,
-                    ref thread_node_id,
-                    ..
-                } = entry.kind
-                    && thread_node_id.as_deref() == Some(&req.thread_node_id)
-                {
-                    *is_resolved = req.should_resolve;
-                }
-            }
-            self.conversation_rendered = None;
-            let label = if req.should_resolve {
-                "✓ Thread resolved"
-            } else {
-                "✓ Thread unresolved"
-            };
-            self.status_message = Some(StatusMessage::info(label));
+        if self.inflight_rollback.is_some() || self.reloading {
+            self.status_message = Some(StatusMessage::error("Another operation is in progress"));
             return;
         }
 
-        let result = if req.should_resolve {
-            comments::resolve_review_thread(&req.thread_node_id)
-        } else {
-            comments::unresolve_review_thread(&req.thread_node_id)
+        // resolve toggle 前の is_resolved を保存
+        let was_resolved = self
+            .review
+            .thread_map
+            .get(&req.root_comment_id)
+            .map(|t| t.is_resolved)
+            .unwrap_or(false);
+
+        if self.demo_mode {
+            self.apply_resolve_toggle(req.root_comment_id, &req.thread_node_id, req.should_resolve);
+            return;
+        }
+
+        let Some(tx) = self.api_tx.clone() else {
+            return;
         };
 
-        match result {
-            Ok(is_resolved) if is_resolved == req.should_resolve => {
-                // thread_map を更新
-                if let Some(thread) = self.review.thread_map.get_mut(&req.root_comment_id) {
-                    thread.is_resolved = req.should_resolve;
+        let rollback = RollbackState::ResolveToggle {
+            root_comment_id: req.root_comment_id,
+            thread_node_id: req.thread_node_id.clone(),
+            was_resolved,
+        };
+        let thread_node_id = req.thread_node_id;
+        let should_resolve = req.should_resolve;
+
+        self.apply_resolve_toggle(req.root_comment_id, &thread_node_id, should_resolve);
+
+        self.inflight_rollback = Some(rollback);
+        tokio::task::spawn_blocking(move || {
+            let result = if should_resolve {
+                comments::resolve_review_thread(&thread_node_id)
+            } else {
+                comments::unresolve_review_thread(&thread_node_id)
+            };
+            match result {
+                Ok(is_resolved) if is_resolved == should_resolve => {
+                    let _ = tx.send(crate::AsyncData::OpSuccess(
+                        crate::OpId::ResolveToggle,
+                        crate::OpPayload::None,
+                    ));
                 }
-                // conversation 内の該当エントリを更新
-                for entry in &mut self.conversation {
-                    if let ConversationKind::CodeComment {
-                        ref mut is_resolved,
-                        ref thread_node_id,
-                        ..
-                    } = entry.kind
-                        && thread_node_id.as_deref() == Some(&req.thread_node_id)
-                    {
-                        *is_resolved = req.should_resolve;
-                    }
+                Ok(_) => {
+                    let _ = tx.send(crate::AsyncData::OpFailure(
+                        crate::OpId::ResolveToggle,
+                        "Operation returned unexpected state".to_string(),
+                    ));
                 }
-                self.conversation_rendered = None; // キャッシュ無効化
-                let label = if req.should_resolve {
-                    "✓ Thread resolved"
-                } else {
-                    "✓ Thread unresolved"
-                };
-                self.status_message = Some(StatusMessage::info(label));
+                Err(e) => {
+                    let _ = tx.send(crate::AsyncData::OpFailure(
+                        crate::OpId::ResolveToggle,
+                        format!("{e}"),
+                    ));
+                }
             }
-            Ok(_) => {
-                self.status_message = Some(StatusMessage::error(
-                    "✗ Operation returned unexpected state",
-                ));
-            }
-            Err(e) => {
-                self.status_message = Some(StatusMessage::error(format!("✗ Failed: {}", e)));
+        });
+    }
+
+    // ── apply_* メソッド群: UI 副作用の共通化（デモ・通常パスで共有） ──
+
+    /// close/reopen の UI 適用
+    fn apply_close_toggle(&mut self, should_close: bool) {
+        self.pr_state = if should_close {
+            PrState::Closed
+        } else {
+            PrState::Open
+        };
+        let action = if should_close { "Closed" } else { "Reopened" };
+        self.status_message = Some(StatusMessage::info(format!("✓ {action} pull request")));
+    }
+
+    /// merge の UI 適用
+    fn apply_merge(&mut self, method: MergeMethod) {
+        self.pr_state = PrState::Merged;
+        self.status_message = Some(StatusMessage::info(format!(
+            "✓ Merged via {}",
+            method.label()
+        )));
+    }
+
+    /// resolve/unresolve の UI 適用
+    fn apply_resolve_toggle(
+        &mut self,
+        root_comment_id: u64,
+        thread_node_id: &str,
+        should_resolve: bool,
+    ) {
+        if let Some(thread) = self.review.thread_map.get_mut(&root_comment_id) {
+            thread.is_resolved = should_resolve;
+        }
+        for entry in &mut self.conversation {
+            if let ConversationKind::CodeComment {
+                ref mut is_resolved,
+                thread_node_id: ref tn,
+                ..
+            } = entry.kind
+                && tn.as_deref() == Some(thread_node_id)
+            {
+                *is_resolved = should_resolve;
             }
         }
+        self.conversation_rendered = None;
+        let label = if should_resolve {
+            "✓ Thread resolved"
+        } else {
+            "✓ Thread unresolved"
+        };
+        self.status_message = Some(StatusMessage::info(label));
+    }
+
+    /// issue comment の UI 適用
+    fn apply_issue_comment(&mut self, author: String, body: String, created_at: String) {
+        self.conversation.push(ConversationEntry {
+            author,
+            body,
+            created_at,
+            kind: ConversationKind::IssueComment,
+        });
+        self.conversation_rendered = None;
+        self.review.comment_editor.clear();
+        self.conversation_scroll = u16::MAX;
+        self.status_message = Some(StatusMessage::info("✓ Comment posted"));
+    }
+
+    /// reply comment の UI 適用
+    fn apply_reply_comment(
+        &mut self,
+        in_reply_to: u64,
+        author: String,
+        body: String,
+        created_at: String,
+    ) {
+        for entry in &mut self.conversation {
+            if let ConversationKind::CodeComment {
+                root_comment_id,
+                ref mut replies,
+                ..
+            } = entry.kind
+                && root_comment_id == in_reply_to
+            {
+                replies.push(CodeCommentReply {
+                    author,
+                    body,
+                    created_at,
+                });
+                break;
+            }
+        }
+        self.conversation_rendered = None;
+        self.review.comment_editor.clear();
+        self.status_message = Some(StatusMessage::info("✓ Reply posted"));
+    }
+
+    /// review submit の UI 適用。投稿された pending_comments の数を返す。
+    fn apply_review_submit(&mut self, event: ReviewEvent) -> usize {
+        let count = self.review.pending_comments.len();
+        let now = chrono::Local::now()
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
+
+        // PendingComment → ReviewComment に変換して review_comments に追加
+        let demo_id_base = self.review.review_comments.len() as u64 + 9000;
+        for (i, pc) in self.review.pending_comments.drain(..).enumerate() {
+            let rc = ReviewComment {
+                id: demo_id_base + i as u64,
+                body: pc.body.clone(),
+                path: pc.file_path.clone(),
+                line: Some(pc.end_line),
+                start_line: if pc.start_line != pc.end_line {
+                    Some(pc.start_line)
+                } else {
+                    None
+                },
+                side: Some("RIGHT".to_string()),
+                start_side: None,
+                commit_id: pc.commit_sha.clone(),
+                user: ReviewCommentUser {
+                    login: self.current_user.clone(),
+                },
+                created_at: now.clone(),
+                in_reply_to_id: None,
+                pull_request_review_id: None,
+            };
+            self.review.review_comments.push(rc);
+        }
+
+        // visible_review_comment_cache を再計算
+        self.visible_review_comment_cache =
+            Self::build_visible_comment_cache(&self.review.review_comments, &self.files_map);
+
+        // Review エントリを conversation に追加
+        let verdict = match event {
+            ReviewEvent::Approve => ReviewVerdict::Approved,
+            ReviewEvent::RequestChanges => ReviewVerdict::ChangesRequested,
+            ReviewEvent::Comment => ReviewVerdict::Commented,
+        };
+        let review_body = self.review.review_body_editor.text();
+        if !review_body.trim().is_empty() || verdict != ReviewVerdict::Commented {
+            self.conversation.push(ConversationEntry {
+                author: self.current_user.clone(),
+                body: review_body,
+                created_at: now,
+                kind: ConversationKind::Review { state: verdict },
+            });
+            self.conversation_rendered = None;
+        }
+
+        self.review.review_body_editor.clear();
+        let msg = if count > 0 {
+            format!(
+                "✓ {} ({} comment{})",
+                event.label(),
+                count,
+                if count == 1 { "" } else { "s" }
+            )
+        } else {
+            format!("✓ {}", event.label())
+        };
+        self.status_message = Some(StatusMessage::info(msg));
+        count
     }
 
     /// PR データをリロードして App 状態を更新する
@@ -1519,13 +1662,42 @@ impl App {
             return;
         }
 
-        let (client, owner, repo) = require_api!(self);
+        if self.reloading || self.inflight_rollback.is_some() {
+            self.status_message = Some(StatusMessage::error("Another operation is in progress"));
+            return;
+        }
 
+        let (client, owner, repo) = require_api!(self);
         let client = client.clone();
         let owner = owner.to_string();
         let repo = repo.to_string();
         let pr_number = self.pr_number;
+        let Some(tx) = self.api_tx.clone() else {
+            return;
+        };
 
+        self.reloading = true;
+        self.status_message = Some(StatusMessage::info("Reloading..."));
+        tokio::spawn(async move {
+            match crate::reload_pr_data(&client, &owner, &repo, pr_number).await {
+                Ok(data) => {
+                    let _ = tx.send(crate::AsyncData::OpSuccess(
+                        crate::OpId::Reload,
+                        crate::OpPayload::Reload(Box::new(data)),
+                    ));
+                }
+                Err(e) => {
+                    let _ = tx.send(crate::AsyncData::OpFailure(
+                        crate::OpId::Reload,
+                        format!("{e}"),
+                    ));
+                }
+            }
+        });
+    }
+
+    /// リロードデータを App 状態に適用する
+    fn apply_reload(&mut self, data: crate::ReloadedData) {
         // 状態の保存: 選択中のコミットSHA、ファイル名、パネル状態
         let saved_commit_sha = self.current_commit_sha();
         let saved_filename = self.current_file().map(|f| f.filename.clone());
@@ -1534,120 +1706,105 @@ impl App {
         let saved_viewed_files = self.viewed_files.clone();
         let saved_pending_comments = self.review.pending_comments.clone();
 
-        // block_in_place + block_on で async を呼ぶ（既存パターン踏襲）
-        let result = tokio::task::block_in_place(|| {
-            Handle::current().block_on(crate::reload_pr_data(&client, &owner, &repo, pr_number))
-        });
+        // PR メタデータを更新
+        self.pr_title = data.metadata.pr_title;
+        self.pr_body = data.metadata.pr_body;
+        self.pr_author = data.metadata.pr_author;
+        self.pr_base_branch = data.metadata.pr_base_branch;
+        self.pr_head_branch = data.metadata.pr_head_branch;
+        self.pr_created_at = data.metadata.pr_created_at;
+        self.pr_state = data.metadata.pr_state;
 
-        match result {
-            Ok(data) => {
-                // PR メタデータを更新
-                self.pr_title = data.metadata.pr_title;
-                self.pr_body = data.metadata.pr_body;
-                self.pr_author = data.metadata.pr_author;
-                self.pr_base_branch = data.metadata.pr_base_branch;
-                self.pr_head_branch = data.metadata.pr_head_branch;
-                self.pr_created_at = data.metadata.pr_created_at;
-                self.pr_state = data.metadata.pr_state;
+        // コミット・ファイル・コメントを差し替え
+        self.commits = data.commits;
+        self.files_map = data.files_map;
+        self.review.review_comments = data.review_comments.clone();
 
-                // コミット・ファイル・コメントを差し替え
-                self.commits = data.commits;
-                self.files_map = data.files_map;
-                self.review.review_comments = data.review_comments.clone();
+        // thread_map を再構築
+        self.review.thread_map = data
+            .review_threads
+            .into_iter()
+            .map(|t| (t.root_comment_database_id, t))
+            .collect();
 
-                // thread_map を再構築
-                self.review.thread_map = data
-                    .review_threads
-                    .into_iter()
-                    .map(|t| (t.root_comment_database_id, t))
-                    .collect();
+        // visible_review_comment_cache を再計算
+        self.visible_review_comment_cache =
+            Self::build_visible_comment_cache(&self.review.review_comments, &self.files_map);
 
-                // visible_review_comment_cache を再計算
-                self.visible_review_comment_cache = Self::build_visible_comment_cache(
-                    &self.review.review_comments,
-                    &self.files_map,
-                );
+        // conversation を再構築
+        self.conversation = crate::build_conversation(
+            data.issue_comments,
+            data.reviews,
+            data.review_comments,
+            &self.review.thread_map.values().cloned().collect::<Vec<_>>(),
+        );
 
-                // conversation を再構築
-                self.conversation = crate::build_conversation(
-                    data.issue_comments,
-                    data.reviews,
-                    data.review_comments,
-                    &self.review.thread_map.values().cloned().collect::<Vec<_>>(),
-                );
+        // is_own_pr を再判定
+        self.is_own_pr = !self.current_user.is_empty() && self.current_user == self.pr_author;
 
-                // is_own_pr を再判定
-                self.is_own_pr =
-                    !self.current_user.is_empty() && self.current_user == self.pr_author;
+        // キャッシュ無効化
+        self.pr_desc_rendered = None;
+        self.conversation_rendered = None;
+        self.diff.highlight_cache = None;
 
-                // キャッシュ無効化
-                self.pr_desc_rendered = None;
-                self.conversation_rendered = None;
-                self.diff.highlight_cache = None;
+        // メディア状態リセット（pr_body 更新に追従）
+        self.media_refs = Vec::new();
+        self.media_protocol_cache.clear();
+        self.media_protocol_worker = None;
 
-                // メディア状態リセット（pr_body 更新に追従）
-                self.media_refs = Vec::new();
-                self.media_protocol_cache.clear();
-                self.media_protocol_worker = None;
+        // 状態の復元
+        self.focused_panel = saved_focused_panel;
+        self.zoomed = saved_zoomed;
+        self.viewed_files = saved_viewed_files;
+        self.review.pending_comments = saved_pending_comments;
 
-                // 状態の復元
-                self.focused_panel = saved_focused_panel;
-                self.zoomed = saved_zoomed;
-                self.viewed_files = saved_viewed_files;
-                self.review.pending_comments = saved_pending_comments;
-
-                // コミット選択の復元: SHA で再検索
-                if let Some(ref sha) = saved_commit_sha {
-                    if let Some(idx) = self.commits.iter().position(|c| c.sha == *sha) {
-                        self.commit_list_state.select(Some(idx));
-                    } else if !self.commits.is_empty() {
-                        // 見つからなければ末尾（最新コミット）
-                        self.commit_list_state.select(Some(self.commits.len() - 1));
-                    } else {
-                        self.commit_list_state.select(None);
-                    }
-                } else if !self.commits.is_empty() {
-                    self.commit_list_state.select(Some(0));
-                }
-
-                // ファイル選択の復元: ファイル名で再検索
-                let files = self.current_files();
-                if let Some(ref name) = saved_filename {
-                    if let Some(idx) = files.iter().position(|f| f.filename == *name) {
-                        self.file_list_state.select(Some(idx));
-                    } else if !files.is_empty() {
-                        self.file_list_state.select(Some(0));
-                    } else {
-                        self.file_list_state.select(None);
-                    }
-                } else if !files.is_empty() {
-                    self.file_list_state.select(Some(0));
-                } else {
-                    self.file_list_state.select(None);
-                }
-
-                // Diff 状態をリセット
-                self.diff.cursor_line = 0;
-                self.diff.scroll = 0;
-                let max = self.current_diff_line_count();
-                self.diff.cursor_line = self.skip_hunk_header_forward(0, max);
-                self.diff.visual_offsets = None;
-
-                // スクロール位置のリセット
-                self.pr_desc_scroll = 0;
-                self.pr_desc_visual_total = 0;
-                self.commit_msg_scroll = 0;
-                self.commit_msg_visual_total = 0;
-                self.conversation_scroll = 0;
-                self.conversation_visual_total = 0;
-                self.conversation_cursor = 0;
-
-                self.status_message = Some(StatusMessage::info("✓ Reloaded"));
+        // コミット選択の復元: SHA で再検索
+        if let Some(ref sha) = saved_commit_sha {
+            if let Some(idx) = self.commits.iter().position(|c| c.sha == *sha) {
+                self.commit_list_state.select(Some(idx));
+            } else if !self.commits.is_empty() {
+                // 見つからなければ末尾（最新コミット）
+                self.commit_list_state.select(Some(self.commits.len() - 1));
+            } else {
+                self.commit_list_state.select(None);
             }
-            Err(e) => {
-                self.status_message = Some(StatusMessage::error(format!("✗ Reload failed: {}", e)));
-            }
+        } else if !self.commits.is_empty() {
+            self.commit_list_state.select(Some(0));
         }
+
+        // ファイル選択の復元: ファイル名で再検索
+        let files = self.current_files();
+        if let Some(ref name) = saved_filename {
+            if let Some(idx) = files.iter().position(|f| f.filename == *name) {
+                self.file_list_state.select(Some(idx));
+            } else if !files.is_empty() {
+                self.file_list_state.select(Some(0));
+            } else {
+                self.file_list_state.select(None);
+            }
+        } else if !files.is_empty() {
+            self.file_list_state.select(Some(0));
+        } else {
+            self.file_list_state.select(None);
+        }
+
+        // Diff 状態をリセット
+        self.diff.cursor_line = 0;
+        self.diff.scroll = 0;
+        let max = self.current_diff_line_count();
+        self.diff.cursor_line = self.skip_hunk_header_forward(0, max);
+        self.diff.visual_offsets = None;
+
+        // スクロール位置のリセット
+        self.pr_desc_scroll = 0;
+        self.pr_desc_visual_total = 0;
+        self.commit_msg_scroll = 0;
+        self.commit_msg_visual_total = 0;
+        self.conversation_scroll = 0;
+        self.conversation_visual_total = 0;
+        self.conversation_cursor = 0;
+
+        self.status_message = Some(StatusMessage::info("✓ Reloaded"));
     }
 
     /// バックグラウンド非同期データの受信・適用
@@ -1698,6 +1855,12 @@ impl App {
                             }
                         }
                     }
+                    crate::AsyncData::OpSuccess(op_id, payload) => {
+                        self.handle_op_success(op_id, payload);
+                    }
+                    crate::AsyncData::OpFailure(op_id, error_msg) => {
+                        self.handle_op_failure(op_id, error_msg);
+                    }
                 },
                 Err(mpsc::error::TryRecvError::Empty) => break,
                 Err(mpsc::error::TryRecvError::Disconnected) => {
@@ -1707,8 +1870,12 @@ impl App {
             }
         }
 
-        if disconnected || self.loading.all_done() {
-            // 全タスク完了 → rx を返却せずに破棄
+        // all_done でキャッシュ書き込みを試行（チャネルは api_tx が生存中のため破棄しない）
+        if self.loading.all_done() {
+            self.try_write_cache();
+        }
+
+        if disconnected {
             // チャネル切断時に Loading のままのフェーズがあればエラーに強制遷移
             if self.loading.files == LoadPhase::Loading {
                 self.loading.files = LoadPhase::Error;
@@ -1721,9 +1888,108 @@ impl App {
             }
             self.try_write_cache();
         } else {
-            // まだ受信中 → rx を戻す
+            // チャネルを戻す（api_tx が保持される限り切断されない）
             self.async_rx = Some(rx);
         }
+    }
+
+    /// 楽観的更新の成功ハンドリング
+    fn handle_op_success(&mut self, op_id: crate::OpId, payload: crate::OpPayload) {
+        self.inflight_rollback = None;
+        match op_id {
+            crate::OpId::ReplyComment => {
+                if let crate::OpPayload::ReplyComment(comment) = payload {
+                    self.review.review_comments.push(comment.clone());
+                    if !self.review.viewing_comments.is_empty() {
+                        self.review.viewing_comments.push(comment);
+                    }
+                }
+            }
+            crate::OpId::Reload => {
+                if let crate::OpPayload::Reload(data) = payload {
+                    self.apply_reload(*data);
+                }
+                self.reloading = false;
+            }
+            _ => {}
+        }
+    }
+
+    /// 楽観的更新の失敗ハンドリング（ロールバック）
+    fn handle_op_failure(&mut self, op_id: crate::OpId, error_msg: String) {
+        let rollback = self.inflight_rollback.take();
+        match rollback {
+            Some(RollbackState::CloseToggle { pr_state }) => {
+                self.pr_state = pr_state;
+            }
+            Some(RollbackState::Merge { pr_state }) => {
+                self.pr_state = pr_state;
+            }
+            Some(RollbackState::ResolveToggle {
+                root_comment_id,
+                thread_node_id,
+                was_resolved,
+            }) => {
+                self.apply_resolve_toggle(root_comment_id, &thread_node_id, was_resolved);
+            }
+            Some(RollbackState::IssueComment {
+                editor_text,
+                conversation_len,
+            }) => {
+                self.conversation.truncate(conversation_len);
+                self.conversation_rendered = None;
+                self.review.comment_editor.set_text(&editor_text);
+            }
+            Some(RollbackState::ReplyComment {
+                editor_text,
+                in_reply_to,
+                entry_index,
+                reply_count_before,
+            }) => {
+                if let Some(entry) = self.conversation.get_mut(entry_index)
+                    && let ConversationKind::CodeComment {
+                        ref mut replies, ..
+                    } = entry.kind
+                {
+                    replies.truncate(reply_count_before);
+                }
+                self.conversation_rendered = None;
+                self.review.comment_editor.set_text(&editor_text);
+                self.review.reply_to_comment_id = Some(in_reply_to);
+            }
+            Some(RollbackState::SubmitReview {
+                pending_comments,
+                review_body,
+                review_comments_len,
+                conversation_len,
+                visible_cache,
+            }) => {
+                self.review.pending_comments = pending_comments;
+                self.review.review_body_editor.set_text(&review_body);
+                self.review.review_comments.truncate(review_comments_len);
+                self.conversation.truncate(conversation_len);
+                self.conversation_rendered = None;
+                self.visible_review_comment_cache = visible_cache;
+            }
+            None => {}
+        }
+
+        if matches!(op_id, crate::OpId::Reload) {
+            self.reloading = false;
+        }
+
+        let action = match op_id {
+            crate::OpId::CloseToggle => "Close/Reopen",
+            crate::OpId::Merge => "Merge",
+            crate::OpId::ResolveToggle => "Resolve toggle",
+            crate::OpId::IssueComment => "Comment",
+            crate::OpId::ReplyComment => "Reply",
+            crate::OpId::SubmitReview => "Review",
+            crate::OpId::Reload => "Reload",
+        };
+        self.status_message = Some(StatusMessage::error(format!(
+            "✗ {action} failed: {error_msg}"
+        )));
     }
 
     /// files_map をバックグラウンドデータで更新
@@ -4511,62 +4777,5 @@ mod tests {
             app.status_message.as_ref().unwrap().level,
             StatusLevel::Error
         );
-    }
-
-    #[test]
-    fn test_blocking_operation_message_none_by_default() {
-        let app = TestAppBuilder::new().build();
-        assert!(app.blocking_operation_message().is_none());
-    }
-
-    #[test]
-    fn test_blocking_operation_message_reload() {
-        let mut app = TestAppBuilder::new().build();
-        app.needs_reload = true;
-        assert_eq!(
-            app.blocking_operation_message(),
-            Some("Reloading PR data...")
-        );
-    }
-
-    #[test]
-    fn test_blocking_operation_message_submit_review() {
-        let mut app = TestAppBuilder::new().build();
-        app.review.needs_submit = Some(ReviewEvent::Comment);
-        assert_eq!(
-            app.blocking_operation_message(),
-            Some("Submitting review...")
-        );
-    }
-
-    #[test]
-    fn test_blocking_operation_message_issue_comment() {
-        let mut app = TestAppBuilder::new().build();
-        app.needs_issue_comment_submit = true;
-        assert_eq!(
-            app.blocking_operation_message(),
-            Some("Submitting comment...")
-        );
-    }
-
-    #[test]
-    fn test_blocking_operation_message_reply() {
-        let mut app = TestAppBuilder::new().build();
-        app.needs_reply_submit = true;
-        assert_eq!(
-            app.blocking_operation_message(),
-            Some("Submitting reply...")
-        );
-    }
-
-    #[test]
-    fn test_blocking_operation_message_resolve_toggle() {
-        let mut app = TestAppBuilder::new().build();
-        app.review.needs_resolve_toggle = Some(ResolveToggleRequest {
-            thread_node_id: "test".to_string(),
-            should_resolve: true,
-            root_comment_id: 1,
-        });
-        assert_eq!(app.blocking_operation_message(), Some("Updating thread..."));
     }
 }
