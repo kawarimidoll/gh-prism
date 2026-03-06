@@ -857,8 +857,10 @@ impl App {
                     "{total_files} file{} changed",
                     if total_files == 1 { "" } else { "s" }
                 )),
-                Span::styled(format!(", +{total_add}"), Style::default().fg(Color::Green)),
-                Span::styled(format!(" -{total_del}"), Style::default().fg(Color::Red)),
+                Span::raw(", "),
+                Span::styled(format!("+{total_add}"), Style::default().fg(Color::Green)),
+                Span::raw(" "),
+                Span::styled(format!("-{total_del}"), Style::default().fg(Color::Red)),
             ]));
             lines.push(Line::raw(""));
 
