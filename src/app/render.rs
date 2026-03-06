@@ -954,28 +954,52 @@ impl App {
         let lines = self.conversation_rendered.as_ref().unwrap().clone();
 
         // 論理行オフセットから Wrap 考慮の視覚行オフセットを計算し、navigation 用にキャッシュ
+        // エントリ単位 + サブアイテム単位の両方を計算
         {
             let logical_offsets = &self.conversation_entry_offsets;
+            let sub_offsets = &self.conversation_sub_offsets;
             let mut visual_offsets: Vec<u16> = Vec::new();
+            let mut sub_visual_offsets: Vec<Vec<u16>> = Vec::new();
+
             if inner_width > 0 && !logical_offsets.is_empty() {
+                // 全行の論理行→視覚行マッピングを事前構築
+                let mut line_visual_pos: Vec<u16> = Vec::with_capacity(lines.len() + 1);
                 let mut visual_line = 0u16;
-                let mut offset_idx = 0;
-                for (i, line) in lines.iter().enumerate() {
-                    while offset_idx < logical_offsets.len() && logical_offsets[offset_idx] == i {
-                        visual_offsets.push(visual_line);
-                        offset_idx += 1;
-                    }
+                for line in lines.iter() {
+                    line_visual_pos.push(visual_line);
                     let count = Paragraph::new(line.clone())
                         .wrap(Wrap { trim: false })
                         .line_count(inner_width);
                     visual_line += count.max(1) as u16;
                 }
-                while offset_idx < logical_offsets.len() {
-                    visual_offsets.push(visual_line);
-                    offset_idx += 1;
+                line_visual_pos.push(visual_line); // センチネル
+
+                // エントリオフセットを変換
+                for &logical in logical_offsets {
+                    let vis = if logical < line_visual_pos.len() {
+                        line_visual_pos[logical]
+                    } else {
+                        visual_line
+                    };
+                    visual_offsets.push(vis);
+                }
+
+                // サブアイテムオフセットを変換
+                for entry_subs in sub_offsets {
+                    let mut vis_subs: Vec<u16> = Vec::new();
+                    for &logical in entry_subs {
+                        let vis = if logical < line_visual_pos.len() {
+                            line_visual_pos[logical]
+                        } else {
+                            visual_line
+                        };
+                        vis_subs.push(vis);
+                    }
+                    sub_visual_offsets.push(vis_subs);
                 }
             }
             self.conversation_visual_offsets = visual_offsets;
+            self.conversation_sub_visual_offsets = sub_visual_offsets;
         }
 
         let cursor_idx = self
@@ -1030,34 +1054,35 @@ impl App {
         let paragraph = paragraph.block(block).scroll((self.conversation_scroll, 0));
         frame.render_widget(paragraph, area);
 
-        // カーソルエントリのハイライト（フォーカス時のみ、視覚行ベース）
-        let visual_offsets = &self.conversation_visual_offsets;
-        if self.focused_panel == Panel::Conversation
-            && visual_offsets.len() > 1
-            && cursor_idx < self.conversation.len()
-        {
-            let entry_start = visual_offsets[cursor_idx];
-            let entry_end = visual_offsets[cursor_idx + 1];
-            let scroll = self.conversation_scroll;
-            let view_height = self.conversation_view_height;
-            let inner_y = area.y + 1;
-            let cursor_bg = match self.theme {
-                ThemeMode::Dark => CURSOR_BG_DARK,
-                ThemeMode::Light => CURSOR_BG_LIGHT,
-            };
-            let buf = frame.buffer_mut();
-            for row in entry_start..entry_end {
-                if row < scroll || row >= scroll + view_height {
-                    continue;
-                }
-                let screen_y = inner_y + (row - scroll);
-                let row_rect = Rect {
-                    x: area.x + 1,
-                    y: screen_y,
-                    width: inner_width,
-                    height: 1,
+        // カーソルサブアイテムのハイライト（フォーカス時のみ、視覚行ベース）
+        if self.focused_panel == Panel::Conversation && cursor_idx < self.conversation.len() {
+            let sub_idx = self.conversation_sub_cursor;
+            if let Some(sub_vis) = self.conversation_sub_visual_offsets.get(cursor_idx)
+                && sub_idx + 1 < sub_vis.len()
+            {
+                let sub_start = sub_vis[sub_idx];
+                let sub_end = sub_vis[sub_idx + 1];
+                let scroll = self.conversation_scroll;
+                let view_height = self.conversation_view_height;
+                let inner_y = area.y + 1;
+                let cursor_bg = match self.theme {
+                    ThemeMode::Dark => CURSOR_BG_DARK,
+                    ThemeMode::Light => CURSOR_BG_LIGHT,
                 };
-                buf.set_style(row_rect, Style::default().bg(cursor_bg));
+                let buf = frame.buffer_mut();
+                for row in sub_start..sub_end {
+                    if row < scroll || row >= scroll + view_height {
+                        continue;
+                    }
+                    let screen_y = inner_y + (row - scroll);
+                    let row_rect = Rect {
+                        x: area.x + 1,
+                        y: screen_y,
+                        width: inner_width,
+                        height: 1,
+                    };
+                    buf.set_style(row_rect, Style::default().bg(cursor_bg));
+                }
             }
         }
 
@@ -1935,11 +1960,21 @@ impl App {
         let dialog = Self::centered_rect(REACTION_DIALOG_WIDTH, REACTION_DIALOG_HEIGHT, area);
         Self::clear_wide_safe(frame, dialog, area);
 
-        // 現在の conversation entry の user_reaction_ids を取得
+        // 現在のサブアイテムの user_reaction_ids を取得
         let user_ids = self
             .conversation
             .get(self.conversation_cursor)
-            .map(|e| &e.user_reaction_ids);
+            .and_then(|e| {
+                let sub = self.conversation_sub_cursor;
+                if sub == 0 {
+                    Some(&e.user_reaction_ids)
+                } else if let ConversationKind::CodeComment { ref replies, .. } = e.kind {
+                    replies.get(sub - 1).map(|r| &r.user_reaction_ids)
+                } else {
+                    // IssueComment/Review は sub==0 のみ。到達しないが安全のためフォールバック
+                    Some(&e.user_reaction_ids)
+                }
+            });
 
         let mut lines = vec![Line::raw("")];
 

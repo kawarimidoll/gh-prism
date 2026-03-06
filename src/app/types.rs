@@ -279,10 +279,13 @@ pub struct LayoutCache {
 /// コード行コメントスレッドのリプライ
 #[derive(Debug, Clone)]
 pub struct CodeCommentReply {
+    pub id: u64,
     pub author: String,
     pub body: String,
     pub created_at: String,
     pub reactions: Option<crate::github::comments::Reactions>,
+    /// 自分がつけたリアクション（content → reaction_id）。トグル判定・DELETE API に使用
+    pub user_reaction_ids: std::collections::HashMap<String, u64>,
 }
 
 /// Conversation エントリの種別
@@ -454,6 +457,7 @@ pub enum RollbackState {
     },
     AddReaction {
         entry_index: usize,
+        sub_index: usize,
         old_reactions: Option<crate::github::comments::Reactions>,
         old_user_reaction_ids: std::collections::HashMap<String, u64>,
     },

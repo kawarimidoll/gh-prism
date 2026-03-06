@@ -154,10 +154,17 @@ pub struct App {
     reloading: bool,
     /// Conversation ペインのエントリカーソル位置
     conversation_cursor: usize,
+    /// Conversation エントリ内のサブアイテムカーソル位置（0=root/本体, 1+=リプライ）
+    conversation_sub_cursor: usize,
     /// Conversation エントリごとの論理行オフセット（ensure_conversation_rendered で計算）
     conversation_entry_offsets: Vec<usize>,
     /// Conversation エントリごとの Wrap 考慮済み視覚行オフセット（render 時に計算、navigation で参照）
     conversation_visual_offsets: Vec<u16>,
+    /// Conversation エントリごとのサブアイテム論理行オフセット（ensure_conversation_rendered で計算）
+    /// sub_offsets[i] = [root_start, reply0_start, reply1_start, ..., entry_end]
+    conversation_sub_offsets: Vec<Vec<usize>>,
+    /// Conversation サブアイテムごとの Wrap 考慮済み視覚行オフセット（render 時に計算）
+    conversation_sub_visual_offsets: Vec<Vec<u16>>,
     /// コナミコマンド入力バッファ（最大10要素のリングバッファ）
     konami_buffer: Vec<KeyCode>,
     /// 虹色ボーダーモード（コナミコマンド発動で true）
@@ -316,8 +323,11 @@ impl App {
             inflight_rollback: None,
             reloading: false,
             conversation_cursor: 0,
+            conversation_sub_cursor: 0,
             conversation_entry_offsets: Vec::new(),
             conversation_visual_offsets: Vec::new(),
+            conversation_sub_offsets: Vec::new(),
+            conversation_sub_visual_offsets: Vec::new(),
             konami_buffer: Vec::new(),
             rainbow_mode: false,
             rainbow_tick: 0,
@@ -758,6 +768,7 @@ impl App {
 
         let mut lines: Vec<Line<'static>> = Vec::new();
         let mut entry_offsets: Vec<usize> = Vec::new();
+        let mut sub_offsets: Vec<Vec<usize>> = Vec::new();
 
         if self.conversation.is_empty() {
             lines.push(Line::styled(
@@ -767,6 +778,10 @@ impl App {
         } else {
             for entry in &self.conversation {
                 entry_offsets.push(lines.len());
+                let mut entry_sub_offsets: Vec<usize> = Vec::new();
+                // サブアイテム 0 (root) の開始位置
+                entry_sub_offsets.push(lines.len());
+
                 // ヘッダー行: @author (date) [STATE]
                 let date_display = format_datetime(&entry.created_at);
                 let mut header_spans = vec![
@@ -839,6 +854,9 @@ impl App {
                 // CodeComment のリプライを描画
                 if let ConversationKind::CodeComment { ref replies, .. } = entry.kind {
                     for reply in replies {
+                        // サブアイテム N (reply) の開始位置を記録
+                        entry_sub_offsets.push(lines.len());
+
                         let reply_date = format_datetime(&reply.created_at);
                         lines.push(Line::from(vec![
                             Span::styled(
@@ -854,31 +872,47 @@ impl App {
                             // リプライ本文もマークダウンレンダリング
                             lines.extend(markdown::render_markdown(&reply.body, self.theme));
                         }
-                        // リプライのリアクション行
-                        if let Some(line_str) = reply
-                            .reactions
-                            .as_ref()
-                            .and_then(|r| r.display_line("    "))
-                        {
-                            lines
-                                .push(Line::styled(line_str, Style::default().fg(Color::DarkGray)));
+                        // リプライのリアクション行（自分のリアクションをハイライト）
+                        if let Some(reaction_line) = reply.reactions.as_ref().and_then(|r| {
+                            helpers::build_reaction_line(r, &reply.user_reaction_ids, "    ")
+                        }) {
+                            lines.push(reaction_line);
                         }
                     }
                 }
 
                 // 空行（エントリ間セパレータ）
                 lines.push(Line::raw(""));
+
+                // センチネル（このエントリの終了位置 = 次サブアイテムの開始位置相当）
+                entry_sub_offsets.push(lines.len());
+                sub_offsets.push(entry_sub_offsets);
             }
             // 末尾のセンチネル（最後のエントリの終了位置）
             entry_offsets.push(lines.len());
         }
 
         self.conversation_entry_offsets = entry_offsets;
+        self.conversation_sub_offsets = sub_offsets;
         // カーソル位置をクランプ
         if !self.conversation.is_empty() {
             self.conversation_cursor = self.conversation_cursor.min(self.conversation.len() - 1);
+            // サブカーソルもクランプ（sub_offsets のアイテム数 = サブアイテム数 + センチネル）
+            let max_sub = self
+                .sub_item_count(self.conversation_cursor)
+                .saturating_sub(1);
+            self.conversation_sub_cursor = self.conversation_sub_cursor.min(max_sub);
         }
         self.conversation_rendered = Some(lines);
+    }
+
+    /// 指定エントリのサブアイテム数を返す（root + replies）
+    /// IssueComment/Review は常に 1、CodeComment は 1 + replies.len()
+    fn sub_item_count(&self, entry_index: usize) -> usize {
+        self.conversation_sub_offsets
+            .get(entry_index)
+            .map(|offsets| offsets.len().saturating_sub(1)) // センチネル分を引く
+            .unwrap_or(1)
     }
 
     /// PR Description の Wrap 考慮済み視覚行数を返す
@@ -1594,9 +1628,31 @@ impl App {
         let Some(entry) = self.conversation.get(self.conversation_cursor) else {
             return;
         };
+        let sub = self.conversation_sub_cursor;
         match &entry.kind {
             ConversationKind::IssueComment { comment_id } if *comment_id > 0 => {}
-            ConversationKind::CodeComment { .. } => {}
+            ConversationKind::CodeComment {
+                replies,
+                root_comment_id,
+                ..
+            } => {
+                if sub == 0 {
+                    // root comment: ID が 0 でなければ OK
+                    if *root_comment_id == 0 {
+                        self.status_message =
+                            Some(StatusMessage::error("✗ Comment is still being posted"));
+                        return;
+                    }
+                } else if let Some(reply) = replies.get(sub - 1) {
+                    if reply.id == 0 {
+                        self.status_message =
+                            Some(StatusMessage::error("✗ Comment is still being posted"));
+                        return;
+                    }
+                } else {
+                    return;
+                }
+            }
             ConversationKind::Review { node_id, .. } if !node_id.is_empty() => {}
             ConversationKind::IssueComment { .. } | ConversationKind::Review { .. } => {
                 self.status_message = Some(StatusMessage::error("✗ Comment is still being posted"));
@@ -1619,6 +1675,7 @@ impl App {
         }
 
         let entry_index = self.conversation_cursor;
+        let sub_index = self.conversation_sub_cursor;
         let Some(entry) = self.conversation.get(entry_index) else {
             return;
         };
@@ -1629,29 +1686,52 @@ impl App {
             ReviewComment(u64),
             Review(String), // node_id for GraphQL
         }
-        let target = match &entry.kind {
-            ConversationKind::IssueComment { comment_id } => {
-                ReactionTarget::IssueComment(*comment_id)
-            }
+        // サブアイテムに応じてターゲットと既存リアクション情報を取得
+        let (target, old_reactions, old_user_reaction_ids) = match &entry.kind {
+            ConversationKind::IssueComment { comment_id } => (
+                ReactionTarget::IssueComment(*comment_id),
+                entry.reactions.clone(),
+                entry.user_reaction_ids.clone(),
+            ),
             ConversationKind::CodeComment {
-                root_comment_id, ..
-            } => ReactionTarget::ReviewComment(*root_comment_id),
-            ConversationKind::Review { node_id, .. } => ReactionTarget::Review(node_id.clone()),
+                root_comment_id,
+                replies,
+                ..
+            } => {
+                if sub_index == 0 {
+                    (
+                        ReactionTarget::ReviewComment(*root_comment_id),
+                        entry.reactions.clone(),
+                        entry.user_reaction_ids.clone(),
+                    )
+                } else if let Some(reply) = replies.get(sub_index - 1) {
+                    (
+                        ReactionTarget::ReviewComment(reply.id),
+                        reply.reactions.clone(),
+                        reply.user_reaction_ids.clone(),
+                    )
+                } else {
+                    return;
+                }
+            }
+            ConversationKind::Review { node_id, .. } => (
+                ReactionTarget::Review(node_id.clone()),
+                entry.reactions.clone(),
+                entry.user_reaction_ids.clone(),
+            ),
         };
 
-        let old_reactions = entry.reactions.clone();
-        let old_user_reaction_ids = entry.user_reaction_ids.clone();
         let api_value = content.api_value().to_string();
 
         // トグル判定: 自分が既にこのリアクションをつけているか
-        let existing_reaction_id = entry.user_reaction_ids.get(&api_value).copied();
+        let existing_reaction_id = old_user_reaction_ids.get(&api_value).copied();
         let is_remove = existing_reaction_id.is_some();
 
         if self.demo_mode {
             if is_remove {
-                self.apply_remove_reaction(entry_index, &content);
+                self.apply_remove_reaction(entry_index, sub_index, &content);
             } else {
-                self.apply_add_reaction(entry_index, &content);
+                self.apply_add_reaction(entry_index, sub_index, &content);
             }
             return;
         }
@@ -1666,14 +1746,15 @@ impl App {
 
         let rollback = RollbackState::AddReaction {
             entry_index,
+            sub_index,
             old_reactions,
             old_user_reaction_ids,
         };
 
         if is_remove {
-            self.apply_remove_reaction(entry_index, &content);
+            self.apply_remove_reaction(entry_index, sub_index, &content);
         } else {
-            self.apply_add_reaction(entry_index, &content);
+            self.apply_add_reaction(entry_index, sub_index, &content);
         }
         self.inflight_rollback = Some(rollback);
 
@@ -1767,13 +1848,36 @@ impl App {
     }
 
     /// リアクションカウントを +1 して UI を更新
-    fn apply_add_reaction(&mut self, entry_index: usize, content: &ReactionContent) {
+    fn apply_add_reaction(
+        &mut self,
+        entry_index: usize,
+        sub_index: usize,
+        content: &ReactionContent,
+    ) {
         let Some(entry) = self.conversation.get_mut(entry_index) else {
             return;
         };
-        let reactions = entry
-            .reactions
-            .get_or_insert_with(crate::github::comments::Reactions::default);
+        let (reactions, user_ids) = if sub_index == 0 {
+            (
+                entry
+                    .reactions
+                    .get_or_insert_with(crate::github::comments::Reactions::default),
+                &mut entry.user_reaction_ids,
+            )
+        } else if let ConversationKind::CodeComment {
+            ref mut replies, ..
+        } = entry.kind
+            && let Some(reply) = replies.get_mut(sub_index - 1)
+        {
+            (
+                reply
+                    .reactions
+                    .get_or_insert_with(crate::github::comments::Reactions::default),
+                &mut reply.user_reaction_ids,
+            )
+        } else {
+            return;
+        };
         match content {
             ReactionContent::PlusOne => reactions.plus_one += 1,
             ReactionContent::MinusOne => reactions.minus_one += 1,
@@ -1785,19 +1889,33 @@ impl App {
             ReactionContent::Eyes => reactions.eyes += 1,
         }
         // user_reaction_ids に追加（reaction_id は未知なので 0）
-        entry
-            .user_reaction_ids
-            .insert(content.api_value().to_string(), 0);
+        user_ids.insert(content.api_value().to_string(), 0);
         self.conversation_rendered = None;
         self.status_message = Some(StatusMessage::info(format!("✓ {} added", content.emoji())));
     }
 
     /// リアクションカウントを -1 して UI を更新（トグル削除）
-    fn apply_remove_reaction(&mut self, entry_index: usize, content: &ReactionContent) {
+    fn apply_remove_reaction(
+        &mut self,
+        entry_index: usize,
+        sub_index: usize,
+        content: &ReactionContent,
+    ) {
         let Some(entry) = self.conversation.get_mut(entry_index) else {
             return;
         };
-        if let Some(reactions) = entry.reactions.as_mut() {
+        let (reactions_opt, user_ids) = if sub_index == 0 {
+            (&mut entry.reactions, &mut entry.user_reaction_ids)
+        } else if let ConversationKind::CodeComment {
+            ref mut replies, ..
+        } = entry.kind
+            && let Some(reply) = replies.get_mut(sub_index - 1)
+        {
+            (&mut reply.reactions, &mut reply.user_reaction_ids)
+        } else {
+            return;
+        };
+        if let Some(reactions) = reactions_opt.as_mut() {
             match content {
                 ReactionContent::PlusOne => {
                     reactions.plus_one = reactions.plus_one.saturating_sub(1)
@@ -1815,7 +1933,7 @@ impl App {
                 ReactionContent::Eyes => reactions.eyes = reactions.eyes.saturating_sub(1),
             }
         }
-        entry.user_reaction_ids.remove(content.api_value());
+        user_ids.remove(content.api_value());
         self.conversation_rendered = None;
         self.status_message = Some(StatusMessage::info(format!(
             "✓ {} removed",
@@ -1856,10 +1974,12 @@ impl App {
                 && root_comment_id == in_reply_to
             {
                 replies.push(CodeCommentReply {
+                    id: 0, // 楽観的更新時は仮 ID
                     author,
                     body,
                     created_at,
                     reactions: None,
+                    user_reaction_ids: HashMap::new(),
                 });
                 break;
             }
@@ -2093,6 +2213,7 @@ impl App {
         self.conversation_scroll = 0;
         self.conversation_visual_total = 0;
         self.conversation_cursor = 0;
+        self.conversation_sub_cursor = 0;
 
         self.status_message = Some(StatusMessage::info("✓ Reloaded"));
     }
@@ -2265,12 +2386,22 @@ impl App {
             }
             Some(RollbackState::AddReaction {
                 entry_index,
+                sub_index,
                 old_reactions,
                 old_user_reaction_ids,
             }) => {
                 if let Some(entry) = self.conversation.get_mut(entry_index) {
-                    entry.reactions = old_reactions;
-                    entry.user_reaction_ids = old_user_reaction_ids;
+                    if sub_index == 0 {
+                        entry.reactions = old_reactions;
+                        entry.user_reaction_ids = old_user_reaction_ids;
+                    } else if let ConversationKind::CodeComment {
+                        ref mut replies, ..
+                    } = entry.kind
+                        && let Some(reply) = replies.get_mut(sub_index - 1)
+                    {
+                        reply.reactions = old_reactions;
+                        reply.user_reaction_ids = old_user_reaction_ids;
+                    }
                 }
                 self.conversation_rendered = None;
             }
@@ -2351,6 +2482,17 @@ impl App {
                 && let Some(reactions) = user_reactions.get(&id)
             {
                 entry.user_reaction_ids = reactions.clone();
+            }
+            // CodeComment のリプライにも per-user リアクション情報を適用
+            if let ConversationKind::CodeComment {
+                ref mut replies, ..
+            } = entry.kind
+            {
+                for reply in replies.iter_mut() {
+                    if let Some(reactions) = user_reactions.get(&reply.id) {
+                        reply.user_reaction_ids = reactions.clone();
+                    }
+                }
             }
         }
         self.conversation = conversation;

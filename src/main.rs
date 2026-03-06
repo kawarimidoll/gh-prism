@@ -354,9 +354,9 @@ async fn fetch_user_reactions(
         }
     }
 
-    // リアクションがある review comment のルートコメントのみフェッチ
+    // リアクションがある review comment（ルート + リプライ）をフェッチ
     for rc in review_comments {
-        if rc.in_reply_to_id.is_none() && rc.reactions.as_ref().is_some_and(|r| !r.is_empty()) {
+        if rc.reactions.as_ref().is_some_and(|r| !r.is_empty()) {
             let client = client.clone();
             let owner = owner.to_string();
             let repo = repo.to_string();
@@ -455,10 +455,12 @@ pub fn build_conversation(
             sorted_replies.sort_by(|a, b| a.created_at.cmp(&b.created_at));
             for r in sorted_replies {
                 replies.push(CodeCommentReply {
+                    id: r.id,
                     author: r.user.login.clone(),
                     body: r.body.clone(),
                     created_at: r.created_at.clone(),
                     reactions: r.reactions.clone(),
+                    user_reaction_ids: HashMap::new(),
                 });
             }
         }
