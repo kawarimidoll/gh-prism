@@ -1113,10 +1113,16 @@ impl App {
         };
 
         // Diff タイトル（左: パス+選択状態, 右: 変更行数）
-        let right_title = if has_file && !filename.is_empty() {
-            format!(" +{} -{} ", additions, deletions)
+        let right_title: Line = if has_file && !filename.is_empty() {
+            Line::from(vec![
+                Span::raw(" "),
+                Span::styled(format!("+{additions}"), Style::default().fg(Color::Green)),
+                Span::raw(" "),
+                Span::styled(format!("-{deletions}"), Style::default().fg(Color::Red)),
+                Span::raw(" "),
+            ])
         } else {
-            String::new()
+            Line::raw("")
         };
 
         let left_title = {
@@ -1137,7 +1143,7 @@ impl App {
                 let max_path_width = (area.width as usize)
                     .saturating_sub(2) // borders
                     .saturating_sub(7) // " Diff " + trailing " "
-                    .saturating_sub(right_title.len())
+                    .saturating_sub(right_title.width())
                     .saturating_sub(wrap_width)
                     .saturating_sub(selection_suffix.len());
                 truncate_path(&filename, max_path_width)
@@ -1167,8 +1173,8 @@ impl App {
             .title(self.panel_title(Panel::DiffView, left_title))
             .borders(Borders::ALL)
             .border_style(border_style);
-        if !right_title.is_empty() {
-            block = block.title_top(Line::from(right_title).alignment(HorizontalAlignment::Right));
+        if right_title.width() > 0 {
+            block = block.title_top(right_title.alignment(HorizontalAlignment::Right));
         }
         if self.focused_panel == Panel::DiffView
             && !matches!(
