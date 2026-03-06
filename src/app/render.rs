@@ -30,9 +30,9 @@ const FILE_TREE_HEIGHT_PCT: u16 = 30;
 // --- パネルキーヒント ---
 const HINT_MEDIA: &str = " m: media ";
 const HINT_VIEWED: &str = " x: viewed ";
-const HINT_COMMENT: &str = " c: comment ";
-const HINT_RESOLVE_REPLY: &str = " x: resolve | r: reply | c: comment ";
-const HINT_UNRESOLVE_REPLY: &str = " x: unresolve | r: reply | c: comment ";
+const HINT_COMMENT: &str = " e: emoji | c: comment ";
+const HINT_RESOLVE_REPLY: &str = " x: resolve | r: reply | e: emoji | c: comment ";
+const HINT_UNRESOLVE_REPLY: &str = " x: unresolve | r: reply | e: emoji | c: comment ";
 const HINT_SELECT_COMMENT: &str = " v: select | c: comment ";
 
 // --- ダイアログサイズ ---
