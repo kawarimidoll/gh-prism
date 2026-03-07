@@ -14,7 +14,7 @@ jobs:
     outputs:
       has_commits: ${{ steps.check.outputs.has_commits }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
 
@@ -38,7 +38,7 @@ jobs:
       tag: ${{ steps.tag.outputs.TAG }}
       sha: ${{ steps.version.outputs.SHA }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
 
@@ -77,11 +77,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ needs.prepare.outputs.sha }}
-      - uses: nixbuild/nix-quick-install-action@v34
-      - uses: cachix/cachix-action@v16
+      - uses: nixbuild/nix-quick-install-action@2c9db80fb984ceb1bcaa77cdda3fdf8cfba92035 # v34
+      - uses: cachix/cachix-action@97e5ff84d02b3b4f9936339f767e17f03c9252ed # v16
         with:
           name: kawarimidoll
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
@@ -99,21 +99,21 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             asset_name: linux-arm64
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ needs.prepare.outputs.sha }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: Swatinem/rust-cache@ad397744b0d591a723ab90405b7247fac0e6b8db # v2
         with:
           key: ${{ matrix.target }}
-      - uses: taiki-e/setup-cross-toolchain-action@v1
+      - uses: taiki-e/setup-cross-toolchain-action@b8d1a322a6009a2b7220f53996695778eef89b41 # v1
         with:
           target: ${{ matrix.target }}
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
         env:
           GH_PRISM_VERSION: ${{ needs.prepare.outputs.tag }}
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: ${{ matrix.asset_name }}
           path: target/${{ matrix.target }}/release/gh-prism
@@ -129,20 +129,20 @@ jobs:
           - target: aarch64-apple-darwin
             asset_name: darwin-arm64
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ needs.prepare.outputs.sha }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@ad397744b0d591a723ab90405b7247fac0e6b8db # v2
         with:
           key: ${{ matrix.target }}
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
         env:
           GH_PRISM_VERSION: ${{ needs.prepare.outputs.tag }}
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: ${{ matrix.asset_name }}
           path: target/${{ matrix.target }}/release/gh-prism
@@ -151,7 +151,7 @@ jobs:
     needs: [prepare, build-linux, build-macos]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ needs.prepare.outputs.sha }}
           fetch-depth: 0
@@ -159,7 +159,7 @@ jobs:
       - name: Generate changelog
         run: .github/scripts/generate-changelog.sh "" "${{ needs.prepare.outputs.tag }}" > changelog.md
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8
         with:
           path: artifacts
 
