@@ -147,6 +147,7 @@
 
               # YAML (GitHub Actions)
               actionlint.enable = true;
+              zizmor.enable = true;
 
               # Spell check (Rust-based, fast)
               typos.enable = true;
@@ -182,6 +183,7 @@
               nixfmt-rfc-style
               dprint
               actionlint
+              zizmor
               convco
               typos
             ];
