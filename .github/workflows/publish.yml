@@ -5,18 +5,20 @@ on:
     - cron: '0 0 * * *'
   workflow_dispatch:
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
   check:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       has_commits: ${{ steps.check.outputs.has_commits }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Check for new commits since last release
         id: check
@@ -34,6 +36,8 @@ jobs:
     needs: check
     if: needs.check.outputs.has_commits == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       tag: ${{ steps.tag.outputs.TAG }}
       sha: ${{ steps.version.outputs.SHA }}
@@ -41,6 +45,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Generate calver tag
         id: tag
@@ -59,12 +64,15 @@ jobs:
 
       - name: Update Cargo.toml version
         id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.TAG }}
         run: |
-          TAG="${{ steps.tag.outputs.TAG }}"
           sed -i '0,/^version = ".*"/{s/^version = ".*"/version = "'"$TAG"'"/}' Cargo.toml
           sed -i '/^name = "gh-prism"/{n;s/^version = ".*"/version = "'"$TAG"'"/}' Cargo.lock
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          gh auth setup-git
           git add Cargo.toml Cargo.lock
           git commit -m "chore(release): $TAG"
           git push
@@ -73,6 +81,8 @@ jobs:
   release-nix:
     needs: prepare
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
@@ -80,6 +90,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
       - uses: nixbuild/nix-quick-install-action@2c9db80fb984ceb1bcaa77cdda3fdf8cfba92035 # v34
       - uses: cachix/cachix-action@97e5ff84d02b3b4f9936339f767e17f03c9252ed # v16
         with:
@@ -91,6 +102,8 @@ jobs:
   build-linux:
     needs: prepare
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       matrix:
         include:
@@ -102,6 +115,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
       - uses: Swatinem/rust-cache@ad397744b0d591a723ab90405b7247fac0e6b8db # v2
         with:
@@ -121,6 +135,8 @@ jobs:
   build-macos:
     needs: prepare
     runs-on: macos-latest
+    permissions:
+      contents: read
     strategy:
       matrix:
         include:
@@ -132,6 +148,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
         with:
           targets: ${{ matrix.target }}
@@ -150,14 +167,19 @@ jobs:
   release:
     needs: [prepare, build-linux, build-macos]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ needs.prepare.outputs.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Generate changelog
-        run: .github/scripts/generate-changelog.sh "" "${{ needs.prepare.outputs.tag }}" > changelog.md
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: .github/scripts/generate-changelog.sh "" "$TAG" > changelog.md
 
       - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8
         with:
@@ -174,9 +196,10 @@ jobs:
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          gh release create "${{ needs.prepare.outputs.tag }}" \
-            --title "${{ needs.prepare.outputs.tag }}" \
+          gh release create "$TAG" \
+            --title "$TAG" \
             --notes-file changelog.md \
             --latest \
             dist/linux-amd64 \
