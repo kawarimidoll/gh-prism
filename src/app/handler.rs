@@ -748,7 +748,7 @@ impl App {
         let len = ReactionContent::ALL.len();
         match code {
             KeyCode::Esc => {
-                self.mode = AppMode::Normal;
+                self.mode = self.reaction_return_mode;
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 self.reaction_cursor = (self.reaction_cursor + 1) % len;
@@ -763,7 +763,7 @@ impl App {
             KeyCode::Enter => {
                 let content = ReactionContent::ALL[self.reaction_cursor];
                 self.needs_add_reaction = Some(content);
-                self.mode = AppMode::Normal;
+                self.mode = self.reaction_return_mode;
             }
             _ => {}
         }
@@ -896,6 +896,16 @@ impl App {
                     self.review.comment_editor.clear();
                     self.mode = AppMode::ReplyInput;
                 }
+            }
+            KeyCode::Char('e') => {
+                // viewing_comment_cursor が指すコメントに reaction picker を開く
+                self.open_reaction_picker_for_comment_view();
+            }
+            KeyCode::Char('z') => {
+                self.zoomed = !self.zoomed;
+                self.pr_desc_visual_total = 0;
+                self.commit_msg_visual_total = 0;
+                self.conversation_visual_total = 0;
             }
             _ => {}
         }

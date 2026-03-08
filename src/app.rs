@@ -173,6 +173,8 @@ pub struct App {
     rainbow_tick: u16,
     /// リアクション Picker のカーソル位置
     pub(crate) reaction_cursor: usize,
+    /// リアクション Picker を開く前のモード（終了時に戻る先）
+    reaction_return_mode: AppMode,
     /// リアクション追加フラグ（draw 後に実行）
     needs_add_reaction: Option<ReactionContent>,
 }
@@ -332,6 +334,7 @@ impl App {
             rainbow_mode: false,
             rainbow_tick: 0,
             reaction_cursor: 0,
+            reaction_return_mode: AppMode::Normal,
             needs_add_reaction: None,
         }
     }
@@ -1618,6 +1621,40 @@ impl App {
         self.status_message = Some(StatusMessage::info(label));
     }
 
+    /// CommentView から reaction picker を開く
+    /// viewing_comment_index（render 時に導出）が指すコメントに対応する conversation エントリ + sub_cursor をセット
+    pub(crate) fn open_reaction_picker_for_comment_view(&mut self) {
+        let index = self.review.viewing_comment_index;
+        let comments = &self.review.viewing_comments;
+        if index >= comments.len() {
+            return;
+        }
+
+        let target_comment = &comments[index];
+        let target_id = target_comment.id;
+
+        // conversation から対応エントリを探す
+        let root_id = target_comment.in_reply_to_id.unwrap_or(target_id);
+        if let Some(entry_idx) = self.conversation.iter().position(|e| {
+            matches!(&e.kind, ConversationKind::CodeComment { root_comment_id, .. } if *root_comment_id == root_id)
+        }) {
+            self.conversation_cursor = entry_idx;
+            // sub_cursor を決定: root なら 0, reply なら対応する index + 1
+            if target_comment.in_reply_to_id.is_none() {
+                self.conversation_sub_cursor = 0;
+            } else if let ConversationKind::CodeComment { ref replies, .. } =
+                self.conversation[entry_idx].kind
+            {
+                self.conversation_sub_cursor = replies
+                    .iter()
+                    .position(|r| r.id == target_id)
+                    .map(|i| i + 1)
+                    .unwrap_or(0);
+            }
+            self.open_reaction_picker();
+        }
+    }
+
     /// リアクション Picker を開く
     pub(crate) fn open_reaction_picker(&mut self) {
         if self.loading.conversation == LoadPhase::Loading {
@@ -1660,6 +1697,7 @@ impl App {
             }
         }
         self.reaction_cursor = 0;
+        self.reaction_return_mode = self.mode;
         self.mode = AppMode::ReactionPicker;
     }
 

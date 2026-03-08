@@ -300,7 +300,10 @@ impl App {
                     self.render_commit_overview(frame, full_area);
                 }
                 Panel::DiffView => {
-                    if self.mode == AppMode::ReviewBodyInput {
+                    if self.mode == AppMode::CommentView {
+                        // CommentView zoom: コメントペインのみ全画面表示
+                        self.render_editor_panel(frame, full_area);
+                    } else if self.mode == AppMode::ReviewBodyInput {
                         // ReviewBodyInput 時は全幅パネルで描画するため CommitMsg + DiffView のみ
                         let zoom_layout = Layout::default()
                             .direction(Direction::Vertical)
@@ -1421,7 +1424,8 @@ impl App {
     /// 既存コメントの下線 / 💬💭 マーカーをテキスト側に適用し、背景色が必要な行を収集。
     /// `filename` は pending コメントのファイルパス照合に使用。
     fn collect_diff_bg_lines(&self, text: &mut Text<'_>, filename: &str) -> Vec<(usize, Color)> {
-        let show_cursor = self.focused_panel == Panel::DiffView;
+        let show_cursor =
+            self.focused_panel == Panel::DiffView && self.mode != AppMode::CommentView;
         let has_selection = self.mode == AppMode::LineSelect || self.mode == AppMode::CommentInput;
         let existing_counts = self.existing_comment_counts();
         let cursor_bg = match self.theme {
@@ -1691,7 +1695,7 @@ impl App {
         }
         comment_offsets.push(lines.len()); // センチネル
 
-        // 論理行 → 視覚行マッピングを事前構築
+        // 論理行 → 視覚行マッピングを事前構築（ハイライト + スクロールに使用）
         let visual_offsets: Vec<u16> = if inner_width > 0 {
             let mut offsets = Vec::with_capacity(lines.len() + 1);
             let mut vis = 0u16;
@@ -1766,7 +1770,7 @@ impl App {
             } else {
                 "r: resolve"
             };
-            format!(" c: reply | {resolve_label} ")
+            format!(" c: reply | e: emoji | {resolve_label} ")
         } else {
             String::new()
         };
