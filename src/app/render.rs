@@ -1660,16 +1660,23 @@ impl App {
         comments: &[crate::github::comments::ReviewComment],
         focused: bool,
     ) {
-        // 非フォーカス時はスクロールをリセット（全ナビゲーション経路を統一的にカバー）
+        // 非フォーカス時はスクロールとカーソルをリセット
         if !focused {
             self.review.viewing_comment_scroll = 0;
+            self.review.viewing_comment_cursor = 0;
         }
 
-        let mut lines = Vec::new();
+        let inner_width = area.width.saturating_sub(2);
+        let visible_height = area.height.saturating_sub(2);
+
+        // コメントごとの論理行オフセットを記録しつつ lines を構築
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        let mut comment_offsets: Vec<usize> = Vec::new();
         for (i, comment) in comments.iter().enumerate() {
             if i > 0 {
                 lines.push(Line::raw(""));
             }
+            comment_offsets.push(lines.len());
             lines.push(Line::styled(
                 format!(
                     "@{} ({})",
@@ -1682,16 +1689,76 @@ impl App {
                 lines.push(Line::raw(body_line.to_string()));
             }
         }
+        comment_offsets.push(lines.len()); // センチネル
+
+        // 論理行 → 視覚行マッピングを事前構築
+        let visual_offsets: Vec<u16> = if inner_width > 0 {
+            let mut offsets = Vec::with_capacity(lines.len() + 1);
+            let mut vis = 0u16;
+            for line in &lines {
+                offsets.push(vis);
+                let count = Paragraph::new(line.clone())
+                    .wrap(Wrap { trim: false })
+                    .line_count(inner_width);
+                vis += count.max(1) as u16;
+            }
+            offsets.push(vis);
+            offsets
+        } else {
+            vec![0; lines.len() + 1]
+        };
+        let visual_total = *visual_offsets.last().unwrap_or(&0);
 
         // ルートコメント ID を特定して resolved 状態を判定
         let is_resolved = crate::github::comments::root_comment_id(comments)
             .and_then(|id| self.review.thread_map.get(&id))
             .is_some_and(|t| t.is_resolved);
 
-        let title = if is_resolved {
-            format!(" 💬 Review Comments ({}) [Resolved] ", comments.len())
+        // 視覚行カーソルを clamp し、キャッシュを更新
+        let vis_cursor =
+            (self.review.viewing_comment_cursor as u16).min(visual_total.saturating_sub(1));
+        self.review.viewing_comment_cursor = vis_cursor as usize;
+        self.review.comment_view_line_count = visual_total as usize;
+        self.review.comment_view_max_scroll = visual_total.saturating_sub(visible_height);
+
+        // 視覚行カーソル → 論理行 → コメントインデックスを導出
+        let logical_line = visual_offsets
+            .partition_point(|&v| v <= vis_cursor)
+            .saturating_sub(1);
+        let comment_index = comment_offsets
+            .iter()
+            .rposition(|&off| off <= logical_line)
+            .unwrap_or(0);
+        self.review.viewing_comment_index = comment_index;
+
+        // focused 時: カーソル行が表示範囲に入るようスクロール自動調整
+        if focused {
+            let scroll = &mut self.review.viewing_comment_scroll;
+            if vis_cursor < *scroll {
+                *scroll = vis_cursor;
+            } else if vis_cursor + 1 > *scroll + visible_height {
+                *scroll = (vis_cursor + 1).saturating_sub(visible_height);
+            }
+        }
+
+        let title = if !focused || comments.len() <= 1 {
+            if is_resolved {
+                format!(" 💬 Review Comments ({}) [Resolved] ", comments.len())
+            } else {
+                format!(" 💬 Review Comments ({}) ", comments.len())
+            }
+        } else if is_resolved {
+            format!(
+                " 💬 Review Comments ({}/{}) [Resolved] ",
+                comment_index + 1,
+                comments.len()
+            )
         } else {
-            format!(" 💬 Review Comments ({}) ", comments.len())
+            format!(
+                " 💬 Review Comments ({}/{}) ",
+                comment_index + 1,
+                comments.len()
+            )
         };
         let help_text = if focused {
             let resolve_label = if is_resolved {
@@ -1703,7 +1770,6 @@ impl App {
         } else {
             String::new()
         };
-        // rainbow_mode 時は虹色（index 5: DiffView 系列）、通常時は focused で Yellow/DarkGray
         let border_color = if let Some(color) = self.rainbow_color(6) {
             color
         } else if focused {
@@ -1719,27 +1785,40 @@ impl App {
             block = block.title_bottom(Line::from(help_text).alignment(HorizontalAlignment::Right));
         }
 
-        // block なしで line_count を計算（block 付きだとボーダー行が加算されてしまう）
-        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-        let visible_height = area.height.saturating_sub(2) as usize;
-        let inner_width = area.width.saturating_sub(2);
-        let visual_total = paragraph.line_count(inner_width);
-        self.review.comment_view_max_scroll =
-            (visual_total as u16).saturating_sub(visible_height as u16);
-
-        let paragraph = paragraph
+        let paragraph = Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
             .block(block)
             .scroll((self.review.viewing_comment_scroll, 0));
-
         frame.render_widget(paragraph, area);
+
+        // focused 時: カーソル行のハイライト（視覚行1行）
+        if focused {
+            let scroll = self.review.viewing_comment_scroll;
+            if vis_cursor >= scroll && vis_cursor < scroll + visible_height {
+                let cursor_bg = match self.theme {
+                    ThemeMode::Dark => CURSOR_BG_DARK,
+                    ThemeMode::Light => CURSOR_BG_LIGHT,
+                };
+                let screen_y = area.y + 1 + (vis_cursor - scroll);
+                let row_rect = Rect {
+                    x: area.x + 1,
+                    y: screen_y,
+                    width: inner_width,
+                    height: 1,
+                };
+                frame
+                    .buffer_mut()
+                    .set_style(row_rect, Style::default().bg(cursor_bg));
+            }
+        }
 
         if visual_total > visible_height {
             Self::render_scrollbar(
                 frame,
                 area,
-                visual_total,
+                visual_total as usize,
                 self.review.viewing_comment_scroll as usize,
-                visible_height,
+                visible_height as usize,
             );
         }
     }

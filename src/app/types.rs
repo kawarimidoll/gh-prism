@@ -240,8 +240,14 @@ pub struct ReviewState {
     pub pending_comments: Vec<crate::github::review::PendingComment>,
     pub review_comments: Vec<crate::github::comments::ReviewComment>,
     pub viewing_comments: Vec<crate::github::comments::ReviewComment>,
+    /// CommentView の視覚行カーソル
+    pub viewing_comment_cursor: usize,
     pub viewing_comment_scroll: u16,
     pub comment_view_max_scroll: u16,
+    /// render 時に導出されるカーソル下のコメントインデックス
+    pub viewing_comment_index: usize,
+    /// render 時にキャッシュされる視覚行数（handler での clamp に使用）
+    pub comment_view_line_count: usize,
     pub review_event_cursor: usize,
     pub review_body_editor: TextEditor,
     pub needs_submit: Option<ReviewEvent>,

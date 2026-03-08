@@ -870,17 +870,19 @@ impl App {
         match code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.review.viewing_comments.clear();
+                self.review.viewing_comment_cursor = 0;
                 self.review.viewing_comment_scroll = 0;
                 self.mode = AppMode::Normal;
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.review.viewing_comment_scroll < self.review.comment_view_max_scroll {
-                    self.review.viewing_comment_scroll += 1;
+                let max = self.review.comment_view_line_count.saturating_sub(1);
+                if self.review.viewing_comment_cursor < max {
+                    self.review.viewing_comment_cursor += 1;
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.review.viewing_comment_scroll =
-                    self.review.viewing_comment_scroll.saturating_sub(1);
+                self.review.viewing_comment_cursor =
+                    self.review.viewing_comment_cursor.saturating_sub(1);
             }
             KeyCode::Char('r') => {
                 self.toggle_resolve_thread();
