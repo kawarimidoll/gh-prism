@@ -63,12 +63,6 @@ impl TextEditor {
         self.display_width = width;
     }
 
-    /// スクロール位置以降の全行を返す（Paragraph に渡して wrap/clip させる）
-    pub fn lines_from_scroll(&self) -> &[String] {
-        let start = self.scroll_offset.min(self.lines.len());
-        &self.lines[start..]
-    }
-
     /// スクロール位置以降の行を文字単位で事前ラップして返す。
     /// cursor_visual_position と同じ文字単位ラップなのでカーソル位置と描画が一致する。
     /// Paragraph には `.wrap()` を付けずに渡すこと。
@@ -184,20 +178,14 @@ impl TextEditor {
         }
     }
 
-    /// カーソルを上に移動
+    /// カーソルを上に移動（wrap 時は視覚行単位）
     pub fn move_up(&mut self) {
-        if self.cursor_row > 0 {
-            self.cursor_row -= 1;
-            self.clamp_cursor_col();
-        }
+        self.move_up_visual();
     }
 
-    /// カーソルを下に移動
+    /// カーソルを下に移動（wrap 時は視覚行単位）
     pub fn move_down(&mut self) {
-        if self.cursor_row + 1 < self.lines.len() {
-            self.cursor_row += 1;
-            self.clamp_cursor_col();
-        }
+        self.move_down_visual();
     }
 
     /// カーソルを行頭に移動
@@ -388,6 +376,133 @@ impl TextEditor {
             rows += self.line_visual_height(i, w);
         }
         rows
+    }
+
+    /// 指定論理行の各 wrap 行の開始バイトオフセットを返す。
+    /// 例: 幅5 で "abcdefgh" → [0, 5] （wrap行0は byte 0 から、wrap行1は byte 5 から）
+    fn wrap_line_byte_offsets(&self, line_idx: usize, width: usize) -> Vec<usize> {
+        let line = &self.lines[line_idx];
+        let mut offsets = vec![0usize];
+        if line.is_empty() || width == 0 {
+            return offsets;
+        }
+        let mut col = 0;
+        let mut byte_pos = 0;
+        for ch in line.chars() {
+            let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if col + cw > width && col > 0 {
+                offsets.push(byte_pos);
+                col = 0;
+            }
+            col += cw;
+            byte_pos += ch.len_utf8();
+        }
+        offsets
+    }
+
+    /// 指定論理行・指定 wrap 行内で、目標の表示列に最も近いバイトオフセットを返す。
+    fn byte_offset_at_visual_col(
+        &self,
+        line_idx: usize,
+        wrap_line: usize,
+        target_col: usize,
+    ) -> usize {
+        let w = self.effective_width();
+        let offsets = self.wrap_line_byte_offsets(line_idx, w);
+        let start_byte = offsets.get(wrap_line).copied().unwrap_or(0);
+        let end_byte = offsets
+            .get(wrap_line + 1)
+            .copied()
+            .unwrap_or(self.lines[line_idx].len());
+
+        let line = &self.lines[line_idx];
+        let mut col = 0;
+        let mut byte_pos = start_byte;
+        for ch in line[start_byte..end_byte].chars() {
+            let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if col + cw > target_col {
+                break;
+            }
+            col += cw;
+            byte_pos += ch.len_utf8();
+        }
+        byte_pos
+    }
+
+    /// カーソルの現在の wrap 行インデックスと wrap 行内の表示列を返す。
+    /// cursor_visual_position_inner と同じラップシミュレーションを使い一貫性を保つ。
+    fn cursor_wrap_position(&self) -> (usize, usize) {
+        let w = self.effective_width();
+        let line = &self.lines[self.cursor_row];
+        let mut wrap_line = 0;
+        let mut col = 0;
+        let mut byte_pos = 0;
+        while byte_pos < self.cursor_col {
+            if let Some(ch) = line[byte_pos..].chars().next() {
+                let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+                if col + cw > w && col > 0 {
+                    wrap_line += 1;
+                    col = 0;
+                }
+                col += cw;
+                byte_pos += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        // カーソルが表示幅の端に達した場合、次の wrap 行の先頭
+        if w > 0 && w != usize::MAX && col >= w {
+            wrap_line += 1;
+            col = 0;
+        }
+        (wrap_line, col)
+    }
+
+    /// カーソルを視覚行単位で上に移動（wrap 考慮）
+    fn move_up_visual(&mut self) {
+        let w = self.effective_width();
+        if w == 0 || w == usize::MAX {
+            if self.cursor_row > 0 {
+                self.cursor_row -= 1;
+                self.clamp_cursor_col();
+            }
+            return;
+        }
+
+        let (wrap_line, vis_col) = self.cursor_wrap_position();
+
+        if wrap_line > 0 {
+            self.cursor_col =
+                self.byte_offset_at_visual_col(self.cursor_row, wrap_line - 1, vis_col);
+        } else if self.cursor_row > 0 {
+            self.cursor_row -= 1;
+            let prev_offsets = self.wrap_line_byte_offsets(self.cursor_row, w);
+            let last_wrap = prev_offsets.len() - 1;
+            self.cursor_col = self.byte_offset_at_visual_col(self.cursor_row, last_wrap, vis_col);
+        }
+    }
+
+    /// カーソルを視覚行単位で下に移動（wrap 考慮）
+    fn move_down_visual(&mut self) {
+        let w = self.effective_width();
+        if w == 0 || w == usize::MAX {
+            if self.cursor_row + 1 < self.lines.len() {
+                self.cursor_row += 1;
+                self.clamp_cursor_col();
+            }
+            return;
+        }
+
+        let offsets = self.wrap_line_byte_offsets(self.cursor_row, w);
+        let (wrap_line, vis_col) = self.cursor_wrap_position();
+
+        if wrap_line + 1 < offsets.len() {
+            self.cursor_col =
+                self.byte_offset_at_visual_col(self.cursor_row, wrap_line + 1, vis_col);
+        } else if self.cursor_row + 1 < self.lines.len() {
+            self.cursor_row += 1;
+            self.cursor_col = self.byte_offset_at_visual_col(self.cursor_row, 0, vis_col);
+        }
     }
 
     /// cursor_col が現在の行のバイト長を超えないようにクランプ
@@ -736,7 +851,7 @@ mod tests {
         editor.insert_char('b');
         editor.insert_newline();
         editor.insert_char('c');
-        let lines = editor.lines_from_scroll();
+        let lines = editor.char_wrapped_lines_from_scroll();
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0], "a");
         assert_eq!(lines[1], "b");
@@ -962,5 +1077,133 @@ mod tests {
         editor.handle_key(KeyCode::Char('h'), ctrl);
         assert_eq!(editor.text(), "abcef");
         assert_eq!(editor.line_count(), 1);
+    }
+
+    #[test]
+    fn test_visual_move_down_within_wrapped_line() {
+        let mut editor = TextEditor::new();
+        editor.set_display_width(5);
+        // "abcdefghij" → wrap行0: "abcde", wrap行1: "fghij"
+        for c in "abcdefghij".chars() {
+            editor.insert_char(c);
+        }
+        // カーソルを先頭に移動
+        editor.move_home(); // 論理行先頭 = wrap行0先頭
+        assert_eq!(editor.cursor_col(), 0);
+
+        // 下に移動 → 同じ論理行の wrap行1 先頭
+        editor.move_down();
+        // wrap行1 の先頭は byte offset 5 ("f" の位置)
+        assert_eq!(editor.cursor_col(), 5);
+        assert_eq!(editor.cursor_row(), 0); // 同じ論理行
+
+        // もう一度下 → 論理行の末尾を超えているので次の論理行はない → 動かない
+        editor.move_down();
+        assert_eq!(editor.cursor_col(), 5);
+        assert_eq!(editor.cursor_row(), 0);
+    }
+
+    #[test]
+    fn test_visual_move_up_within_wrapped_line() {
+        let mut editor = TextEditor::new();
+        editor.set_display_width(5);
+        // "abcdefghij" → wrap行0: "abcde", wrap行1: "fghij"
+        for c in "abcdefghij".chars() {
+            editor.insert_char(c);
+        }
+        // カーソルは末尾 (byte 10)。表示列は幅5に達するので wrap行2 の col=0
+        // 上に移動 → wrap行1 の col=0 → byte 5
+        editor.move_up();
+        assert_eq!(editor.cursor_row(), 0);
+        assert_eq!(editor.cursor_col(), 5);
+
+        // もう一度上 → wrap行0 の col=0 → byte 0
+        editor.move_up();
+        assert_eq!(editor.cursor_col(), 0);
+    }
+
+    #[test]
+    fn test_visual_move_across_logical_lines() {
+        let mut editor = TextEditor::new();
+        editor.set_display_width(5);
+        // 行0: "abcdefghij" (2 wrap行), 行1: "xyz"
+        for c in "abcdefghij".chars() {
+            editor.insert_char(c);
+        }
+        editor.insert_newline();
+        for c in "xyz".chars() {
+            editor.insert_char(c);
+        }
+        // カーソルは行1 末尾 (col=3)
+        assert_eq!(editor.cursor_row(), 1);
+
+        // 上に移動 → 行0 の最後の wrap行 (wrap行1: "fghij") の col=3 → byte 8 ("i" の後)
+        editor.move_up();
+        assert_eq!(editor.cursor_row(), 0);
+        assert_eq!(editor.cursor_col(), 8); // "fgh" = 3文字 → byte 5+3=8
+
+        // もう一度上 → 行0 の wrap行0 ("abcde") の col=3 → byte 3
+        editor.move_up();
+        assert_eq!(editor.cursor_row(), 0);
+        assert_eq!(editor.cursor_col(), 3);
+    }
+
+    #[test]
+    fn test_visual_move_down_across_logical_lines() {
+        let mut editor = TextEditor::new();
+        editor.set_display_width(5);
+        // 行0: "abcdefghij" (2 wrap行), 行1: "xyz"
+        for c in "abcdefghij".chars() {
+            editor.insert_char(c);
+        }
+        editor.insert_newline();
+        for c in "xyz".chars() {
+            editor.insert_char(c);
+        }
+        // カーソルを行0 先頭に移動
+        editor.cursor_row = 0;
+        editor.cursor_col = 0;
+
+        // 下 → wrap行1 ("fghij") の col=0 → byte 5
+        editor.move_down();
+        assert_eq!(editor.cursor_row(), 0);
+        assert_eq!(editor.cursor_col(), 5);
+
+        // 下 → 行1 の wrap行0 ("xyz") の col=0 → byte 0
+        editor.move_down();
+        assert_eq!(editor.cursor_row(), 1);
+        assert_eq!(editor.cursor_col(), 0);
+    }
+
+    #[test]
+    fn test_visual_move_no_wrap() {
+        // display_width=0 (wrap 無効) → 従来の論理行移動
+        let mut editor = TextEditor::new();
+        editor.insert_text("abc\ndef\nghi");
+        editor.cursor_row = 0;
+        editor.cursor_col = 0;
+
+        editor.move_down();
+        assert_eq!(editor.cursor_row(), 1);
+        editor.move_down();
+        assert_eq!(editor.cursor_row(), 2);
+        editor.move_up();
+        assert_eq!(editor.cursor_row(), 1);
+    }
+
+    #[test]
+    fn test_visual_move_with_multibyte() {
+        let mut editor = TextEditor::new();
+        editor.set_display_width(6);
+        // "あいうえお" → 各2幅 = 合計10、幅6で wrap → wrap行0: "あいう" (6幅), wrap行1: "えお" (4幅)
+        for c in "あいうえお".chars() {
+            editor.insert_char(c);
+        }
+        // カーソルは末尾 = wrap行1
+        editor.move_up();
+        assert_eq!(editor.cursor_row(), 0);
+        // wrap行1 でのカーソル表示列は 4 ("えお"の後)、wrap行0 で col=4 → "あい" (各3byte) = 6byte
+        // 表示列4 → "あ"(2) + "い"(2) = 4 → byte 6
+        assert_eq!(editor.cursor_col(), 6);
     }
 }
