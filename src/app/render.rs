@@ -1619,7 +1619,7 @@ impl App {
         } else if show_cursor {
             Style::default().fg(Color::Green)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default()
         };
 
         let mut block = Block::default()
@@ -1772,17 +1772,17 @@ impl App {
         } else {
             String::new()
         };
-        let border_color = if let Some(color) = self.rainbow_color(6) {
-            color
+        let border_style = if let Some(color) = self.rainbow_color(6) {
+            Style::default().fg(color)
         } else if focused {
-            Color::Yellow
+            Style::default().fg(Color::Yellow)
         } else {
-            Color::DarkGray
+            Style::default()
         };
         let mut block = Block::default()
             .title(title)
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color));
+            .border_style(border_style);
         if !help_text.is_empty() {
             block = block.title_bottom(Line::from(help_text).alignment(HorizontalAlignment::Right));
         }
