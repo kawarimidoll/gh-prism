@@ -1631,14 +1631,12 @@ impl App {
         }
 
         let lines: Vec<Line> = editor
-            .lines_from_scroll()
-            .iter()
-            .map(|l| Line::raw(l.as_str()))
+            .char_wrapped_lines_from_scroll()
+            .into_iter()
+            .map(Line::raw)
             .collect();
 
-        let paragraph = Paragraph::new(lines)
-            .block(block)
-            .wrap(Wrap { trim: false });
+        let paragraph = Paragraph::new(lines).block(block);
         frame.render_widget(paragraph, area);
 
         // Scrollbar（必要な場合のみ）

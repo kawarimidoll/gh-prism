@@ -69,6 +69,34 @@ impl TextEditor {
         &self.lines[start..]
     }
 
+    /// スクロール位置以降の行を文字単位で事前ラップして返す。
+    /// cursor_visual_position と同じ文字単位ラップなのでカーソル位置と描画が一致する。
+    /// Paragraph には `.wrap()` を付けずに渡すこと。
+    pub fn char_wrapped_lines_from_scroll(&self) -> Vec<String> {
+        let w = self.effective_width();
+        let start = self.scroll_offset.min(self.lines.len());
+        let mut result = Vec::new();
+        for line in &self.lines[start..] {
+            if line.is_empty() || w == 0 {
+                result.push(String::new());
+                continue;
+            }
+            let mut current = String::new();
+            let mut col = 0;
+            for ch in line.chars() {
+                let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+                if col + cw > w && col > 0 {
+                    result.push(std::mem::take(&mut current));
+                    col = 0;
+                }
+                current.push(ch);
+                col += cw;
+            }
+            result.push(current);
+        }
+        result
+    }
+
     /// カーソル位置に複数行テキストを挿入
     pub fn insert_text(&mut self, text: &str) {
         for (i, chunk) in text.split('\n').enumerate() {
