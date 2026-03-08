@@ -24,7 +24,7 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@401aff9a7a08acb9d27b64936a90db81024cff97 # v2.8.2
-      - uses: taiki-e/install-action@4a136ceac97fe29b942ff3b6c749a46c7950d853 # v2
+      - uses: taiki-e/install-action@fc2a2b349fea94690f6a04dcec522c55f51fe2fd # v2
         with:
           tool: just
       - run: just ci
