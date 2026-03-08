@@ -5,10 +5,15 @@ on:
     - cron: '0 0 * * *'
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 permissions: {}
 
 jobs:
   check:
+    name: Check for new commits
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -33,11 +38,12 @@ jobs:
           fi
 
   prepare:
+    name: Prepare release
     needs: check
     if: needs.check.outputs.has_commits == 'true'
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # push version commit
     outputs:
       tag: ${{ steps.tag.outputs.TAG }}
       sha: ${{ steps.version.outputs.SHA }}
@@ -79,6 +85,7 @@ jobs:
           echo "SHA=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   release-nix:
+    name: Build Nix (${{ matrix.os }})
     needs: prepare
     runs-on: ${{ matrix.os }}
     permissions:
@@ -100,6 +107,7 @@ jobs:
         run: nix build
 
   build-linux:
+    name: Build Linux (${{ matrix.target }})
     needs: prepare
     runs-on: ubuntu-latest
     permissions:
@@ -124,8 +132,9 @@ jobs:
         with:
           target: ${{ matrix.target }}
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target "$BUILD_TARGET"
         env:
+          BUILD_TARGET: ${{ matrix.target }}
           GH_PRISM_VERSION: ${{ needs.prepare.outputs.tag }}
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
@@ -133,6 +142,7 @@ jobs:
           path: target/${{ matrix.target }}/release/gh-prism
 
   build-macos:
+    name: Build macOS (${{ matrix.target }})
     needs: prepare
     runs-on: macos-latest
     permissions:
@@ -156,8 +166,9 @@ jobs:
         with:
           key: ${{ matrix.target }}
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target "$BUILD_TARGET"
         env:
+          BUILD_TARGET: ${{ matrix.target }}
           GH_PRISM_VERSION: ${{ needs.prepare.outputs.tag }}
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
@@ -165,10 +176,11 @@ jobs:
           path: target/${{ matrix.target }}/release/gh-prism
 
   release:
+    name: Create GitHub Release
     needs: [prepare, build-linux, build-macos]
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # create release and upload assets
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
