@@ -199,12 +199,12 @@ impl App {
         let sub = self.conversation_sub_cursor;
 
         // 現在のサブアイテムの視覚行先頭
-        if let Some((sub_start, _)) = self.current_sub_visual_range() {
-            if sub_start < self.conversation_scroll {
-                // サブアイテムが画面上に続いている → 1行スクロール
-                self.conversation_scroll = self.conversation_scroll.saturating_sub(1);
-                return;
-            }
+        if let Some((sub_start, _)) = self.current_sub_visual_range()
+            && sub_start < self.conversation_scroll
+        {
+            // サブアイテムが画面上に続いている → 1行スクロール
+            self.conversation_scroll = self.conversation_scroll.saturating_sub(1);
+            return;
         }
 
         if sub > 0 {
