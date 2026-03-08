@@ -99,7 +99,7 @@ jobs:
           ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
       - uses: nixbuild/nix-quick-install-action@2c9db80fb984ceb1bcaa77cdda3fdf8cfba92035 # v34
-      - uses: cachix/cachix-action@97e5ff84d02b3b4f9936339f767e17f03c9252ed # v16
+      - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
           name: kawarimidoll
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
