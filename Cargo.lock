@@ -1281,7 +1281,7 @@ dependencies = [
 
 [[package]]
 name = "gh-prism"
-version = "26.3.6"
+version = "26.3.9"
 dependencies = [
  "ansi-to-tui",
  "chrono",
