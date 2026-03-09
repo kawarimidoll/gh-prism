@@ -240,6 +240,8 @@ pub struct ReviewState {
     pub pending_comments: Vec<crate::github::review::PendingComment>,
     pub review_comments: Vec<crate::github::comments::ReviewComment>,
     pub viewing_comments: Vec<crate::github::comments::ReviewComment>,
+    /// CommentView で表示中の pending コメントのインデックス（pending_comments 内）
+    pub viewing_pending_indices: Vec<usize>,
     /// CommentView の視覚行カーソル
     pub viewing_comment_cursor: usize,
     pub viewing_comment_scroll: u16,

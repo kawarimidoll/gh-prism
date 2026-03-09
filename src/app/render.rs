@@ -1535,11 +1535,13 @@ impl App {
     /// ReviewBodyInput は呼び出し側で全幅パネルとして別途呼び出す。
     fn render_editor_panel(&mut self, frame: &mut Frame, area: Rect) {
         // CommentView モード: viewing_comments をペインに表示（フォーカス状態）
-        if self.mode == AppMode::CommentView && !self.review.viewing_comments.is_empty() {
-            // render_cursor_comments が &mut self を取るため clone で借用を分離
+        if self.mode == AppMode::CommentView {
             let comments = self.review.viewing_comments.clone();
-            self.render_cursor_comments(frame, area, &comments, true);
-            return;
+            let pending_indices = self.review.viewing_pending_indices.clone();
+            if !comments.is_empty() || !pending_indices.is_empty() {
+                self.render_cursor_comments(frame, area, &comments, &pending_indices, true);
+                return;
+            }
         }
 
         // 編集モードでなく Diff が表示中なら、カーソル行のレビューコメントを自動表示
@@ -1552,8 +1554,9 @@ impl App {
         ) && self.layout.diff_view_rect.width > 0
         {
             let comments = self.comments_at_diff_line(self.diff.cursor_line);
-            if !comments.is_empty() {
-                self.render_cursor_comments(frame, area, &comments, false);
+            let pending_indices = self.pending_comments_at_diff_line(self.diff.cursor_line);
+            if !comments.is_empty() || !pending_indices.is_empty() {
+                self.render_cursor_comments(frame, area, &comments, &pending_indices, false);
                 return;
             }
         }
@@ -1660,6 +1663,7 @@ impl App {
         frame: &mut Frame,
         area: Rect,
         comments: &[crate::github::comments::ReviewComment],
+        pending_indices: &[usize],
         focused: bool,
     ) {
         // 非フォーカス時はスクロールとカーソルをリセット
@@ -1670,6 +1674,8 @@ impl App {
 
         let inner_width = area.width.saturating_sub(2);
         let visible_height = area.height.saturating_sub(2);
+
+        let total_count = comments.len() + pending_indices.len();
 
         // コメントごとの論理行オフセットを記録しつつ lines を構築
         let mut lines: Vec<Line<'static>> = Vec::new();
@@ -1689,6 +1695,23 @@ impl App {
             ));
             for body_line in comment.body.lines() {
                 lines.push(Line::raw(body_line.to_string()));
+            }
+        }
+
+        // pending コメントを既存コメントの後に追加
+        for &idx in pending_indices {
+            if let Some(pc) = self.review.pending_comments.get(idx) {
+                if !lines.is_empty() {
+                    lines.push(Line::raw(""));
+                }
+                comment_offsets.push(lines.len());
+                lines.push(Line::styled(
+                    "💭 (pending)",
+                    Style::default().fg(Color::Green),
+                ));
+                for body_line in pc.body.lines() {
+                    lines.push(Line::raw(body_line.to_string()));
+                }
             }
         }
         comment_offsets.push(lines.len()); // センチネル
@@ -1743,32 +1766,31 @@ impl App {
             }
         }
 
-        let title = if !focused || comments.len() <= 1 {
+        let title = if !focused || total_count <= 1 {
             if is_resolved {
-                format!(" 💬 Review Comments ({}) [Resolved] ", comments.len())
+                format!(" 💬 Comments ({total_count}) [Resolved] ")
             } else {
-                format!(" 💬 Review Comments ({}) ", comments.len())
+                format!(" 💬 Comments ({total_count}) ")
             }
         } else if is_resolved {
             format!(
-                " 💬 Review Comments ({}/{}) [Resolved] ",
+                " 💬 Comments ({}/{total_count}) [Resolved] ",
                 comment_index + 1,
-                comments.len()
             )
         } else {
-            format!(
-                " 💬 Review Comments ({}/{}) ",
-                comment_index + 1,
-                comments.len()
-            )
+            format!(" 💬 Comments ({}/{total_count}) ", comment_index + 1,)
         };
         let help_text = if focused {
-            let resolve_label = if is_resolved {
-                "r: unresolve"
+            if !comments.is_empty() {
+                let resolve_label = if is_resolved {
+                    "r: unresolve"
+                } else {
+                    "r: resolve"
+                };
+                format!(" c: reply | e: emoji | {resolve_label} ")
             } else {
-                "r: resolve"
-            };
-            format!(" c: reply | e: emoji | {resolve_label} ")
+                String::new()
+            }
         } else {
             String::new()
         };

@@ -648,8 +648,10 @@ impl App {
             KeyCode::Enter => {
                 // DiffView で Enter → カーソル行にコメントがあれば CommentView
                 let comments = self.comments_at_diff_line(self.diff.cursor_line);
-                if !comments.is_empty() {
+                let pending_indices = self.pending_comments_at_diff_line(self.diff.cursor_line);
+                if !comments.is_empty() || !pending_indices.is_empty() {
                     self.review.viewing_comments = comments;
+                    self.review.viewing_pending_indices = pending_indices;
                     self.mode = AppMode::CommentView;
                 }
             }
@@ -870,6 +872,7 @@ impl App {
         match code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.review.viewing_comments.clear();
+                self.review.viewing_pending_indices.clear();
                 self.review.viewing_comment_cursor = 0;
                 self.review.viewing_comment_scroll = 0;
                 self.mode = AppMode::Normal;

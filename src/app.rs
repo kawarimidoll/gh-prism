@@ -638,6 +638,24 @@ impl App {
         counts
     }
 
+    /// 指定 diff 行にかかる pending コメントのインデックスを取得
+    fn pending_comments_at_diff_line(&self, diff_line: usize) -> Vec<usize> {
+        let Some(file) = self.current_file() else {
+            return Vec::new();
+        };
+        self.review
+            .pending_comments
+            .iter()
+            .enumerate()
+            .filter(|(_, pc)| {
+                pc.file_path == file.filename
+                    && diff_line >= pc.start_line
+                    && diff_line <= pc.end_line
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
     /// 指定 diff 行のコメントを取得（CommentView 用）
     fn comments_at_diff_line(&self, diff_line: usize) -> Vec<ReviewComment> {
         let Some(file) = self.current_file() else {
