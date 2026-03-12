@@ -869,10 +869,18 @@ impl App {
 
     /// コメントペイン（フォーカス状態）のキー処理
     pub(super) fn handle_comment_view_mode(&mut self, code: KeyCode) {
+        // d 以外のキーで削除確認をリセット（status_message も消す）
+        if !matches!(code, KeyCode::Char('d')) {
+            if self.review.pending_delete_confirm.take().is_some() {
+                self.status_message = None;
+            }
+        }
         match code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.review.viewing_comments.clear();
                 self.review.viewing_pending_indices.clear();
+                self.review.editing_pending_index = None;
+                self.review.pending_delete_confirm = None;
                 self.review.viewing_comment_cursor = 0;
                 self.review.viewing_comment_scroll = 0;
                 self.mode = AppMode::Normal;
@@ -901,8 +909,50 @@ impl App {
                 }
             }
             KeyCode::Char('e') => {
-                // viewing_comment_cursor が指すコメントに reaction picker を開く
-                self.open_reaction_picker_for_comment_view();
+                // pending コメント上なら編集、既存コメント上なら reaction picker
+                if let Some(pc_idx) = self.viewing_pending_comment_index() {
+                    if let Some(pc) = self.review.pending_comments.get(pc_idx) {
+                        let body = pc.body.clone();
+                        self.review.editing_pending_index = Some(pc_idx);
+                        self.review.comment_editor.set_text(&body);
+                        self.mode = AppMode::CommentInput;
+                    }
+                } else {
+                    self.open_reaction_picker_for_comment_view();
+                }
+            }
+            KeyCode::Char('d') => {
+                if let Some(pc_idx) = self.viewing_pending_comment_index() {
+                    if self.review.pending_delete_confirm == Some(pc_idx) {
+                        // 2回目: 削除実行
+                        self.review.pending_delete_confirm = None;
+                        self.status_message = None;
+                        self.review.pending_comments.remove(pc_idx);
+                        self.review.viewing_pending_indices.retain(|&i| i != pc_idx);
+                        for idx in &mut self.review.viewing_pending_indices {
+                            if *idx > pc_idx {
+                                *idx -= 1;
+                            }
+                        }
+                        if self.review.viewing_comments.is_empty()
+                            && self.review.viewing_pending_indices.is_empty()
+                        {
+                            self.review.viewing_comment_cursor = 0;
+                            self.review.viewing_comment_scroll = 0;
+                            self.mode = AppMode::Normal;
+                        } else {
+                            // カーソルが範囲外にならないよう clamp
+                            let line_count = self.review.comment_view_line_count.saturating_sub(1);
+                            if self.review.viewing_comment_cursor > line_count {
+                                self.review.viewing_comment_cursor = line_count;
+                            }
+                        }
+                    } else {
+                        // 1回目: 確認待ち
+                        self.review.pending_delete_confirm = Some(pc_idx);
+                        self.status_message = Some(StatusMessage::info("Press d again to delete"));
+                    }
+                }
             }
             KeyCode::Char('z') => {
                 self.zoomed = !self.zoomed;

@@ -656,6 +656,20 @@ impl App {
             .collect()
     }
 
+    /// CommentView でカーソルが pending コメント上にあれば、そのインデックスを返す
+    fn viewing_pending_comment_index(&self) -> Option<usize> {
+        let idx = self.review.viewing_comment_index;
+        let num_existing = self.review.viewing_comments.len();
+        if idx >= num_existing {
+            self.review
+                .viewing_pending_indices
+                .get(idx - num_existing)
+                .copied()
+        } else {
+            None
+        }
+    }
+
     /// 指定 diff 行のコメントを取得（CommentView 用）
     fn comments_at_diff_line(&self, diff_line: usize) -> Vec<ReviewComment> {
         let Some(file) = self.current_file() else {
@@ -1054,20 +1068,34 @@ impl App {
         }
     }
 
-    /// コメント入力をキャンセルして Normal モードに戻る（選択範囲もクリア）
+    /// コメント入力をキャンセル（編集中なら CommentView に戻り、新規なら Normal に戻る）
     fn cancel_comment_input(&mut self) {
         self.review.comment_editor.clear();
-        self.line_selection = None;
-        self.mode = AppMode::Normal;
+        if self.review.editing_pending_index.take().is_some() {
+            // 編集キャンセル → CommentView に戻る
+            self.mode = AppMode::CommentView;
+        } else {
+            self.line_selection = None;
+            self.mode = AppMode::Normal;
+        }
     }
 
-    /// コメントを確定して pending_comments に追加
+    /// コメントを確定して pending_comments に追加（または編集中の場合は更新）
     fn confirm_comment(&mut self) {
         if self.review.comment_editor.is_empty() {
             return;
         }
 
-        if let Some(selection) = self.line_selection {
+        if let Some(pc_idx) = self.review.editing_pending_index.take() {
+            // 既存 pending コメントの編集
+            if let Some(pc) = self.review.pending_comments.get_mut(pc_idx) {
+                pc.body = self.review.comment_editor.text();
+            }
+            self.review.comment_editor.clear();
+            // CommentView に戻る（viewing 状態は維持）
+            self.mode = AppMode::CommentView;
+        } else if let Some(selection) = self.line_selection {
+            // 新規コメント
             let (start, end) = selection.range(self.diff.cursor_line);
             let file_path = self
                 .current_file()
@@ -1087,11 +1115,10 @@ impl App {
                 body: self.review.comment_editor.text(),
                 commit_sha,
             });
+            self.review.comment_editor.clear();
+            self.line_selection = None;
+            self.mode = AppMode::Normal;
         }
-
-        self.review.comment_editor.clear();
-        self.line_selection = None;
-        self.mode = AppMode::Normal;
     }
 
     /// 選択範囲の diff 行から「新しい側」のコードを抽出する

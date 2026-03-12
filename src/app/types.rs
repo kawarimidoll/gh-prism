@@ -242,6 +242,10 @@ pub struct ReviewState {
     pub viewing_comments: Vec<crate::github::comments::ReviewComment>,
     /// CommentView で表示中の pending コメントのインデックス（pending_comments 内）
     pub viewing_pending_indices: Vec<usize>,
+    /// 編集中の pending コメントのインデックス（pending_comments 内）
+    pub editing_pending_index: Option<usize>,
+    /// pending コメント削除の確認待ち（対象の pending_comments インデックス）
+    pub pending_delete_confirm: Option<usize>,
     /// CommentView の視覚行カーソル
     pub viewing_comment_cursor: usize,
     pub viewing_comment_scroll: u16,

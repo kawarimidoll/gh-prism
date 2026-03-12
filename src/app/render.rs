@@ -1780,8 +1780,11 @@ impl App {
         } else {
             format!(" 💬 Comments ({}/{total_count}) ", comment_index + 1,)
         };
+        let is_on_pending = comment_index >= comments.len();
         let help_text = if focused {
-            if !comments.is_empty() {
+            if is_on_pending {
+                " e: edit | d: delete ".to_string()
+            } else if !comments.is_empty() {
                 let resolve_label = if is_resolved {
                     "r: unresolve"
                 } else {
