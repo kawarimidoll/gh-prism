@@ -1566,18 +1566,21 @@ impl App {
 
         let (title, help_text, editor, show_cursor) = match self.mode {
             AppMode::CommentInput => {
-                let title = if let Some(selection) = self.line_selection {
+                let is_editing = self.review.editing_pending_index.is_some();
+                let title = if is_editing {
+                    " Edit Comment ".to_string()
+                } else if let Some(selection) = self.line_selection {
                     let (start, end) = selection.range(self.diff.cursor_line);
                     format!(" Comment L{}–L{} ", start + 1, end + 1)
                 } else {
                     " Comment ".to_string()
                 };
-                (
-                    title,
-                    " Ctrl+G: suggestion | Ctrl+S: submit ",
-                    &mut self.review.comment_editor,
-                    true,
-                )
+                let help = if is_editing {
+                    " Ctrl+S: save | Esc: cancel "
+                } else {
+                    " Ctrl+G: suggestion | Ctrl+S: submit "
+                };
+                (title, help, &mut self.review.comment_editor, true)
             }
             AppMode::IssueCommentInput => (
                 " Comment (PR) ".to_string(),

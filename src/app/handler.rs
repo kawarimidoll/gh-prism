@@ -823,7 +823,9 @@ impl App {
                 self.confirm_comment();
             }
             KeyCode::Char('g') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.insert_suggestion();
+                if self.review.editing_pending_index.is_none() {
+                    self.insert_suggestion();
+                }
             }
             _ => {
                 self.review.comment_editor.handle_key(code, modifiers);
