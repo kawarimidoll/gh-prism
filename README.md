@@ -107,6 +107,14 @@ gh prism <PR_NUMBER>
 | `--light` | Force light theme |
 | `--dark` | Force dark theme |
 
+### Tips
+
+Use [fzf](https://github.com/junegunn/fzf) to fuzzy-find and open a PR interactively:
+
+```bash
+gh prism "$(gh pr list | fzf --preview 'gh pr view {1}' | awk '{print $1}')"
+```
+
 ### Key Bindings (excerpt)
 
 | Key | Action |
