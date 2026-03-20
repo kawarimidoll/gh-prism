@@ -1296,6 +1296,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "termbg",
  "tokio",
  "unicode-width",

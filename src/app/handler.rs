@@ -567,6 +567,9 @@ impl App {
                     self.needs_reload = true;
                 }
             }
+            KeyCode::Char('O') => {
+                self.open_in_browser();
+            }
             KeyCode::Char('?') => {
                 self.help_scroll = 0;
                 self.help_context_panel = self.focused_panel;
@@ -811,6 +814,7 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => self.extend_selection_down(),
             KeyCode::Char('k') | KeyCode::Up => self.extend_selection_up(),
             KeyCode::Char('c') => self.enter_comment_input_mode(),
+            KeyCode::Char('O') => self.open_in_browser(),
             _ => {}
         }
     }
@@ -872,10 +876,10 @@ impl App {
     /// コメントペイン（フォーカス状態）のキー処理
     pub(super) fn handle_comment_view_mode(&mut self, code: KeyCode) {
         // d 以外のキーで削除確認をリセット（status_message も消す）
-        if !matches!(code, KeyCode::Char('d')) {
-            if self.review.pending_delete_confirm.take().is_some() {
-                self.status_message = None;
-            }
+        if !matches!(code, KeyCode::Char('d'))
+            && self.review.pending_delete_confirm.take().is_some()
+        {
+            self.status_message = None;
         }
         match code {
             KeyCode::Esc | KeyCode::Char('q') => {

@@ -454,6 +454,74 @@ impl App {
             .count()
     }
 
+    /// 現在のフォーカスに応じた GitHub URL を構築してブラウザで開く
+    fn open_in_browser(&self) {
+        let base = format!("https://github.com/{}/pull/{}", self.repo, self.pr_number);
+        let url = match self.focused_panel {
+            Panel::CommitList | Panel::CommitMessage | Panel::CommitOverview => {
+                if let Some(sha) = self.current_commit_sha() {
+                    format!("{base}/changes/{sha}")
+                } else {
+                    base
+                }
+            }
+            Panel::FileTree | Panel::DiffView => {
+                let sha_suffix = self
+                    .current_commit_sha()
+                    .map(|s| format!("/{s}"))
+                    .unwrap_or_default();
+                let file = self.current_file();
+                // GitHub の diff アンカー: #diff-{sha256(filename)}{L|R}{line}
+                let file_anchor = file.map(|f| {
+                    use sha2::{Digest, Sha256};
+                    let hash = Sha256::digest(f.filename.as_bytes());
+                    format!("#diff-{hash:x}")
+                });
+                let line_suffix = if self.focused_panel == Panel::DiffView {
+                    file.and_then(|f| f.patch.as_deref()).and_then(|patch| {
+                        let line_map = review::parse_patch_line_map(patch);
+                        let to_anchor = |idx: usize| -> Option<String> {
+                            line_map.get(idx).and_then(|info| {
+                                info.as_ref().map(|i| {
+                                    let p = match i.side {
+                                        review::Side::Right => "R",
+                                        review::Side::Left => "L",
+                                    };
+                                    format!("{p}{}", i.file_line)
+                                })
+                            })
+                        };
+                        if let Some(sel) = self.line_selection {
+                            let (start, end) = sel.range(self.diff.cursor_line);
+                            let a = to_anchor(start);
+                            let b = to_anchor(end);
+                            match (a, b) {
+                                (Some(a), Some(b)) if a != b => Some(format!("{a}-{b}")),
+                                (Some(a), _) => Some(a),
+                                _ => None,
+                            }
+                        } else {
+                            to_anchor(self.diff.cursor_line)
+                        }
+                    })
+                } else {
+                    None
+                };
+                match (file_anchor, line_suffix) {
+                    (Some(anchor), Some(line)) => {
+                        format!("{base}/changes{sha_suffix}{anchor}{line}")
+                    }
+                    (Some(anchor), None) => {
+                        format!("{base}/changes{sha_suffix}{anchor}")
+                    }
+                    _ => format!("{base}/changes{sha_suffix}"),
+                }
+            }
+            _ => base,
+        };
+        open_url_in_browser(&url);
+    }
+
     /// 現在選択中のコミット SHA を返す
     fn current_commit_sha(&self) -> Option<String> {
         self.commit_list_state

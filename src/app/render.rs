@@ -2151,6 +2151,7 @@ impl App {
             ("Esc", "Back to parent pane"),
             ("z", "Toggle zoom"),
             ("R", "Reload PR data"),
+            ("O", "Open in browser"),
             ("S", "Submit review"),
             ("M", "Merge pull request"),
             ("C", "Close/Reopen pull request"),
