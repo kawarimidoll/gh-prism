@@ -48,6 +48,13 @@ jobs:
       tag: ${{ steps.tag.outputs.TAG }}
       sha: ${{ steps.version.outputs.SHA }}
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
@@ -71,13 +78,15 @@ jobs:
       - name: Update Cargo.toml version
         id: version
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           TAG: ${{ steps.tag.outputs.TAG }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          APP_ID: ${{ secrets.APP_ID }}
         run: |
           sed -i '0,/^version = ".*"/{s/^version = ".*"/version = "'"$TAG"'"/}' Cargo.toml
           sed -i '/^name = "gh-prism"/{n;s/^version = ".*"/version = "'"$TAG"'"/}' Cargo.lock
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${APP_ID}+${APP_SLUG}[bot]@users.noreply.github.com"
           gh auth setup-git
           git add Cargo.toml Cargo.lock
           git commit -m "chore(release): $TAG"
