@@ -428,6 +428,7 @@ mod tests {
             additions: 1,
             deletions: 1,
             patch: Some("@@ -1,2 +1,2 @@\n-old\n+new".to_string()),
+            ..Default::default()
         }];
 
         let pending = PendingComment {
@@ -455,6 +456,7 @@ mod tests {
             additions: 3,
             deletions: 0,
             patch: Some("@@ -0,0 +1,3 @@\n+line1\n+line2\n+line3".to_string()),
+            ..Default::default()
         }];
 
         let pending = PendingComment {
@@ -480,6 +482,7 @@ mod tests {
             additions: 1,
             deletions: 0,
             patch: Some("@@ -1,1 +1,2 @@\n line1\n+line2".to_string()),
+            ..Default::default()
         }];
 
         let pending = PendingComment {
@@ -503,6 +506,7 @@ mod tests {
             additions: 1,
             deletions: 0,
             patch: Some("@@ -1,1 +1,1 @@\n+line".to_string()),
+            ..Default::default()
         }];
 
         let pending = PendingComment {

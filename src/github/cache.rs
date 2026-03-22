@@ -77,6 +77,7 @@ mod tests {
                         additions: 1,
                         deletions: 0,
                         patch: Some("@@ -1 +1 @@\n-old\n+new".to_string()),
+                        ..Default::default()
                     }],
                 );
                 m

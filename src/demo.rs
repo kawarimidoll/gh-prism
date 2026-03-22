@@ -229,6 +229,7 @@ pub fn demo_files_map() -> HashMap<String, Vec<DiffFile>> {
  }"#
                     .to_string(),
                 ),
+                ..Default::default()
             },
             DiffFile {
                 filename: "build.rs".to_string(),
@@ -246,6 +247,7 @@ pub fn demo_files_map() -> HashMap<String, Vec<DiffFile>> {
          ], &["proto"])?;"#
                         .to_string(),
                 ),
+                ..Default::default()
             },
         ],
     );
@@ -348,6 +350,7 @@ pub fn demo_files_map() -> HashMap<String, Vec<DiffFile>> {
 +}"#
                     .to_string(),
                 ),
+                ..Default::default()
             },
             DiffFile {
                 filename: "gen/proto/profile.v1.serde.rs".to_string(),
@@ -405,6 +408,7 @@ pub fn demo_files_map() -> HashMap<String, Vec<DiffFile>> {
 +}"#
                     .to_string(),
                 ),
+                ..Default::default()
             },
             DiffFile {
                 filename: "gen/proto/mod.rs".to_string(),
@@ -420,6 +424,7 @@ pub fn demo_files_map() -> HashMap<String, Vec<DiffFile>> {
 +mod profile_serde;"#
                     .to_string(),
                 ),
+                ..Default::default()
             },
         ],
     );
@@ -518,6 +523,7 @@ pub fn demo_files_map() -> HashMap<String, Vec<DiffFile>> {
 +}"#
                     .to_string(),
                 ),
+                ..Default::default()
             },
             DiffFile {
                 filename: "src/storage/profile_repo.rs".to_string(),
@@ -572,9 +578,11 @@ pub fn demo_files_map() -> HashMap<String, Vec<DiffFile>> {
 +}"##
                     .to_string(),
                 ),
+                ..Default::default()
             },
             DiffFile {
                 filename: "src/domain/profile.rs".to_string(),
+                previous_filename: Some("src/types/profile_types.rs".to_string()),
                 status: FileStatus::Renamed,
                 additions: 8,
                 deletions: 3,
@@ -642,6 +650,7 @@ pub fn demo_files_map() -> HashMap<String, Vec<DiffFile>> {
 -// Note: no avatar upload support in legacy API"#
                     .to_string(),
                 ),
+                ..Default::default()
             },
             DiffFile {
                 filename: "src/handler/mod.rs".to_string(),
@@ -658,6 +667,7 @@ pub fn demo_files_map() -> HashMap<String, Vec<DiffFile>> {
 +pub use profile::ProfileHandler;"#
                     .to_string(),
                 ),
+                ..Default::default()
             },
         ],
     );
@@ -740,6 +750,7 @@ pub fn demo_files_map() -> HashMap<String, Vec<DiffFile>> {
 +}"#
                     .to_string(),
                 ),
+                ..Default::default()
             },
             // Large diff for scrolling demo
             DiffFile {
@@ -871,6 +882,7 @@ pub fn demo_files_map() -> HashMap<String, Vec<DiffFile>> {
 +}"#
                     .to_string(),
                 ),
+                ..Default::default()
             },
             DiffFile {
                 filename: "frontend/src/components/AvatarUploader.tsx".to_string(),
@@ -929,6 +941,7 @@ pub fn demo_files_map() -> HashMap<String, Vec<DiffFile>> {
 +}"#
                     .to_string(),
                 ),
+                ..Default::default()
             },
             DiffFile {
                 filename: "frontend/src/router.tsx".to_string(),
@@ -962,6 +975,7 @@ pub fn demo_files_map() -> HashMap<String, Vec<DiffFile>> {
      },"#
                     .to_string(),
                 ),
+                ..Default::default()
             },
             DiffFile {
                 filename: "frontend/src/api/profile-rest.ts".to_string(),
@@ -1000,6 +1014,7 @@ pub fn demo_files_map() -> HashMap<String, Vec<DiffFile>> {
 -}"#
                     .to_string(),
                 ),
+                ..Default::default()
             },
         ],
     );
@@ -1082,6 +1097,7 @@ pub fn demo_files_map() -> HashMap<String, Vec<DiffFile>> {
 +}"#
                     .to_string(),
                 ),
+                ..Default::default()
             },
             DiffFile {
                 filename: "frontend/src/components/__tests__/ProfileForm.test.tsx".to_string(),
@@ -1131,6 +1147,7 @@ pub fn demo_files_map() -> HashMap<String, Vec<DiffFile>> {
 +});"#
                         .to_string(),
                 ),
+                ..Default::default()
             },
         ],
     );
@@ -1183,6 +1200,7 @@ pub fn demo_files_map() -> HashMap<String, Vec<DiffFile>> {
 +    }"#
                         .to_string(),
                 ),
+                ..Default::default()
             },
             DiffFile {
                 filename: "proto/services.proto".to_string(),
@@ -1200,6 +1218,7 @@ pub fn demo_files_map() -> HashMap<String, Vec<DiffFile>> {
    // location: optional, max 100 characters"#
                         .to_string(),
                 ),
+                ..Default::default()
             },
         ],
     );

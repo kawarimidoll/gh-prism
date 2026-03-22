@@ -7,7 +7,7 @@ mod navigation;
 mod render;
 mod types;
 
-use helpers::{format_datetime, open_url_in_browser, truncate_path, truncate_str};
+use helpers::{format_datetime, open_url_in_browser, truncate_path, truncate_rename, truncate_str};
 pub use media::{collect_image_urls, preprocess_pr_body};
 pub use types::*;
 
@@ -2756,6 +2756,7 @@ mod tests {
                 additions: 10,
                 deletions: 5,
                 patch: None,
+                ..Default::default()
             },
             DiffFile {
                 filename: "src/app.rs".to_string(),
@@ -2763,6 +2764,7 @@ mod tests {
                 additions: 50,
                 deletions: 0,
                 patch: None,
+                ..Default::default()
             },
         ]
     }
@@ -2841,6 +2843,7 @@ mod tests {
                     additions: 10,
                     deletions: 0,
                     patch: Some(patch),
+                    ..Default::default()
                 }],
             );
             self.files_map = files_map;
@@ -2865,6 +2868,7 @@ mod tests {
                     additions,
                     deletions,
                     patch: Some(patch.to_string()),
+                    ..Default::default()
                 }],
             );
             self.files_map = files_map;
@@ -3070,6 +3074,7 @@ mod tests {
                 additions: 10,
                 deletions: 0,
                 patch: None,
+                ..Default::default()
             }],
         );
         files_map.insert(
@@ -3080,6 +3085,7 @@ mod tests {
                 additions: 5,
                 deletions: 3,
                 patch: None,
+                ..Default::default()
             }],
         );
 
@@ -3106,6 +3112,7 @@ mod tests {
                     additions: 10,
                     deletions: 0,
                     patch: None,
+                    ..Default::default()
                 },
                 DiffFile {
                     filename: "file2.rs".to_string(),
@@ -3113,6 +3120,7 @@ mod tests {
                     additions: 5,
                     deletions: 0,
                     patch: None,
+                    ..Default::default()
                 },
             ],
         );
@@ -3124,6 +3132,7 @@ mod tests {
                 additions: 5,
                 deletions: 3,
                 patch: None,
+                ..Default::default()
             }],
         );
 
@@ -3228,6 +3237,7 @@ mod tests {
                 additions: 25,
                 deletions: 0,
                 patch: Some(patch),
+                ..Default::default()
             }],
         );
         let mut app = TestAppBuilder::new()
@@ -3649,6 +3659,7 @@ mod tests {
             additions: 10,
             deletions: 0,
             patch: None,
+            ..Default::default()
         };
         assert_eq!(added.status_char(), 'A');
 
@@ -3658,6 +3669,7 @@ mod tests {
             additions: 5,
             deletions: 3,
             patch: None,
+            ..Default::default()
         };
         assert_eq!(modified.status_char(), 'M');
 
@@ -3667,6 +3679,7 @@ mod tests {
             additions: 0,
             deletions: 10,
             patch: None,
+            ..Default::default()
         };
         assert_eq!(removed.status_char(), 'D');
 
@@ -3676,6 +3689,7 @@ mod tests {
             additions: 0,
             deletions: 0,
             patch: None,
+            ..Default::default()
         };
         assert_eq!(renamed.status_char(), 'R');
     }
@@ -3692,6 +3706,7 @@ mod tests {
                 additions: 0,
                 deletions: 0,
                 patch: None,
+                ..Default::default()
             }],
         );
         let app = TestAppBuilder::new()
@@ -4887,6 +4902,7 @@ mod tests {
                 additions: 1,
                 deletions: 1,
                 patch: Some(patch),
+                ..Default::default()
             }],
         );
         let mut app = TestAppBuilder::new()
@@ -4927,6 +4943,7 @@ mod tests {
                 additions: 20,
                 deletions: 0,
                 patch: Some(patch),
+                ..Default::default()
             }],
         );
         let mut app = TestAppBuilder::new()
@@ -4981,6 +4998,7 @@ mod tests {
                 additions: 1,
                 deletions: 0,
                 patch: Some("@@ -0,0 +1 @@\n+new".to_string()),
+                ..Default::default()
             }],
         );
         let mut app = TestAppBuilder::new()

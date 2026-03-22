@@ -153,6 +153,30 @@ pub(super) fn truncate_str(s: &str, max_width: usize) -> String {
     result
 }
 
+/// リネームされたファイルの "old → new" 表示を最大幅に収める。
+/// 幅が足りない場合は各パスの先頭を省略する。
+/// 例: "src/types/profile_types.rs → src/domain/profile.rs"
+///   → ".../profile_types.rs → .../profile.rs"
+pub(super) fn truncate_rename(old: &str, new: &str, max_width: usize) -> String {
+    let arrow = " → ";
+    let arrow_len = arrow.len(); // 5 bytes but display width matters; ASCII arrow is 5 columns
+    let full = format!("{old}{arrow}{new}");
+    if full.len() <= max_width {
+        return full;
+    }
+    // arrow 分を引いて残りを半分ずつ割り当て
+    let path_budget = max_width.saturating_sub(arrow_len);
+    let half = path_budget / 2;
+    let old_budget = half;
+    let new_budget = path_budget - old_budget; // 奇数なら new に1多く割り当て
+    format!(
+        "{}{}{}",
+        truncate_path(old, old_budget),
+        arrow,
+        truncate_path(new, new_budget),
+    )
+}
+
 /// パスを最大幅に収まるように先頭を省略する（ASCII パスを前提）
 /// 例: "src/components/MyComponent/index.tsx" → ".../MyComponent/index.tsx"
 pub(super) fn truncate_path(path: &str, max_width: usize) -> String {

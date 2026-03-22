@@ -645,7 +645,15 @@ impl App {
                     (None, 0)
                 };
                 let filename_max = inner.saturating_sub(prefix_width + badge_width);
-                let truncated = truncate_str(&f.filename, filename_max);
+                let truncated = if f.status == FileStatus::Renamed {
+                    if let Some(prev) = &f.previous_filename {
+                        truncate_rename(prev, &f.filename, filename_max)
+                    } else {
+                        truncate_path(&f.filename, filename_max)
+                    }
+                } else {
+                    truncate_str(&f.filename, filename_max)
+                };
                 let mut spans = vec![
                     Span::styled(marker, text_style),
                     Span::styled(status_str, Style::default().fg(status_color)),
@@ -886,7 +894,15 @@ impl App {
                         format!(" -{}", file.deletions),
                         Style::default().fg(Color::Red),
                     ),
-                    Span::raw(format!(" {}", file.filename)),
+                    if file.status == FileStatus::Renamed {
+                        if let Some(prev) = &file.previous_filename {
+                            Span::raw(format!(" {} → {}", prev, file.filename))
+                        } else {
+                            Span::raw(format!(" {}", file.filename))
+                        }
+                    } else {
+                        Span::raw(format!(" {}", file.filename))
+                    },
                 ]));
             }
         } else {
@@ -1117,7 +1133,16 @@ impl App {
         }
 
         // 選択中ファイルを取得し、所有型にクローンして self の借用を解放
-        let (has_file, has_patch, patch, filename, file_status, additions, deletions) = {
+        let (
+            has_file,
+            has_patch,
+            patch,
+            filename,
+            previous_filename,
+            file_status,
+            additions,
+            deletions,
+        ) = {
             let file = self.current_file();
             let has_file = file.is_some();
             let has_patch = file.is_some_and(|f| f.patch.is_some());
@@ -1126,6 +1151,7 @@ impl App {
                 .unwrap_or("")
                 .to_string();
             let filename = file.map(|f| f.filename.as_str()).unwrap_or("").to_string();
+            let previous_filename = file.and_then(|f| f.previous_filename.clone());
             let file_status = file.map(|f| f.status).unwrap_or(FileStatus::Unknown);
             let additions = file.map(|f| f.additions).unwrap_or(0);
             let deletions = file.map(|f| f.deletions).unwrap_or(0);
@@ -1134,6 +1160,7 @@ impl App {
                 has_patch,
                 patch,
                 filename,
+                previous_filename,
                 file_status,
                 additions,
                 deletions,
@@ -1174,7 +1201,15 @@ impl App {
                     .saturating_sub(right_title.width())
                     .saturating_sub(wrap_width)
                     .saturating_sub(selection_suffix.len());
-                truncate_path(&filename, max_path_width)
+                if file_status == FileStatus::Renamed {
+                    if let Some(prev) = &previous_filename {
+                        truncate_rename(prev, &filename, max_path_width)
+                    } else {
+                        truncate_path(&filename, max_path_width)
+                    }
+                } else {
+                    truncate_path(&filename, max_path_width)
+                }
             } else {
                 String::new()
             };

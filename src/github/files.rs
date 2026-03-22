@@ -3,10 +3,11 @@ use octocrab::Octocrab;
 use serde::{Deserialize, Serialize};
 
 /// ファイルの変更種別
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FileStatus {
     Added,
+    #[default]
     Modified,
     Removed,
     Deleted,
@@ -34,13 +35,15 @@ impl FileStatus {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DiffFile {
     pub filename: String,
     pub status: FileStatus,
     pub additions: usize,
     pub deletions: usize,
     pub patch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_filename: Option<String>,
 }
 
 impl DiffFile {
