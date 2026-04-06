@@ -286,6 +286,8 @@ pub struct LayoutCache {
     pub diff_view_rect: Rect,
     pub conversation_rect: Rect,
     pub commit_overview_rect: Rect,
+    /// コメントオーバーレイの描画領域（表示中のみ有効）
+    pub comment_pane_rect: Rect,
 }
 
 /// コード行コメントスレッドのリプライ

@@ -99,6 +99,17 @@ impl App {
 
     /// マウススクロール処理（フォーカスは移動しない）
     pub(super) fn handle_mouse_scroll(&mut self, x: u16, y: u16, down: bool) {
+        // コメントオーバーレイ上のスクロールを優先処理
+        if self.is_on_comment_pane(x, y) {
+            if down {
+                self.review.viewing_comment_scroll =
+                    self.review.viewing_comment_scroll.saturating_add(1);
+            } else {
+                self.review.viewing_comment_scroll =
+                    self.review.viewing_comment_scroll.saturating_sub(1);
+            }
+            return;
+        }
         let Some(panel) = self.panel_at(x, y) else {
             return;
         };

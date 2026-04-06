@@ -1089,6 +1089,12 @@ impl App {
     }
 
     /// 座標からペインを特定
+    /// 座標がコメントオーバーレイ上にあるか判定
+    fn is_on_comment_pane(&self, x: u16, y: u16) -> bool {
+        let rect = self.layout.comment_pane_rect;
+        rect.width > 0 && rect.height > 0 && rect.contains(Position::new(x, y))
+    }
+
     fn panel_at(&self, x: u16, y: u16) -> Option<Panel> {
         let pos = Position::new(x, y);
         if self.layout.pr_desc_rect.contains(pos) {

@@ -1596,6 +1596,9 @@ impl App {
             }
         }
 
+        // コメントペインが表示されないのでヒットテスト領域をクリア
+        self.layout.comment_pane_rect = Rect::default();
+
         // rainbow_color は self の不変借用なので、editor の可変借用より前に取得
         let rainbow = self.rainbow_color(6);
 
@@ -1704,9 +1707,8 @@ impl App {
         pending_indices: &[usize],
         focused: bool,
     ) {
-        // 非フォーカス時はスクロールとカーソルをリセット
+        // 非フォーカス時はカーソルのみリセット（スクロールはマウスで操作可能にする）
         if !focused {
-            self.review.viewing_comment_scroll = 0;
             self.review.viewing_comment_cursor = 0;
         }
 
@@ -1850,11 +1852,22 @@ impl App {
             block = block.title_bottom(Line::from(help_text).alignment(HorizontalAlignment::Right));
         }
 
+        // 非フォーカス時もスクロールを max_scroll 以内にクランプ
+        if !focused {
+            let max_scroll = self.review.comment_view_max_scroll;
+            if self.review.viewing_comment_scroll > max_scroll {
+                self.review.viewing_comment_scroll = max_scroll;
+            }
+        }
+
         let paragraph = Paragraph::new(lines)
             .wrap(Wrap { trim: false })
             .block(block)
             .scroll((self.review.viewing_comment_scroll, 0));
         frame.render_widget(paragraph, area);
+
+        // コメントペインの描画領域をキャッシュ（マウスヒットテスト用）
+        self.layout.comment_pane_rect = area;
 
         // focused 時: カーソル行のハイライト（視覚行1行）
         if focused {
